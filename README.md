@@ -16,7 +16,7 @@
   %@@#+                                                                                    
   %&+                                                                                   
 ```
-Development version of `morphen` was moved to https://github.com/lucatelli/morphen_dev.
+Older development version of `morphen` was moved to https://github.com/lucatelli/morphen_dev.
 
 ***Readme file under development!***
 
