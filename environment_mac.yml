@@ -1,0 +1,53 @@
+name: morphen
+channels:
+  - conda-forge
+  - pkgw-forge
+  - defaults
+dependencies:
+  - python=3.8
+  - casacore
+#  - aoflagger=2.15.0
+#  - boost==1.70.0
+  - pip
+  - pip:
+    - casatools
+    - casaplotms
+    - casadata
+    - casaviewer
+    - casaplotserver
+    - casalogger
+    - protobuf==3.20.3
+    - ipython
+    - notebook
+    - jupyter
+    - tqdm
+    - matplotlib
+    - corner
+    - sympy
+    - cmasher
+    - coloredlogs
+    - scipy
+    - numpy
+    - astropy
+    - pandas
+    - astroquery
+    - tableprint
+    - prettytable
+    - dynesty
+    - datashader
+    - scikit-image
+    - scikit-learn
+    - petrofit
+    - photutils
+    - sep
+    - fitsio
+    - astrodendro
+    - bdsf
+    - lmfit==1.1.0
+    - emcee
+    - corner
+    - arviz
+    - h5py
+#    - "jax[cuda12_pip] >= 0.4.13"  # Ensure compatibility with CUDA 12
+#    - -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+    - "jax[cpu]"

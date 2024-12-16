@@ -47,8 +47,16 @@ conda env create -f environment.yml
 conda activate morphen
 ```
 
-See ([docs/install_instructions.md](docs/install_instructions.md)) for installation instructions.
-Se there also the instuctions for installing `miniconda`.
+See ([docs/install_instructions.md](docs/install_instructions.md)) for manual 
+step-by-step installation instructions. There is also a experimental (manual) option
+to install `morphen` on Mac OS with `arm64` architecture (M* chips).
+An experimental `environment_mac.yml` file is available for this purpose. In principle (once 
+`rosetta` and `miniconda` are installed), the creation of the `morphen` environment should be 
+symply done by:
+```commandline
+arch -x86_64 conda env create -f environment_mac.yml
+```
+
 
 
 
