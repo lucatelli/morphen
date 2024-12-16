@@ -31,3 +31,26 @@ functionalities in the repository aforementioned will be migrated to individual 
 In the meantime, all tasks can be executed through this repository.
 
 
+## Getting Started
+### Installation
+Currently, there is no option to install `morphen` (via `pip` or `conda`). 
+However, installation and usage are straightforward. The code can be used as a module, 
+interactively via Jupyter notebooks,
+or via the command line interface (see "Important notes" below). For now, we recommend  
+using it via Jupyter notebooks using the set of provided examples.
+
+To install `morphen`, clone the repository and install using conda through the `environment.yml` file:
+```bash
+git clone https://github.com/lucatelli/morphen.git
+cd morphen
+conda env create -f environment.yml
+conda activate morphen
+```
+
+See ([docs/install_instructions.md](docs/install_instructions.md)) for installation instructions.
+Se there also the instuctions for installing `miniconda`.
+
+
+
+
+
