@@ -10,7 +10,8 @@ dependencies:
 #  - boost==1.70.0
   - pip
   - pip:
-    - casatools
+    - casatools==6.5.1.23
+    - casatasks==6.5.1.23
     - casaplotms
     - casadata
     - casaviewer
