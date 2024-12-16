@@ -15,7 +15,7 @@ testing since limitations may arise from:
 
 ### Install Miniconda3
 Install `miniconda` with:
-```
+```commandline
 wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
 chmod +x Miniconda3-latest-Linux-x86_64.sh
 sh Miniconda3-latest-Linux-x86_64.sh
@@ -24,7 +24,7 @@ sh Miniconda3-latest-Linux-x86_64.sh
 <!-- https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-arm64.pkg -->
  
 After, create a new conda environment (e.g. python 3.8 is more appropriate to be used with CASA):
-```
+```commandline
 conda create -n morphen python=3.8
 conda activate morphen
 conda update --all
@@ -43,7 +43,7 @@ python interfaces, such as `numpy`, `scipy`, `astropy` and `Jax`.
 To install casacore within conda, follow the instructions in this page: 
 https://github.com/conda-forge/casacore-feedstock
 
-```
+```commandline
 conda config --add channels conda-forge
 conda update --all
 conda config --add channels pkgw-forge
@@ -54,31 +54,31 @@ Install `casacore` and CASA modular packages (`casatools`, `casatasks`, etc):
 
 
 
-```
+```commandline
 conda install casacore
 ```
 
 
 Install CASA related packages with pip:
-```
+```commandline
 pip install casatools==6.4.4.31
 pip install casatasks==6.4.4.31 casaplotms casadata casaviewer casampi casaplotserver casalogger
 ```
 
 To use `casaviewer` (`imview`), you have to downgrade `protobuf` to version `3.20.3`:
-```
+```commandline
 pip install protobuf==3.20.3
 ```
 
 Then, install python related packages:
-```
+```commandline
 pip install ipython notebook jupyter tqdm matplotlib corner sympy cmasher coloredlogs 
 pip install scipy==1.10.1
-pip install numpy==1.24.3 astropy==5.2.2  pandas==1.5.3 astroquery tableprint
+pip install numpy==1.24.3 astropy==5.2.2  pandas==1.5.3 astroquery tableprint prettytable
 ```
 
 Optmisation packages:
-```
+```commandline
 pip install datashader
 ```
 
@@ -102,7 +102,7 @@ pip install astrodendro bdsf
 ### Image Fitting Libraries
 Image fitting is performed with the `LMFIT` package, alongside `scipy` and the Monte Carlo `emcee` package. 
 ```commandline
-pip install lmfit==1.1.0 emcee==3.1.4 h5py==3.7.0 corner arviz==0.15.1
+pip install lmfit==1.1.0 emcee==3.1.4 h5py==3.7.0 corner arviz==0.15.1 dynesty
 ```
 
 Note: At the momment, for an unknown reason, minimisation using Jax is not occuring in the desired 
@@ -138,21 +138,21 @@ available or not. If not, the code will run on CPU, but will be optmised and ben
 
 ## Install on Mac OS (M1)
 Install Rosetta
-```
+```commandline
 softwareupdate --install-rosetta
  ```
 and then open a new terminal. 
 
 Download and install Miniconda
 
-```
+```commandline
 wget https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-x86_64.sh
 arch -x86_64 chmod +x Miniconda3-latest-MacOSX-x86_64.sh
 arch -x86_64 ./Miniconda3-latest-MacOSX-x86_64.sh
 arch -x86_64 conda config --set auto_activate_base false
 ```
 Create the environment:
-```
+```commandline
 arch -x86_64 conda create -n morphen python=3.8
 conda activate morphen #do not use arch -x86_64 here
 arch -x86_64 conda update --all
@@ -160,7 +160,7 @@ arch -x86_64 conda update --all
 
 Add required channels:
 
-```
+```commandline
 arch -x86_64 conda config --add channels conda-forge
 arch -x86_64 conda update --all
 arch -x86_64 conda config --add channels pkgw-forge
@@ -168,7 +168,7 @@ arch -x86_64 conda update --all
 ```
 
 Install CASA related packages with pip:
-```
+```commandline
 arch -x86_64 python3 -m pip install casatools==6.5.1.23
 arch -x86_64 python3 -m pip install casatasks==6.5.1.23
 arch -x86_64 python3 -m pip install casadata
@@ -178,15 +178,15 @@ arch -x86_64 python3 -m pip install casaplotms casaviewer casampi casaplotserver
 ```
 
 To use `casaviewer` (`imview`), you have to downgrade `protobuf` to version `3.20.3`:
-```
+```commandline
 arch -x86_64 python3 -m pip install protobuf==3.20.3
 ```
 
 Then, install python related packages:
-```
+```commandline
 arch -x86_64 pip install ipython notebook jupyter tqdm matplotlib corner sympy cmasher coloredlogs 
 arch -x86_64 pip install scipy==1.10.1
-arch -x86_64 pip install numpy==1.24.3 astropy==5.2.2  pandas==1.5.3 astroquery tableprint
+arch -x86_64 pip install numpy==1.24.3 astropy==5.2.2  pandas==1.5.3 astroquery tableprint prettytable
 ```
 
 
