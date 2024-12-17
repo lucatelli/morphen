@@ -173,6 +173,7 @@ def plot_azimuthal_profile(image, rms_image, center, sigma=3, bin_size=1.0,
                            ylabel='Azimuthal Average Intensity $I(R)$ [Jy/Beam]',
                            xlabel='Radius [pixels]',
                            title=None,
+                           which_error='rms',
                            min_points_per_bin=5,  # Minimum points required per bin
                            weight_by_points=True  # Weight averages by number of points
                            ):
@@ -246,12 +247,31 @@ def plot_azimuthal_profile(image, rms_image, center, sigma=3, bin_size=1.0,
     if weight_by_points:
         sigma = 3
     else:
-        sigma = 1
+        sigma = 3
     # Plot shaded error regions
-    plt.fill_between(bin_centers*cell_size, 
-                     profile - sigma * error_std, 
-                     profile + sigma * error_std,
-                     color='gray', alpha=0.3)
+    
+    if which_error == 'std':
+        plt.fill_between(bin_centers*cell_size, 
+                        profile - sigma * error_std, 
+                        profile + sigma * error_std,
+                        color='gray', alpha=0.3)
+    if which_error == 'rms':
+        plt.fill_between(bin_centers*cell_size, 
+                        profile - sigma * error_rms, 
+                        profile + sigma * error_rms,
+                        color='gray', alpha=0.3)
+    if which_error == 'both':
+        plt.fill_between(bin_centers*cell_size, 
+                        profile - sigma * error_rms, 
+                        profile + sigma * error_rms,
+                        label = 'rms error',
+                        color='gray', alpha=0.5)
+        plt.fill_between(bin_centers*cell_size,
+                        profile - sigma * error_std, 
+                        profile + sigma * error_std,
+                        label = 'std error',
+                        color='orange', alpha = 0.3)
+        plt.legend()
 
     if log_scale:
         plt.yscale('log')
@@ -2190,6 +2210,7 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
 
 def plot_alpha_map(alphaimage,alphaimage_error,radio_map,frequencies,
                    mask_good_alpha = None,
+                   levels_g = None,
                    vmin_factor = 3,neg_levels=np.asarray([-3]),
                    vmin=None,vmax=None,rms=None,figsize=(6, 6),
                    extent = None,crop=False,centre=None,
@@ -2301,16 +2322,24 @@ def plot_alpha_map(alphaimage,alphaimage_error,radio_map,frequencies,
         std = rms 
     
     # print(extent)
-    
-    
-    levels_g = np.geomspace(3.0 * _g.max(), 5 * std, n_contours)
-    levels_low = np.asarray([4 * std, 3 * std])
-    levels_black = np.geomspace(vmin_factor * std + 0.00001, 2.5 * _g.max(), 6)
-    levels_neg = neg_levels * std
-    levels_white = np.geomspace(_g.max(), 0.1 * _g.max(), 6)
+    if levels_g is None:
+        contour_palette = ['#000000', '#444444', '#666666', '#EEEEEE',
+                        '#EEEEEE', '#FFFFFF']
+    else:
+        contour_palette = 'darkgray' #darkkhaki, tan, thistle, olive
 
-    contour_palette = ['#000000', '#444444', '#666666', '#EEEEEE',
-                       '#EEEEEE', '#FFFFFF']
+    
+    if levels_g is None:
+        levels_g = np.geomspace(3.0 * _g.max(), 5 * std, n_contours)
+    else:
+        levels_g = levels_g
+    
+
+    # levels_low = np.asarray([4 * std, 3 * std])
+    # levels_black = np.geomspace(vmin_factor * std + 0.00001, 2.5 * _g.max(), 6)
+    # levels_neg = neg_levels * std
+    # levels_white = np.geomspace(_g.max(), 0.1 * _g.max(), 6)
+
 
 
     contour = ax.contour(_g, levels=levels_g[::-1],
