@@ -127,18 +127,10 @@ def azimuthal_average_profile_with_shaded_errors(image, rms_image, center, sigma
         mask = (r >= bin_edges[i]) & (r < bin_edges[i + 1])
 
         if np.any(mask):
-            profile[i] = np.mean(image[mask])
-            error_rms[i] = np.sqrt(np.mean(rms_image[mask]**2)) # Use RMS image for errors
-            error_std[i] = np.std(image[mask])                  # Use std deviation of pixel intensities        
-        # if np.any(mask):
-        #     profile[i] = np.nanmean(image[mask])*np.nansum(mask)
-        #     error_rms[i] = np.sqrt(np.mean(rms_image[mask]**2))*np.nansum(mask)  # Use RMS image for errors
-        #     error_std[i] = np.nanstd(image[mask])*np.nansum(mask)  # Use std deviation of pixel intensities
+            profile[i] = np.nanmean(image[mask])
+            error_rms[i] = np.sqrt(np.nanmean(rms_image[mask]**2)) # Use RMS image for errors
+            error_std[i] = np.nanstd(image[mask])                  # Use std deviation of pixel intensities        
 
-        # if np.any(mask):
-        #     profile[i] = np.nansum(image[mask])
-        #     error_rms[i] = np.sqrt(np.mean(rms_image[mask]**2))  # Use RMS image for errors
-        #     error_std[i] = np.nanstd(image[mask])  # Use std deviation of pixel intensities
 
     nans_mask = ~np.isnan(profile)
     bin_centers = bin_centers[nans_mask]
@@ -161,10 +153,7 @@ def azimuthal_average_profile_with_shaded_errors(image, rms_image, center, sigma
                     #  label=f'RMS Errors ($\pm{sigma}\sigma$)'
                     )
     
-    # plt.fill_between(bin_centers*cell_size, profile - sigma * error_std, profile + sigma * error_std, 
-    #                  color='red', alpha=0.3, 
-    #                  label=f'STD Errors ($\pm{sigma}\sigma$)'
-    #                 )
+
     if log_scale:
         plt.yscale('log')
     plt.xlabel(fr'{xlabel}', fontsize=14)
@@ -176,6 +165,102 @@ def azimuthal_average_profile_with_shaded_errors(image, rms_image, center, sigma
     # plt.show()
 
     return bin_centers, profile, error_rms, error_std
+
+
+def plot_azimuthal_profile(image, rms_image, center, sigma=3, bin_size=1.0,
+                           log_scale=True, cell_size=1.0,
+                           figsize=(5, 5),
+                           ylabel='Azimuthal Average Intensity $I(R)$ [Jy/Beam]',
+                           xlabel='Radius [pixels]',
+                           title=None,
+                           min_points_per_bin=5,  # Minimum points required per bin
+                           weight_by_points=True  # Weight averages by number of points
+                           ):
+    """
+    Calculate the azimuthal average profile with improved handling of asymmetric masks.
+    
+    Additional Parameters:
+    - min_points_per_bin: int, minimum number of valid points required in a bin
+    - weight_by_points: bool, whether to weight the errors by number of points
+    
+    Returns:
+    - radii: numpy array, the radial distances
+    - profile: numpy array, the azimuthal average of intensity
+    - error_rms: numpy array, the weighted RMS errors
+    - error_std: numpy array, the weighted standard deviation
+    - points_per_bin: numpy array, number of valid points in each bin
+    """
+    
+    y, x = np.indices(image.shape)
+    r = np.sqrt((x - center[0])**2 + (y - center[1])**2)
+
+    r_max = np.nanmax(r)
+    bin_edges = np.arange(0, r_max + bin_size, bin_size)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+
+    profile = np.zeros_like(bin_centers)
+    error_rms = np.zeros_like(bin_centers)
+    error_std = np.zeros_like(bin_centers)
+    points_per_bin = np.zeros_like(bin_centers)
+
+    for i in range(len(bin_centers)):
+        mask = (r >= bin_edges[i]) & (r < bin_edges[i + 1])
+        valid_pixels = ~np.isnan(image[mask])
+        
+        if np.nansum(valid_pixels) >= min_points_per_bin:
+            points_per_bin[i] = np.nansum(valid_pixels)
+            values = image[mask][valid_pixels]
+            rms_values = rms_image[mask][valid_pixels]
+            
+            profile[i] = np.nanmean(values)
+            
+            # Weight errors by sqrt(N) if requested
+            if weight_by_points:
+                n_points = len(values)
+                error_rms[i] = np.sqrt(np.nanmean(rms_values**2)) / np.sqrt(n_points)
+                error_std[i] = np.std(values) / np.sqrt(n_points)
+            else:
+                error_rms[i] = np.sqrt(np.nanmean(rms_values**2))
+                error_std[i] = np.nanstd(values)
+        else:
+            profile[i] = np.nan
+            error_rms[i] = np.nan
+            error_std[i] = np.nan
+
+    # Remove bins with insufficient points
+    valid_bins = ~np.isnan(profile)
+    bin_centers = bin_centers[valid_bins]
+    profile = profile[valid_bins]
+    error_rms = error_rms[valid_bins]
+    error_std = error_std[valid_bins]
+    points_per_bin = points_per_bin[valid_bins]
+
+    # Plotting
+    plt.figure(figsize=figsize)
+    
+    # Plot the profile
+    plt.plot(bin_centers*cell_size, profile, color='black', 
+             marker='.',linestyle='-.',
+             linewidth=1)
+
+    if weight_by_points:
+        sigma = 3
+    else:
+        sigma = 1
+    # Plot shaded error regions
+    plt.fill_between(bin_centers*cell_size, 
+                     profile - sigma * error_std, 
+                     profile + sigma * error_std,
+                     color='gray', alpha=0.3)
+
+    if log_scale:
+        plt.yscale('log')
+    plt.xlabel(fr'{xlabel}', fontsize=14)
+    plt.ylabel(fr'{ylabel}', fontsize=14)
+    plt.title(title)
+    plt.tight_layout()
+
+    return bin_centers, profile, error_rms, error_std, points_per_bin
 
 
 def fast_plot2(imagename, crop=False, box_size=128, center=None, with_wcs=True,vmax_factor=0.5,
@@ -2104,6 +2189,7 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
         return ax
 
 def plot_alpha_map(alphaimage,alphaimage_error,radio_map,frequencies,
+                   mask_good_alpha = None,
                    vmin_factor = 3,neg_levels=np.asarray([-3]),
                    vmin=None,vmax=None,rms=None,figsize=(6, 6),
                    extent = None,crop=False,centre=None,
@@ -2120,6 +2206,9 @@ def plot_alpha_map(alphaimage,alphaimage_error,radio_map,frequencies,
 
     # fig, ax = plt.subplots(figsize=figsize)
 
+    if mask_good_alpha is None:
+        mask_good_alpha = np.ones_like(alphaimage)
+
     if isinstance(radio_map, str) == True:
         g = load_fits_data(radio_map)
     else:
@@ -2130,14 +2219,31 @@ def plot_alpha_map(alphaimage,alphaimage_error,radio_map,frequencies,
             centre = (int(alphaimage.shape[0]/2),int(alphaimage.shape[1]/2))
         else:
             centre = centre
+        
+        
+        mask_good_alpha = do_cutout_2D(mask_good_alpha, 
+                                       box_size=box_size,
+                                       center=centre, 
+                                       return_='data')
             
-        _alphaimage = do_cutout_2D(alphaimage, box_size=box_size, 
-                                          center=centre, return_='data')
+        _alphaimage = do_cutout_2D(alphaimage, 
+                                   box_size=box_size, 
+                                   center=centre, 
+                                   return_='data')
 
-        _alphaimage_error = do_cutout_2D(alphaimage_error, box_size=box_size, 
-                                          center=(centre[0],centre[1]), return_='data')
-        _g = do_cutout_2D(g, box_size=box_size, 
-                                          center=centre, return_='data')
+        _alphaimage_error = do_cutout_2D(alphaimage_error, 
+                                         box_size=box_size, 
+                                          center=(centre[0],centre[1]), 
+                                          return_='data')
+        
+        
+        
+        _g = do_cutout_2D(g, 
+                          box_size=box_size, 
+                          center=centre, 
+                          return_='data')
+        
+        
 
     else:
         _alphaimage = alphaimage.copy()
@@ -2145,7 +2251,9 @@ def plot_alpha_map(alphaimage,alphaimage_error,radio_map,frequencies,
         _g = g
 
 
-    
+    # _alphaimage[~mask_good_alpha] = np.nan
+    # _alphaimage_error[~mask_good_alpha] = np.nan
+    # _g[~mask_good_alpha] = np.nan
 
     # Access the 'magma' colormap
     base_cmap = plt.colormaps[cmap]
