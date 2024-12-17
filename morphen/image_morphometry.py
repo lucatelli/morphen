@@ -629,14 +629,42 @@ def split_overlapping_masks3(mask1, mask2, mask3):
     return half_mask1, half_mask2, half_mask3
 
 
-def trail_vector(vx,vy,v0=np.asarray([1, 0])):
-    import scipy.linalg as la
+def trail_vector(vx, vy, v0=np.asarray([1, 0])):
+    """
+    Compute the trailing vector angle (in degrees) and its magnitude.
+    The angle (PA) is measured counterclockwise from the positive x-axis.
+
+    Parameters:
+    vx, vy : float
+        Components of the input vector.
+    v0 : array-like, optional
+        Reference vector (default is [1, 0] for the positive x-axis).
+
+    Returns:
+    angle_PA : float
+        Position angle (PA) measured counterclockwise from the positive x-axis, in degrees.
+    norm_vec : float
+        Magnitude of the input vector.
+    """
+    from scipy.linalg import norm
     v = np.asarray([vx, vy])
-    norm_vec = np.linalg.norm(v)
+    norm_vec = norm(v)
+    
+    # Handle zero vector case
+    if norm_vec == 0:
+        raise ValueError("Input vector (vx, vy) has zero magnitude.")
+    
+    # Normalize input vector
     v_hat = v / norm_vec
-    cosine_angle = np.dot(v0, v_hat) / (la.norm(v0) * la.norm(v_hat))
-    angle_PA = np.degrees(np.arccos(cosine_angle))
-    return(angle_PA,norm_vec)
+    
+    # Compute the angle using arctan2 (counterclockwise convention)
+    angle_radians = np.arctan2(v_hat[1], v_hat[0])  # atan2(vy, vx)
+    angle_PA = np.degrees(angle_radians)  # Convert to degrees
+    
+    # Ensure the angle is in the range [0, 360)
+    if angle_PA < 0:
+        angle_PA += 360
+    return angle_PA, norm_vec
 
 
 def calculate_radii(image, mask):
@@ -2138,13 +2166,31 @@ def compute_image_properties(img, residual, cell_size=None, mask_component=None,
     inner_perimeter = perimeter_crofton(inner_mask, 4)
     outer_perimeter90 = perimeter_crofton(outer_mask90, 4)
     outer_perimeter = perimeter_crofton(mask, 4)
+    
+    try:
+        results['convex_error_flag'] = False
+        convex_properties = convex_morpho(g, mask, do_plot=False)        
+        results['PA_convex'] = convex_properties['PA_convex']
+        results['q_convex'] = convex_properties['q_convex']
+        results['centroid_convex'] = convex_properties['centroid_convex']
+        results['convex_major_diameter'] = convex_properties['major_diameter']
+        results['convex_minor_diameter'] = convex_properties['minor_diameter']
+    except:
+        results['convex_error_flag'] = True
+        results['PA_convex'] = 0.0
+        results['q_convex'] = 0.0
+        results['centroid_convex'] = [0,0]
+        results['convex_major_diameter'] = 0.0
+        results['convex_minor_diameter'] = 0.0
+    
 
     # Geometry
     x0max, y0max = peak_center(g * mask)
     results['x0'], results['y0'] = x0max, y0max
     # determine momentum centres.
-    x0m, y0m, _, _ = momenta(g * mask, PArad_0=None, q_0=None)
+    x0m, y0m, q_mom, PAdeg_mom = momenta(g * mask, PArad_0=None, q_0=None)
     results['x0m'], results['y0m'] = x0m, y0m
+    results['q_mom'], results['PAdeg_mom'] = q_mom, PAdeg_mom
 
     if do_fit_ellipse:
         try:
@@ -3282,7 +3328,7 @@ def momenta(image, PArad_0=None, q_0=None):
 
     PA = (1 / 2.) * np.arctan2(2 * mu11, (mu20 - mu02))
     if PA < 0:
-        PA = PA + np.pi
+        PA = PA + 2*np.pi
 
     # self.PArad = PA
     # self.PAdeg = np.rad2deg(self.PArad)
@@ -4016,7 +4062,7 @@ def convex_morpho(image, mask, scale=1.0, do_plot=False):
     if do_plot:
         # Plot image
         plt.figure(figsize=(5, 5))
-        plt.imshow(image, cmap='gray', origin='lower')
+        plt.imshow(image*mask, cmap='gray', origin='lower')
         
         # Plot semi-major and minor axes
         plt.quiver(
