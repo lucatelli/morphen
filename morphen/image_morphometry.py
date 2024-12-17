@@ -301,6 +301,118 @@ def mask_dilation(image, cell_size=None, sigma=6,rms=None,
 
 
 
+def t_mask_dilation(image, cell_size=None, sigma=6, rms=None,
+                  dilation_size=None, iterations=2, dilation_type='disk',
+                  PLOT=False, show_figure=False, logger=None,
+                  fig_size_factor=1,
+                  special_name='', verbose=0):
+    """
+    Mask dilation function with connected component filtering.
+    
+    Similar to original function but only keeps the largest connected component,
+    typically at the center of the image.
+    """
+    from skimage.measure import label, regionprops
+    
+    if isinstance(image, str) == True:
+        data = load_fits_data(image)
+    else:
+        data = image
+    if rms is None:
+        std = mad_std(data)
+    else:
+        std = rms
+
+    if (dilation_size is None) or (dilation_size == '2x'):
+        try:
+            omaj, omin, _, _, _ = beam_shape(image)
+            if dilation_size == '2x':
+                dilation_size = int(
+                    2*np.sqrt(omaj * omin) / (2 * get_cell_size(image)))
+            else:
+                dilation_size = int(
+                    np.sqrt(omaj * omin) / (2 * get_cell_size(image)))
+            if verbose >= 1:
+                if logger is not None:
+                    logger.debug(f" ==>  Mask dilation size is {dilation_size} [px]")
+                else:
+                    print(f" ==>  Mask dilation size is {dilation_size} [px]")
+        except:
+            if dilation_size is None:
+                dilation_size = 5
+
+    # Create initial masks
+    mask = (data >= sigma * std)
+    mask3 = (data >= 3 * std)
+    
+    # Label connected components in the mask
+    labeled_mask = label(mask)
+    regions = regionprops(labeled_mask)
+    
+    # Find the largest connected component
+    if regions:
+        largest_area = 0
+        largest_label = None
+        for region in regions:
+            if region.area > largest_area:
+                largest_area = region.area
+                largest_label = region.label
+        # Create a new mask with only the largest component
+        if largest_label is not None:
+            mask = labeled_mask == largest_label
+    
+    data_mask = mask * data
+
+    # Perform dilation
+    if dilation_type == 'disk':
+        data_mask_d = ndimage.binary_dilation(mask,
+                                            structure=disk(dilation_size),
+                                            iterations=iterations).astype(mask.dtype)
+    if dilation_type == 'square':
+        data_mask_d = ndimage.binary_dilation(mask,
+                                            structure=square(dilation_size),
+                                            iterations=iterations).astype(mask.dtype)
+
+    # Clean up the 3-sigma mask for plotting using the same approach
+    labeled_mask3 = label(mask3)
+    regions3 = regionprops(labeled_mask3)
+    if regions3:
+        largest_area = 0
+        largest_label = None
+        for region in regions3:
+            if region.area > largest_area:
+                largest_area = region.area
+                largest_label = region.label
+        if largest_label is not None:
+            mask3 = labeled_mask3 == largest_label
+
+    if PLOT == True:
+        fig = plt.figure(figsize=(int(15*fig_size_factor), int(4*fig_size_factor)))
+        ax0 = fig.add_subplot(1, 4, 1)
+        ax0.imshow((mask3), origin='lower',cmap='magma')
+        ax0.set_title(r'mask $>$ ' + str(3) + '$\sigma_{\mathrm{mad}}$')
+        ax0.axis('off')
+        ax1 = fig.add_subplot(1, 4, 2)
+        ax1.imshow((mask), origin='lower',cmap='magma')
+        ax1.set_title(r'mask $>$ ' + str(sigma) + '$\sigma_{\mathrm{mad}}$')
+        ax1.axis('off')
+        ax2 = fig.add_subplot(1, 4, 3)
+        ax2.imshow(data_mask_d, origin='lower',cmap='magma')
+        ax2.set_title(r'D(mask)'f'[{dilation_size}|{iterations}]'f'{special_name}')
+        ax2.axis('off')
+        ax3 = fig.add_subplot(1, 4, 4)
+        ax3 = eimshow(data * data_mask_d, ax=ax3, vmin_factor=0.01,CM='magma')
+        ax3.set_title(r'D(mask) $\times$ data')
+        plt.subplots_adjust(wspace=0.1, hspace=0.1)
+        ax3.axis('off')
+        if show_figure == True:
+            plt.show()
+        else:
+            plt.close()
+
+    return (mask, data_mask_d)
+
+
 
 def mask_dilation_from_list(images, residuals, sigma=6, rms=None, dilation_size=None, iterations=2, dilation_type='disk',
                   PLOT=False, show_figure=True, logger=None, fig_size_factor=1, special_name='', verbose=0):
@@ -2731,21 +2843,24 @@ def compute_image_properties(img, residual, cell_size=None, mask_component=None,
     norm = simple_norm(g, stretch='asinh', asinh_a=0.05, min_cut=vmin,
                        max_cut=vmax)
 
-    if crop == True:
-        try:
-            xin, xen, yin, yen = do_cutout(img, box_size=box_size, center=center,
-                                           return_='box')
-            g = g[xin:xen, yin:yen]
-        except:
-            try:
-                max_x, max_y = np.where(g == g.max())
-                xin = max_x[0] - box_size
-                xen = max_x[0] + box_size
-                yin = max_y[0] - box_size
-                yen = max_y[0] + box_size
-                g = g[xin:xen, yin:yen]
-            except:
-                pass
+    # if crop == True:
+    #     try:
+    #         xin, xen, yin, yen = do_cutout_2D(img, 
+    #                                           box_size=box_size, 
+    #                                           center=None,
+    #                                           centre_mode = 'image_centre',
+    #                                           return_='box')
+    #         g = g[xin:xen, yin:yen]
+    #     except:
+    #         try:
+    #             max_x, max_y = np.where(g == g.max())
+    #             xin = max_x[0] - box_size
+    #             xen = max_x[0] + box_size
+    #             yin = max_y[0] - box_size
+    #             yen = max_y[0] + box_size
+    #             g = g[xin:xen, yin:yen]
+    #         except:
+    #             pass
 
     im_plot = ax2.imshow(g, cmap='magma_r', origin='lower', alpha=1.0,
                          norm=norm,
