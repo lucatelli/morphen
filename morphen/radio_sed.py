@@ -1003,6 +1003,16 @@ def do_fit_spec_RC_linear(freqs,
         Verbosity level.
 
     """
+    
+    # if sigma_errors == 1 or sigma_errors == 1.0:
+    #     quantiles = [0.16, 0.5, 0.84]
+    # elif sigma_errors == 2 or sigma_errors == 2.0:
+    #     quantiles = [0.025, 0.5, 0.975]
+    # elif sigma_errors == 3 or sigma_errors == 3.0:
+    #     quantiles = [0.00015, 0.5, 0.9985]
+    # else:
+    #     raise ValueError("Unsupported sigma value. Use sigma = 1, 2, or 3.")
+    
     x = freqs / 1e9
     y = fluxes
     if nu0 is None:
@@ -1035,8 +1045,8 @@ def do_fit_spec_RC_linear(freqs,
 
 
     fit_params = lmfit.Parameters()
-    fit_params.add("A1", value=10.0, min=-5, max=10000)
-    fit_params.add("alpha", value=-0.9, min=-4.0, max=4.0)
+    fit_params.add("A1", value=10.0, min=-0.1, max=10000)
+    fit_params.add("alpha", value=-0.8, min=-4.0, max=4.0)
 
     mini = lmfit.Minimizer(min_func, fit_params, max_nfev=15000,
                            nan_policy='omit', reduce_fcn='neglogcauchy')
@@ -1056,8 +1066,8 @@ def do_fit_spec_RC_linear(freqs,
                            ftol=1e-12, xtol=1e-12, gtol=1e-12,
                            verbose=verbose
                            )
-    print('++==>> Parameter Results (from least-squares fit).')
-    print(lmfit.fit_report(result.params))
+    # print('++==>> Parameter Results (from least-squares fit).')
+    # print(lmfit.fit_report(result.params))
     # result_1 = mini.minimize(method='nelder',
     #                          options={'maxiter': 30000, 'maxfev': 30000,
     #                                   'xatol': 1e-12, 'fatol': 1e-12,
@@ -1085,6 +1095,7 @@ def do_fit_spec_RC_linear(freqs,
     
     if do_mcmc_fit == True:
         nwalkers = int(2 * 25)
+        print(f"  ++==>> Number of walkers: {nwalkers}")
         if mcmc_version == 'lmfit':
             """ 
             This will be removed in the future.
@@ -1272,7 +1283,7 @@ def do_fit_spec_RC_linear(freqs,
             # fig_c = plt.figure(figsize=(2,2))
             fig_c = plt.figure()
             _ = corner.corner(samples_emcee,
-                                    labels=[r'$A_{\rm sy}$',r'$\alpha$'],
+                                    labels=[r'$S_{\rm \nu_0}$',r'$\alpha$'],
                                     truths=[result.params['A1'].value,
                                             result.params['alpha'].value],
                                     show_titles=True,
@@ -1290,9 +1301,12 @@ def do_fit_spec_RC_linear(freqs,
             print(lmfit.fit_report(results_emcee.params))
         except:
             pass
+    else:
+        samples_emcee = None
+        param_dict = None
     print('++==>> Parameter Results (from least-squares fit).')
     print(lmfit.fit_report(result.params))
-    return(mini,result)
+    return(mini,result,param_dict)
 
 
 def do_fit_spec_RC_curv(freqs,
