@@ -3765,6 +3765,7 @@ def specidx_map(imagelist,residuallist,
                 dilation_size=2,
                 needs_convolution=False,conv_task='fft',
                 return_only_cube=False,
+                do_average_cube=False,bin_size=int(2),
                 n_jobs=1,
                 verbose=0):
     
@@ -3870,8 +3871,30 @@ def specidx_map(imagelist,residuallist,
     masked_cube = np.where(inv_mask_3d, np.nan, conv_cube)
     masked_cube_res = np.where(inv_mask_3d, np.nan, conv_cube_res)
     
-    masked_cube = masked_cube.astype(np.float32)
-    masked_cube_res = masked_cube_res.astype(np.float32)
+    if do_average_cube:
+        # bin_size = 2
+        # assert masked_cube.shape[2] % bin_size == 0, "Frequency axis size must be divisible by bin size."
+        reshaped_cube = masked_cube.reshape(masked_cube.shape[0], 
+                                            masked_cube.shape[1], -1, 
+                                            bin_size)
+        averaged_cube = reshaped_cube.mean(axis=3)
+
+        reshaped_residual = masked_cube_res.reshape(masked_cube_res.shape[0], 
+                                                    masked_cube_res.shape[1], -1, 
+                                                    bin_size)
+        averaged_cube_res = np.sqrt(np.sum(reshaped_residual**2, axis=3)) / bin_size
+
+
+        print("Original cube shape:", masked_cube.shape)
+        print("Averaged cube shape:", averaged_cube.shape)
+        reshaped_frequencies = freqs.reshape(-1, bin_size)
+        averaged_frequencies = reshaped_frequencies.mean(axis=1)
+        freqs = averaged_frequencies
+        masked_cube = averaged_cube.astype(np.float32)
+        masked_cube_res = averaged_cube_res.astype(np.float32)
+    else:        
+        masked_cube = masked_cube.astype(np.float32)
+        masked_cube_res = masked_cube_res.astype(np.float32)
     
     if return_only_cube:
         return(None,None,conv_cube,masked_cube_res,masked_cube)
