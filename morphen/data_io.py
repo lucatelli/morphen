@@ -176,7 +176,9 @@ def do_cutout(image, box_size=(200,200), center=None, return_='data'):
 #         box = xin, xen, yin, yen  # [xin:xen,yin:yen]
 #         return(box)
 
-def do_cutout_2D(image_data, box_size=(300,300), center=None, return_='data'):
+def do_cutout_2D(image_data, box_size=(300,300), 
+                 center=None, centre_mode='max',
+                 return_='data'):
     """
     Fast cutout of a numpy array.
 
@@ -186,8 +188,12 @@ def do_cutout_2D(image_data, box_size=(300,300), center=None, return_='data'):
         box_size = (box_size,box_size)
 
     if center is None:
-        x0, y0= nd.maximum_position(image_data)
-        print('  >> Center --> ', x0, y0)
+        if centre_mode == 'max':
+            x0, y0= nd.maximum_position(image_data)
+        if centre_mode == 'image_centre':
+            x0, y0 = image_data.shape[0]//2, image_data.shape[1]//2
+            
+        # print('  >> Center --> ', x0, y0)
         if x0-box_size[0]>1:
             xin, xen, yin, yen = x0 - box_size[0], x0 + box_size[0], \
                                  y0 - box_size[1], y0 + box_size[1]
@@ -755,7 +761,41 @@ def cutout_2D_radec_v2(imagename, residualname=None, ra_f=None, dec_f=None, cuto
    
     return ra_f, dec_f, savename_img
 
-            
+        
+def calculate_pixel_distance(image_file, x0, y0):
+    """
+    Calculate the relative distance of a pixel from the center of an image
+    and return its celestial coordinates.
+
+    Parameters:
+    -----------
+    image_file : str
+        Path to the FITS file.
+    x0, y0 : float
+        Pixel coordinates of the target position.
+
+    Returns:
+    --------
+    relative_distance_arcsec : float
+        Relative distance of the pixel from the center of the image in arcseconds.
+    pixel_coords : str
+        Celestial coordinates of the input pixel in the format "RA Dec".
+    """
+    with fits.open(image_file) as hdul:
+        wcs = WCS(hdul[0].header)
+        data = hdul[0].data
+    celestial_wcs = wcs.celestial
+
+    ny, nx = data.shape[-2:]
+    x_center, y_center = nx / 2, ny / 2
+    center_coords = celestial_wcs.pixel_to_world(x_center, y_center)
+    target_coords = celestial_wcs.pixel_to_world(x0, y0)
+    
+    relative_distance_arcsec = center_coords.separation(target_coords).arcsecond
+    
+    pixel_coords = target_coords.to_string('hmsdms')
+    
+    return relative_distance_arcsec, pixel_coords    
             
 
 """
