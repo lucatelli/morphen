@@ -167,15 +167,16 @@ def azimuthal_average_profile_with_shaded_errors(image, rms_image, center, sigma
     return bin_centers, profile, error_rms, error_std
 
 
-def plot_azimuthal_profile(image, rms_image, center, sigma=3, bin_size=1.0,
-                           log_scale=True, cell_size=1.0,
+def plot_azimuthal_profile(image, rms_image, center, sigma=1.5, bin_size=1.0,
+                           log_scale=False, cell_size=1.0,
                            figsize=(5, 5),
                            ylabel='Azimuthal Average Intensity $I(R)$ [Jy/Beam]',
-                           xlabel='Radius [pixels]',
+                           xlabel='Projected Radius $R$ [pixels]',
                            title=None,
-                           which_error='rms',
+                           which_error='both',
                            min_points_per_bin=5,  # Minimum points required per bin
-                           weight_by_points=True  # Weight averages by number of points
+                           weight_by_points=False, # Weight averages by number of points
+                           r_max = None
                            ):
     """
     Calculate the azimuthal average profile with improved handling of asymmetric masks.
@@ -194,8 +195,12 @@ def plot_azimuthal_profile(image, rms_image, center, sigma=3, bin_size=1.0,
     
     y, x = np.indices(image.shape)
     r = np.sqrt((x - center[0])**2 + (y - center[1])**2)
-
-    r_max = np.nanmax(r)
+    if r_max is None:
+        r_max = np.nanmax(r)
+    else:
+        r_max = r_max
+    
+    
     bin_edges = np.arange(0, r_max + bin_size, bin_size)
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
 
@@ -206,6 +211,9 @@ def plot_azimuthal_profile(image, rms_image, center, sigma=3, bin_size=1.0,
 
     for i in range(len(bin_centers)):
         mask = (r >= bin_edges[i]) & (r < bin_edges[i + 1])
+        # plt.figure()
+        # plt.imshow(mask[center[0]-int(r_max):center[0]+int(r_max),center[1]-int(r_max):center[1]+int(r_max)])
+        # plt.show()
         valid_pixels = ~np.isnan(image[mask])
         
         if np.nansum(valid_pixels) >= min_points_per_bin:
@@ -244,16 +252,16 @@ def plot_azimuthal_profile(image, rms_image, center, sigma=3, bin_size=1.0,
              marker='.',linestyle='-.',
              linewidth=1)
 
-    if weight_by_points:
-        sigma = 3
-    else:
-        sigma = 3
+    # if weight_by_points:
+    #     sigma = 3
+    # else:
+    #     sigma = 3
     # Plot shaded error regions
     
     if which_error == 'std':
         plt.fill_between(bin_centers*cell_size, 
-                        profile - sigma * error_std, 
-                        profile + sigma * error_std,
+                        profile - 1 * error_std, 
+                        profile + 1 * error_std,
                         color='gray', alpha=0.3)
     if which_error == 'rms':
         plt.fill_between(bin_centers*cell_size, 
@@ -267,9 +275,9 @@ def plot_azimuthal_profile(image, rms_image, center, sigma=3, bin_size=1.0,
                         label = 'rms error',
                         color='gray', alpha=0.5)
         plt.fill_between(bin_centers*cell_size,
-                        profile - sigma * error_std, 
-                        profile + sigma * error_std,
-                        label = 'std error',
+                        profile - 1 * error_std, 
+                        profile + 1 * error_std,
+                        label = 'std',
                         color='orange', alpha = 0.3)
         plt.legend()
 
