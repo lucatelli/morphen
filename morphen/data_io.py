@@ -524,8 +524,633 @@ def cutout_2D_radec_backup(imagename, residualname=None, ra_f=None, dec_f=None, 
             new_hdul.writeto(savename_res, overwrite=True)
     return (ra_f, dec_f,savename_img,wcs)
 
+
+def peak_image_alignment(reference_image, target_image, 
+                         mask=None,
+                         apply_filter=True):
+    """
+    Align images using phase correlation with robust preprocessing.
+    
+    Parameters:
+    -----------
+    reference_image : 2D numpy array
+        The reference image
+    target_image : 2D numpy array
+        The image to be aligned
+    mask_threshold : float, optional
+        Threshold in units of standard deviation for creating masks
+        
+    Returns:
+    --------
+    tuple : (shift_y, shift_x)
+        The optimal shift to align target with reference
+    """
+    import numpy as np
+    from scipy import fftpack
+    from scipy import ndimage
+    
+    def preprocess_image(image):
+        # Normalize image
+        image = image - np.nanmean(image)
+        image = image / np.nanstd(image)
+        
+        # # Create mask if threshold provided
+        # if mask_threshold is not None:
+        #     mask = image > mask_threshold * np.nanstd(image)
+        #     # Slightly expand mask to include structure edges
+        #     mask = ndimage.binary_dilation(mask, iterations=2)
+        #     image = image * mask
+        if mask is not None:
+            image = image * mask
+            
+        
+        # Apply gentle Gaussian smoothing to reduce noise while preserving structure
+        image = ndimage.gaussian_filter(image, sigma=1.0)
+        
+        return image
+    
+    # Preprocess both images
+    ref_processed = preprocess_image(reference_image)
+    target_processed = preprocess_image(target_image)
+    
+    # Apply windowing to reduce edge effects
+    window = np.outer(np.hanning(ref_processed.shape[0]), 
+                     np.hanning(ref_processed.shape[1]))
+    ref_processed *= window
+    target_processed *= window
+    
+    # Compute FFTs
+    F1 = fftpack.fft2(ref_processed)
+    F2 = fftpack.fft2(target_processed)
+    
+    # Compute cross-power spectrum with optional high-freq dampening
+    eps = 1e-10  # Small number to prevent division by zero
+    cross_power = (F1 * F2.conjugate()) / (np.abs(F1 * F2.conjugate()) + eps)
+    
+    if apply_filter:    
+        # Apply frequency domain filtering to focus on significant structure
+        freq_filter = ndimage.gaussian_filter(np.abs(F1 * F2.conjugate()), sigma=2)
+        freq_filter = freq_filter / np.max(freq_filter)
+        cross_power *= freq_filter
+    
+    
+    # Inverse FFT
+    cc = np.real(fftpack.ifft2(cross_power))
+    
+    # Find peak with sub-pixel precision using center of mass of peak region
+    max_loc = np.unravel_index(np.argmax(cc), cc.shape)
+    peak_region = ndimage.binary_dilation(cc == np.max(cc), iterations=2)
+    refined_y, refined_x = ndimage.center_of_mass(cc * peak_region)
+    
+    # Convert to shifts
+    shift_y = refined_y if refined_y < ref_processed.shape[0]//2 \
+        else refined_y - ref_processed.shape[0]
+    shift_x = refined_x if refined_x < ref_processed.shape[1]//2 \
+        else refined_x - ref_processed.shape[1]
+    
+    return shift_y, shift_x
+
+
+def apply_alignment(reference_image, target_image, return_shifted=False):
+    """
+    Align target image to reference image and optionally return the shifted image.
+    
+    Parameters:
+    -----------
+    reference_image : 2D numpy array
+        The reference image
+    target_image : 2D numpy array
+        The image to be aligned
+    return_shifted : bool
+        If True, returns the aligned image
+        
+    Returns:
+    --------
+    tuple or tuple, array
+        (shift_y, shift_x) or ((shift_y, shift_x), aligned_image)
+    """
+    from scipy.ndimage import shift
+    
+    # Get optimal shifts
+    shift_y, shift_x = robust_image_alignment(reference_image, target_image)
+    
+    if return_shifted:
+        # Apply shift with spline interpolation for better accuracy
+        aligned_image = shift(target_image, (shift_y, shift_x), 
+                            mode='constant', order=3)
+        return (shift_y, shift_x), aligned_image
+    
+    return shift_y, shift_x
+
+
+
+
+
+def structural_image_alignment(reference_image, target_image,
+                               mask=None,
+                               apply_filter=True
+                              ):
+    """
+    Align images using phase correlation based on overall structure,
+    without any dependence on peak positions.
+    
+    Parameters:
+    -----------
+    reference_image : 2D numpy array
+        The reference image
+    target_image : 2D numpy array
+        The image to be aligned
+        
+    Returns:
+    --------
+    tuple : (shift_y, shift_x)
+        The optimal shift to align target with reference
+    """
+    import numpy as np
+    from scipy import fftpack
+    from scipy import ndimage
+    
+    def preprocess_image(image):
+        # Normalize image
+        image = image - np.nanmean(image)
+        image = image / np.nanstd(image)
+        
+        # Apply gentle Gaussian smoothing to reduce noise while preserving structure
+        image = ndimage.gaussian_filter(image, sigma=1.0)
+        if mask is not None:
+            image = image * mask
+        
+        return image
+    
+    # Preprocess both images
+    ref_processed = preprocess_image(reference_image)
+    target_processed = preprocess_image(target_image)
+
+    if apply_filter:
+        # Apply windowing to reduce edge effects
+        window = np.outer(np.hanning(ref_processed.shape[0]), 
+                         np.hanning(ref_processed.shape[1]))
+        ref_processed *= window
+        target_processed *= window
+    
+    # Compute FFTs
+    F1 = fftpack.fft2(ref_processed)
+    F2 = fftpack.fft2(target_processed)
+    
+    # Compute normalized cross-power spectrum
+    eps = 1e-10
+    cross_power = (F1 * F2.conjugate()) / (np.abs(F1 * F2.conjugate()) + eps)
+    
+    # Inverse FFT to get correlation surface
+    cc = np.real(fftpack.ifft2(cross_power))
+    
+    # Find the shift from the entire correlation surface
+    shift = np.unravel_index(np.argmax(cc), cc.shape)
+    
+    # Convert to relative shifts
+    shift_y = shift[0] if shift[0] < ref_processed.shape[0]//2 \
+        else shift[0] - ref_processed.shape[0]
+    shift_x = shift[1] if shift[1] < ref_processed.shape[1]//2 \
+        else shift[1] - ref_processed.shape[1]
+    
+    return shift_y, shift_x
+
+
+def align_by_phase_lmfit_enhanced(reference_image, target_image, search_window=20):
+    """
+    Enhanced version of phase correlation alignment using lmfit.
+    
+    Parameters:
+    -----------
+    reference_image : 2D numpy array
+        The reference image
+    target_image : 2D numpy array
+        The image to be aligned
+    search_window : int
+        Maximum pixel shift to consider in each direction
+        
+    Returns:
+    --------
+    tuple : (shift_y, shift_x)
+        The optimal shift to align target with reference
+    lmfit.ModelResult
+        The full fit result object with additional statistics
+    """
+    import numpy as np
+    from scipy import fftpack
+    from scipy.ndimage import shift, gaussian_filter
+    from lmfit import Parameters, minimize, Minimizer
+    
+    # Preprocess images
+    def preprocess(image):
+        # Normalize
+        norm = (image - np.mean(image)) / np.std(image)
+        
+        # Apply Hanning window
+        window = np.outer(np.hanning(image.shape[0]), 
+                         np.hanning(image.shape[1]))
+        return norm * window
+    
+    ref_processed = preprocess(reference_image)
+    target_processed = preprocess(target_image)
+    # Pre-compute FFT of reference
+    F1 = fftpack.fft2(ref_processed)
+    # F2 = fftpack.fft2(target_processed)
+    
+    # Create frequency weight matrix (emphasize mid frequencies)
+    fy = fftpack.fftfreq(F1.shape[0])[:, np.newaxis]
+    fx = fftpack.fftfreq(F1.shape[1])[np.newaxis, :]
+    freq_weight = np.exp(-(fx**2 + fy**2) / 0.1)  # Adjust 0.1 as needed
+    
+    def objective(params):
+        """
+        Enhanced objective function using weighted phase correlation.
+        """
+        shift_y = params['shift_y'].value
+        shift_x = params['shift_x'].value
+        
+        # Shift and preprocess target
+        shifted = shift(target_processed, (shift_y, shift_x), 
+                       mode='constant', cval=0, order=3)
+        # target_processed = preprocess(shifted)
+        
+        # Compute FFT of shifted target
+        # F2 = fftpack.fft2(target_processed)
+        F2 = fftpack.fft2(shifted)
+        # Compute weighted cross-power spectrum
+        # cross_power = F1 * F2.conjugate() * freq_weight
+        cross_power = F1 * F2.conjugate()
+        
+        # Normalize
+        eps = 1e-10
+        normalized_cross_power = cross_power / (np.abs(cross_power) + eps)
+        
+        # Get correlation and apply Gaussian smoothing for stability
+        correlation = np.abs(fftpack.ifft2(normalized_cross_power))
+        # correlation = gaussian_filter(correlation, sigma=1.0)
+        
+        # Compute metric
+        return -np.max(correlation)
+    
+    # Set up parameters
+    params = Parameters()
+    params.add('shift_y', value=0, min=-search_window, max=search_window)
+    params.add('shift_x', value=0, min=-search_window, max=search_window)
+
+    mini = Minimizer(objective, params, max_nfev=15000,
+                           nan_policy='omit', reduce_fcn='neglogcauchy')
+    
+    # Perform the minimization
+    # result = mini.minimize(method='nelder')
+    result = mini.minimize(method='least_squares', loss="cauchy",
+                           tr_solver="exact",verbose=0)
+    
+    # # Try different optimization methods
+    # methods = ['nelder', 'powell', 'cobyla']
+    # best_result = None
+    # best_metric = float('inf')
+    
+    # for method in methods:
+    #     try:
+    #         result = minimize(objective, params, method=method)
+    #         if result.success and result.residual < best_metric:
+    #             best_result = result
+    #             best_metric = result.residual
+    #     except:
+    #         continue
+    
+    # if best_result is None:
+    #     raise ValueError("None of the optimization methods succeeded")
+    
+    # shift_y = best_result.params['shift_y'].value
+    # shift_x = best_result.params['shift_x'].value
+    shift_y = result.params['shift_x'].value
+    shift_x = result.params['shift_y'].value
+    
+    return shift_y, shift_x
+
+
+def align_by_lmfit(reference_image, target_image, search_window=10):
+    """
+    Align images using lmfit to minimize the squared difference between them.
+    
+    Parameters:
+    -----------
+    reference_image : 2D numpy array
+        The reference image
+    target_image : 2D numpy array
+        The image to be aligned
+    search_window : int
+        Maximum pixel shift to consider in each direction
+        
+    Returns:
+    --------
+    tuple : (shift_y, shift_x)
+        The optimal shift to align target with reference
+    lmfit.ModelResult
+        The full fit result object with additional statistics
+    """
+    import numpy as np
+    from scipy.ndimage import shift
+    from lmfit import Parameters, minimize, Minimizer
+    
+    # Normalize images
+    ref_norm = (reference_image - np.mean(reference_image)) / np.std(reference_image)
+    target_norm = (target_image - np.mean(target_image)) / np.std(target_image)
+    
+    def objective(params):
+        """
+        Objective function to minimize.
+        Returns array of residuals (will be squared internally by lmfit).
+        """
+        shift_y = params['shift_y'].value
+        shift_x = params['shift_x'].value
+        
+        # Shift the target image
+        shifted = shift(target_norm, (shift_y, shift_x), mode='constant', cval=0)
+        
+        # Return flattened residuals
+        return (ref_norm - shifted).ravel()
+    
+    # Set up parameters with bounds
+    params = Parameters()
+    params.add('shift_y', value=0, min=-search_window, max=search_window)
+    params.add('shift_x', value=0, min=-search_window, max=search_window)
+
+    mini = Minimizer(objective, params, max_nfev=15000,
+                           nan_policy='omit', reduce_fcn='neglogcauchy')
+    
+    # Perform the minimization
+    result = mini.minimize(method='least_squares', loss="cauchy",
+                           tr_solver="exact",verbose=0)
+    # result = minimize(objective, params, method='leastsq')
+    
+    # Get the optimal shifts
+    shift_y = result.params['shift_y'].value
+    shift_x = result.params['shift_x'].value
+    
+    return shift_y, shift_x
+
+
+
+def align_by_ncc_lmfit(reference_image, target_image, search_window=25):
+    """
+    Align images using lmfit to maximize normalized cross correlation.
+    
+    Parameters:
+    -----------
+    reference_image : 2D numpy array
+        The reference image
+    target_image : 2D numpy array
+        The image to be aligned
+    search_window : int
+        Maximum pixel shift to consider in each direction
+        
+    Returns:
+    --------
+    tuple : (shift_y, shift_x)
+        The optimal shift to align target with reference
+    lmfit.ModelResult
+        The full fit result object with additional statistics
+    """
+    import numpy as np
+    from scipy.ndimage import shift
+    from lmfit import Parameters, minimize, Minimizer
+    
+    # Normalize images
+    ref_norm = (reference_image - np.mean(reference_image)) / np.std(reference_image)
+    target_norm = (target_image - np.mean(target_image)) / np.std(target_image)
+    
+    def objective(params):
+        """
+        Objective function to minimize (negative NCC).
+        Returns scalar value.
+        """
+        shift_y = params['shift_y'].value
+        shift_x = params['shift_x'].value
+        
+        # Shift the target image
+        shifted = shift(target_norm, (shift_y, shift_x), mode='constant', cval=0)
+        
+        # Compute normalized cross correlation
+        numerator = np.sum(ref_norm * shifted)
+        denominator = np.sqrt(np.sum(ref_norm**2) * np.sum(shifted**2))
+        ncc = numerator / denominator if denominator != 0 else 0
+        
+        # Return negative NCC (since we're minimizing)
+        return -ncc
+    
+    # Set up parameters with bounds
+    params = Parameters()
+    params.add('shift_y', value=0, min=-search_window, max=search_window)
+    params.add('shift_x', value=0, min=-search_window, max=search_window)
+    
+    mini = Minimizer(objective, params, max_nfev=15000,
+                           nan_policy='omit', reduce_fcn='neglogcauchy')
+    
+    # Perform the minimization
+    result = mini.minimize(method='least_squares', loss="cauchy",
+                           tr_solver="exact",verbose=0)
+    
+    # Get the optimal shifts
+    shift_y = result.params['shift_y'].value
+    shift_x = result.params['shift_x'].value
+    
+    return shift_y, shift_x
+
+
+def align_by_phase_lmfit(reference_image, target_image, search_window=20):
+    """
+    Align images using lmfit to optimize phase correlation in Fourier space.
+    
+    Parameters:
+    -----------
+    reference_image : 2D numpy array
+        The reference image
+    target_image : 2D numpy array
+        The image to be aligned
+    search_window : int
+        Maximum pixel shift to consider in each direction
+        
+    Returns:
+    --------
+    tuple : (shift_y, shift_x)
+        The optimal shift to align target with reference
+    lmfit.ModelResult
+        The full fit result object with additional statistics
+    """
+    import numpy as np
+    from scipy import fftpack
+    from scipy.ndimage import shift
+    from lmfit import Parameters, minimize, Minimizer
+    
+    # Normalize images
+    ref_norm = (reference_image - np.mean(reference_image)) / np.std(reference_image)
+    target_norm = (target_image - np.mean(target_image)) / np.std(target_image)
+    
+    # Compute FFT of reference image once
+    F1 = fftpack.fft2(ref_norm)
+    
+    def objective(params):
+        """
+        Objective function to minimize negative phase correlation.
+        """
+        shift_y = params['shift_y'].value
+        shift_x = params['shift_x'].value
+        
+        # Shift target image
+        shifted = shift(target_norm, (shift_y, shift_x), mode='constant', cval=0)
+        
+        # Compute FFT of shifted target
+        F2 = fftpack.fft2(shifted)
+        
+        # Compute cross-power spectrum
+        cross_power = F1 * F2.conjugate()
+        
+        # Normalize to get only phase information
+        eps = 1e-10  # Small number to prevent division by zero
+        normalized_cross_power = cross_power / (np.abs(cross_power) + eps)
+        
+        # Inverse FFT to get correlation
+        correlation = np.abs(fftpack.ifft2(normalized_cross_power))
+        
+        # Compute metric to minimize
+        # We use negative correlation since we're minimizing
+        return -np.max(correlation)
+    
+    # Set up parameters with bounds
+    params = Parameters()
+    params.add('shift_y', value=0, min=-search_window, max=search_window)
+    params.add('shift_x', value=0, min=-search_window, max=search_window)
+    
+    # Perform the minimization
+    # Using 'nelder' method as it works well with this type of objective function
+    # result = minimize(objective, params, method='nelder')
+    mini = Minimizer(objective, params, max_nfev=15000,
+                           nan_policy='omit', reduce_fcn='neglogcauchy')
+    
+    # Perform the minimization
+    result = mini.minimize(method='least_squares', loss="cauchy",
+                           tr_solver="exact",verbose=0)
+    
+    # Get the optimal shifts
+    shift_y = result.params['shift_x'].value
+    shift_x = result.params['shift_y'].value
+    
+    return shift_y, shift_x
+
+def align_by_minimization(reference_image, target_image, search_window=10):
+    """
+    Align images by minimizing the squared difference between them.
+    
+    Parameters:
+    -----------
+    reference_image : 2D numpy array
+        The reference image
+    target_image : 2D numpy array
+        The image to be aligned
+    search_window : int
+        Maximum pixel shift to consider in each direction
+        
+    Returns:
+    --------
+    tuple : (shift_y, shift_x)
+        The optimal shift to align target with reference
+    """
+    import numpy as np
+    from scipy.ndimage import shift
+    from scipy.optimize import minimize
+    
+    # Normalize images
+    ref_norm = (reference_image - np.mean(reference_image)) / np.std(reference_image)
+    target_norm = (target_image - np.mean(target_image)) / np.std(target_image)
+    
+    def compute_ssd(params):
+        """
+        Compute sum of squared differences for given shift parameters.
+        """
+        shift_y, shift_x = params
+        # Shift the target image
+        shifted = shift(target_norm, (shift_y, shift_x), mode='constant', cval=0)
+        # Compute squared difference
+        diff = (ref_norm - shifted) ** 2
+        return np.sum(diff)
+    
+    # Initial guess (can be [0,0] or from a coarse estimation)
+    initial_guess = [0, 0]
+    
+    # Set bounds for the optimization
+    bounds = [(-search_window, search_window), (-search_window, search_window)]
+    
+    # Minimize the SSD
+    result = minimize(compute_ssd, 
+                     initial_guess,
+                     bounds=bounds,
+                     method='L-BFGS-B')
+    
+    return result.x[0], result.x[1]
+
+
+def align_by_ncc_minimization(reference_image, target_image, search_window=10):
+    """
+    Align images by maximizing normalized cross correlation.
+    
+    Parameters:
+    -----------
+    reference_image : 2D numpy array
+        The reference image
+    target_image : 2D numpy array
+        The image to be aligned
+    search_window : int
+        Maximum pixel shift to consider in each direction
+        
+    Returns:
+    --------
+    tuple : (shift_y, shift_x)
+        The optimal shift to align target with reference
+    """
+    import numpy as np
+    from scipy.ndimage import shift
+    from scipy.optimize import minimize
+    
+    # Normalize images
+    ref_norm = (reference_image - np.mean(reference_image)) / np.std(reference_image)
+    target_norm = (target_image - np.mean(target_image)) / np.std(target_image)
+    
+    def compute_ncc(params):
+        """
+        Compute negative normalized cross correlation (negative because we minimize)
+        """
+        shift_y, shift_x = params
+        # Shift the target image
+        shifted = shift(target_norm, (shift_y, shift_x), mode='constant', cval=0)
+        
+        # Compute normalized cross correlation
+        numerator = np.sum(ref_norm * shifted)
+        denominator = np.sqrt(np.sum(ref_norm**2) * np.sum(shifted**2))
+        ncc = numerator / denominator if denominator != 0 else 0
+        
+        # Return negative because minimize looks for minimum
+        return -ncc
+    
+    # Initial guess
+    initial_guess = [0, 0]
+    
+    # Set bounds for the optimization
+    bounds = [(-search_window, search_window), (-search_window, search_window)]
+    
+    # Minimize negative NCC (equivalent to maximizing NCC)
+    result = minimize(compute_ncc, 
+                     initial_guess,
+                     bounds=bounds,
+                     method='L-BFGS-B')
+    
+    return result.x[0], result.x[1]
+
+
 def cutout_2D_radec(imagename, residualname=None, ra_f=None, dec_f=None, cutout_size=1024,
-                    special_name='', correct_shift=False, ref_cutout_image=None, pixel_coords=None):
+                    special_name='', correct_shift=False, ref_cutout_image=None, pixel_coords=None,
+                    mask=None, apply_filter=True,shift_correction_mode='peak'):
     from astropy.io import fits
     import os
     from astropy.wcs import WCS
@@ -559,17 +1184,45 @@ def cutout_2D_radec(imagename, residualname=None, ra_f=None, dec_f=None, cutout_
         # print('Centre SkyCoord = ',center)
         # create a Cutout2D object
         cutout = Cutout2D(image_data[0][0], center, cutout_size, wcs=wcs)
+        if mask is not None:
+            # mask = do_cutout_2D(mask, box_size=cutout_size, 
+            #                     center=center, return_='data')
+            mask = Cutout2D(mask.astype(int), center, cutout_size, wcs=wcs)
+            mask=(mask.data).astype(bool)
         
         # apply shift
         if correct_shift:
             if ref_cutout_image is not None:
                 ref_image_cutout_data = load_fits_data(ref_cutout_image)
-                x_ref, y_ref = nd.maximum_position(ref_image_cutout_data)[::-1]
-                reference_source_coords = (x_ref, y_ref)
-                offset_x, offset_y = find_offsets(reference_source_coords,
-                                                  nd.maximum_position(cutout.data)[::-1])
-                print(f" !!!! Offsets of peak position are: {offset_x, offset_y}.")
-                aligned_target_image = shift(cutout.data, (offset_y, offset_x),
+                # x_ref, y_ref = nd.maximum_position(ref_image_cutout_data)[::-1]
+                # reference_source_coords = (x_ref, y_ref)
+                # offset_x, offset_y = find_offsets(reference_source_coords,
+                #                                   nd.maximum_position(cutout.data)[::-1])
+                if shift_correction_mode == 'peak':
+                    # print(" ++==>> Applying peak-based image alignment.")
+                    offset_y, offset_x = \
+                        peak_image_alignment(ref_image_cutout_data,
+                                            cutout.data,
+                                            mask=mask,
+                                            apply_filter=apply_filter
+                        )
+                elif shift_correction_mode == 'structural':
+                    # print(" ++==>> Applying structural-based image alignment.")
+                    offset_y, offset_x = \
+                        structural_image_alignment(ref_image_cutout_data,
+                                            cutout.data,
+                                            mask=mask,
+                        )
+                elif shift_correction_mode == 'image_diff':
+                    # print(" ++==>> Applying image difference-based image alignment.")
+                    raise ValueError("Image difference-based alignment not implemented yet.")
+
+                else:
+                    raise ValueError("Invalid shift correction mode. Choose 'peak' or 'structural'.")
+                
+                print(f"        > Offset of image position is: ({int(offset_x)}, {int(offset_y)}).")
+                
+                aligned_target_image = shift(cutout.data, (int(offset_y), int(offset_x)),
                                              mode='constant')
                 new_hdul = fits.HDUList(
                     [fits.PrimaryHDU(header=hdul[0].header, data=aligned_target_image)])
@@ -596,7 +1249,7 @@ def cutout_2D_radec(imagename, residualname=None, ra_f=None, dec_f=None, cutout_
             cutout = Cutout2D(image_data[0][0], center, cutout_size, wcs=wcs)
             if correct_shift:
                 if ref_cutout_image is not None:
-                    aligned_target_image = shift(cutout.data, (offset_y, offset_x),
+                    aligned_target_image = shift(cutout.data, (int(offset_y), int(offset_x)),
                                                  mode='constant')
                     new_hdul = fits.HDUList(
                         [fits.PrimaryHDU(header=hdul[0].header, data=aligned_target_image)])
@@ -616,9 +1269,16 @@ def cutout_2D_radec(imagename, residualname=None, ra_f=None, dec_f=None, cutout_
 
 
 
+
+
+
+
+
+
 def cutout_2D_radec_v2(imagename, residualname=None, ra_f=None, dec_f=None, cutout_size=1024,
                        cut_model=False,special_name='', correct_shift=False, 
                        ref_cutout_image=None, pixel_coords=None,
+                       mask=None, apply_filter=True,shift_correction_mode='peak',
                        custom_save_path=None, custom_save_name=None):
     from astropy.io import fits
     import os
@@ -628,8 +1288,9 @@ def cutout_2D_radec_v2(imagename, residualname=None, ra_f=None, dec_f=None, cuto
     import numpy as np
     from astropy.coordinates import SkyCoord
     
-    if os.path.exists(custom_save_path) is False:
-        os.makedirs(custom_save_path)
+    if custom_save_path is not None:
+        if os.path.exists(custom_save_path) is False:
+            os.makedirs(custom_save_path)
 
     prefix_image_add = f"-{imagename.split('-image')[0].split('-')[-1]}"
     
@@ -653,6 +1314,11 @@ def cutout_2D_radec_v2(imagename, residualname=None, ra_f=None, dec_f=None, cuto
         center = SkyCoord(ra=ra_f * u.degree, dec=dec_f * u.degree, frame='icrs')
         # print('Centre SkyCoord = ', center)
         cutout = Cutout2D(image_data[0][0] if len(image_data.shape) == 4 else image_data, center, cutout_size, wcs=wcs)
+        if mask is not None:
+            # mask = do_cutout_2D(mask, box_size=cutout_size, 
+            #                     center=center, return_='data')
+            mask = Cutout2D(mask.astype(int), center, cutout_size, wcs=wcs)
+            mask=(mask.data).astype(bool)
         
         if len(image_data.shape) == 4:
             new_data = np.zeros((image_data.shape[0], image_data.shape[1], cutout_size, cutout_size))
@@ -663,13 +1329,36 @@ def cutout_2D_radec_v2(imagename, residualname=None, ra_f=None, dec_f=None, cuto
         if correct_shift:
             if ref_cutout_image is not None:
                 ref_image_cutout_data = load_fits_data(ref_cutout_image)
-                x_ref, y_ref = nd.maximum_position(ref_image_cutout_data)[::-1]
-                reference_source_coords = (x_ref, y_ref)
-                offset_x, offset_y = find_offsets(reference_source_coords,
-                                                nd.maximum_position(cutout.data)[::-1])
-                print(f" !!!! Offsets of peak position are: {offset_x, offset_y}.")
+                # x_ref, y_ref = nd.maximum_position(ref_image_cutout_data)[::-1]
+                # reference_source_coords = (x_ref, y_ref)
+                # offset_x, offset_y = find_offsets(reference_source_coords,
+                #                                 nd.maximum_position(cutout.data)[::-1])
+                # print(f" !!!! Offsets of peak position are: {offset_x, offset_y}.")
+                if shift_correction_mode == 'peak':
+                    # print(" ++==>> Applying peak-based image alignment.")
+                    offset_y, offset_x = \
+                        peak_image_alignment(ref_image_cutout_data,
+                                            cutout.data,
+                                            mask=mask,
+                                            apply_filter=apply_filter
+                        )
+                elif shift_correction_mode == 'structural':
+                    # print(" ++==>> Applying structural-based image alignment.")
+                    offset_y, offset_x = \
+                        structural_image_alignment(ref_image_cutout_data,
+                                            cutout.data,
+                                            mask=mask,
+                        )
+                elif shift_correction_mode == 'image_diff':
+                    # print(" ++==>> Applying image difference-based image alignment.")
+                    raise ValueError("Image difference-based alignment not implemented yet.")
+
+                else:
+                    raise ValueError("Invalid shift correction mode. Choose 'peak' or 'structural'.")
+                
+                print(f"        > Offset of image position is: ({int(offset_x)}, {int(offset_y)}).")
                 if len(image_data.shape) == 4:
-                    new_data[0,0] = shift(new_data[0,0], (offset_y, offset_x), mode='constant')
+                    new_data[0,0] = shift(new_data[0,0], (int(offset_y), int(offset_x)), mode='constant')
                 else:
                     new_data = shift(new_data, (offset_y, offset_x), mode='constant')
             else:
