@@ -139,7 +139,8 @@ def run_wsclean(g_name, imsize='2048', imsizey='2048',cell='0.06asec',
                 niter=1000,quiet=True,
                 with_multiscale=False, scales='None',
                 uvtaper=[],nc = 4,
-                image_list={},image_statistics={}):
+                image_list={},image_statistics={},
+                calculate_subband_fluxes=True):
 
 
     g_vis = g_name + '.ms'
@@ -150,7 +151,11 @@ def run_wsclean(g_name, imsize='2048', imsizey='2048',cell='0.06asec',
     else:
         base_name = base_name
 
-    os.system("export OPENBLAS_NUM_THREADS=1 && python /mnt/ext10TB/GitHub/morphen/selfcal/imaging_with_wsclean.py --f " +
+    imaging_script_path = os.path.dirname(os.path.abspath(__file__))
+    print(' >> Imaging script path:',imaging_script_path)
+    
+    # os.system("export OPENBLAS_NUM_THREADS=1 && python /mnt/ext10TB/GitHub/morphen/selfcal/imaging_with_wsclean.py --f " +
+    os.system("export OPENBLAS_NUM_THREADS=1 && python "+imaging_script_path+"/imaging_with_wsclean.py --f " +
               g_name + " --sx "
               + str(imsize) + " --sy " + str(imsizey) + " --niter "
               + str(niter) + " --data " + datacolumn + " --cellsize " + cell
@@ -163,114 +168,118 @@ def run_wsclean(g_name, imsize='2048', imsizey='2048',cell='0.06asec',
               + " --r " + str(robust) + " --t "+str(uvtaper)
               + " --update_model " + str(savemodel) + " --save_basename " + base_name)
 
-    image_statistics,image_list = compute_image_stats_wsclean(path=os.path.dirname(g_name) + '/',
-                                                    image_list=image_list,
-                                                    image_statistics=image_statistics,
-                                                    prefix=base_name)
+    if calculate_subband_fluxes:
+        image_statistics,image_list = compute_image_stats_wsclean(path=os.path.dirname(g_name) + '/',
+                                                        image_list=image_list,
+                                                        image_statistics=image_statistics,
+                                                        prefix=base_name)
 
-    print('Using residual map as RMS estimator:',image_list[base_name+'_residual'])
-    rms_mask = mad_std(load_fits_data(image_list[base_name+'_residual']))
-    mask_name,dilated_mask = create_wsclean_mask(image_list[base_name],
-                                         rms_mask=rms_mask,
-                                         sigma_mask=6.0,
-                                         mask_grow_iterations=2,
-                                         PLOT=True)
-    
-    
-#     eimshow(image_list[base_name],
-#                   rms=mad_std(load_fits_data(image_list[base_name+'_residual'])),
-#                   # crop=True,box_size=300,
-#                   crop=True,box_size=int(4*image_statistics[base_name]['C95radii']),
-#                   add_beam=True)
+        print('Using residual map as RMS estimator:',image_list[base_name+'_residual'])
+        rms_mask = mad_std(load_fits_data(image_list[base_name+'_residual']))
+        mask_name,dilated_mask = create_wsclean_mask(image_list[base_name],
+                                             rms_mask=rms_mask,
+                                             sigma_mask=6.0,
+                                             mask_grow_iterations=2,
+                                             PLOT=True)
 
 
-    try:
-        centre = nd.maximum_position(load_fits_data(image_list[base_name]))[::-1]
-        # centre = (int(image_statistics[prefix]['y0']),int(image_statistics[prefix]['x0']))
-        fig = plt.figure(figsize=(16, 8))
-        ax0 = fig.add_subplot(1, 2, 2)
-        ax0 = eimshow(imagename = image_list[base_name],
-                            center=centre,
-                            projection = 'offset',plot_colorbar=True,
-                            vmax_factor=0.8,
-                            rms=mad_std(load_fits_data(image_list[base_name + '_residual'])),
-                            # crop=True,box_size=300,
-                            figsize=(8, 8), ax=ax0,fig=fig,
-                            crop=True, box_size=int(4 * image_statistics[base_name]['C95radii']),
-                            # save_name=image_list[prefix].replace('.fits', '_map'),
-                            add_beam=True)
-        ax0.set_title(f'Radio Map')
-        ax1 = fig.add_subplot(1, 2, 1)
-        ax1 = eimshow(imagename = image_list[base_name + '_residual'],
-                            center=centre,
-                            projection='offset',
-                            vmin_factor=-3.0, vmax_factor=0.99,
-                            add_contours=False,
-                            figsize=(8, 8), ax=ax1,fig=fig,
-                            crop=True, box_size=int(4 * image_statistics[base_name]['C95radii']),
-                            save_name=image_list[base_name].replace('.fits', '_map'),
-                            plot_title = f'Residual Map', plot_colorbar=False,
-                            add_beam=False)
+    #     eimshow(image_list[base_name],
+    #                   rms=mad_std(load_fits_data(image_list[base_name+'_residual'])),
+    #                   # crop=True,box_size=300,
+    #                   crop=True,box_size=int(4*image_statistics[base_name]['C95radii']),
+    #                   add_beam=True)
 
-    except:
-        print('--==>> Error on plotting radio map.')
-        pass
-    
 
-    sub_band_images = glob.glob(image_list[base_name].replace('-MFS-image.fits','')+'-????-image.fits')
-    sub_band_residuals = []
-    for i in range(len(sub_band_images)):
-        sub_band_residuals.append(sub_band_images[i].replace('-image.fits','-residual.fits'))
+        try:
+            centre = nd.maximum_position(load_fits_data(image_list[base_name]))[::-1]
+            # centre = (int(image_statistics[prefix]['y0']),int(image_statistics[prefix]['x0']))
+            fig = plt.figure(figsize=(16, 8))
+            ax0 = fig.add_subplot(1, 2, 2)
+            ax0 = eimshow(imagename = image_list[base_name],
+                                center=centre,
+                                projection = 'offset',plot_colorbar=True,
+                                vmax_factor=0.8,
+                                rms=mad_std(load_fits_data(image_list[base_name + '_residual'])),
+                                # crop=True,box_size=300,
+                                figsize=(8, 8), ax=ax0,fig=fig,
+                                crop=True, box_size=int(4 * image_statistics[base_name]['C95radii']),
+                                # save_name=image_list[prefix].replace('.fits', '_map'),
+                                add_beam=True)
+            ax0.set_title(f'Radio Map')
+            ax1 = fig.add_subplot(1, 2, 1)
+            ax1 = eimshow(imagename = image_list[base_name + '_residual'],
+                                center=centre,
+                                projection='offset',
+                                vmin_factor=-3.0, vmax_factor=0.99,
+                                add_contours=False,
+                                figsize=(8, 8), ax=ax1,fig=fig,
+                                crop=True, box_size=int(4 * image_statistics[base_name]['C95radii']),
+                                save_name=image_list[base_name].replace('.fits', '_map'),
+                                plot_title = f'Residual Map', plot_colorbar=False,
+                                add_beam=False)
 
-    
-    
-    _FLUXES = []
-    _FLUXES_err = []
-#     mask_MFS = load_fits_data(mask_name)
-    for i in range(len(sub_band_images)):
-        print('++>> Computing flux density on sub-band image ',sub_band_images[i])
-        print('++>> Associated sub-band  residual image is ',sub_band_residuals[i])
-        
-        img_props = compute_image_properties(sub_band_images[i],
-                                                sub_band_residuals[i],
-                                                sigma_mask = 6.0,
-                                                last_level=1.0,
-                                                mask=dilated_mask,
-                                                verbose=1,
-                                                show_figure=True)[-1]
-        
-        # flux_density,flux_density_err = img_props['total_flux_levels'], img_props['flux_error_res_3']
-        flux_density,flux_density_err = img_props['total_flux_mask'], img_props['flux_error_res_3']
-        
-        print('Flux density = ', flux_density)
-        _FLUXES.append(flux_density)
-        _FLUXES_err.append(flux_density_err)
-    FLUXES = np.asarray(_FLUXES)
-    FLUXES_err = np.asarray(_FLUXES_err)
-    freqlist = getfreqs(sub_band_images)
+        except:
+            print('--==>> Error on plotting radio map.')
+            pass
 
-#     plt.figure(figsize=(8, 6))
-#     plt.errorbar(freqlist/1e9, FLUXES*1000, 
-#                     yerr=FLUXES_err*1000,
-#                     fmt='o', 
-#                     # label='Observed data', 
-#                     color='k', ecolor='gray', alpha=0.5)
-#     plt.xlabel('Frequency [GHz]')
-#     plt.ylabel('Flux Density [mJy]')
-#     plt.ylim(0,)
-#     plt.title('Sub-Band Images')
-#     plt.savefig(image_list[base_name].replace('-MFS-image.fits','_freq_flux.jpg'),dpi=300,bbox_inches='tight')
-#     plt.show()
-    mini,result_1 = do_fit_spec_RC_linear(freqlist,FLUXES*1000,FLUXES_err*1000,
-                                            plot_errors_shade = True, do_mcmc_fit=False,
-                                            basename_save=image_list[base_name],
-                                            verbose=2)
-    print('---------------------------------------------')
-    print('------------ RESTORING BEAM SIZE ------------')
-    Omaj,Omin, _, _, _ = beam_shape(image_list[base_name])
-    print(f"                {Omaj:.3f} arcec            ")
-    print('---------------------------------------------')
-    
+
+        sub_band_images = glob.glob(image_list[base_name].replace('-MFS-image.fits','')+'-????-image.fits')
+        sub_band_residuals = []
+        for i in range(len(sub_band_images)):
+            sub_band_residuals.append(sub_band_images[i].replace('-image.fits','-residual.fits'))
+
+
+
+        _FLUXES = []
+        _FLUXES_err = []
+    #     mask_MFS = load_fits_data(mask_name)
+        for i in range(len(sub_band_images)):
+            print('++>> Computing flux density on sub-band image ',sub_band_images[i])
+            print('++>> Associated sub-band  residual image is ',sub_band_residuals[i])
+
+            img_props = compute_image_properties(sub_band_images[i],
+                                                    sub_band_residuals[i],
+                                                    sigma_mask = 6.0,
+                                                    last_level=1.0,
+                                                    mask=dilated_mask,
+                                                    verbose=1,
+                                                    show_figure=True)[-1]
+
+            # flux_density,flux_density_err = img_props['total_flux_levels'], img_props['flux_error_res_3']
+            flux_density,flux_density_err = img_props['total_flux_mask'], img_props['flux_error_res_3']
+
+            print('Flux density = ', flux_density)
+            _FLUXES.append(flux_density)
+            _FLUXES_err.append(flux_density_err)
+        FLUXES = np.asarray(_FLUXES)
+        FLUXES_err = np.asarray(_FLUXES_err)
+        freqlist = getfreqs(sub_band_images)
+
+        try:
+            do_mcmc_fit = True
+            mini,result_1,param_dict = \
+                do_fit_spec_RC_linear(freqlist,FLUXES*1000,FLUXES_err*1000,
+                                    plot_errors_shade = True,
+                                    do_mcmc_fit=do_mcmc_fit,
+                                    basename_save=image_list[base_name],
+                                    verbose=2)
+        except:
+            do_mcmc_fit = False
+            mini,result_1,param_dict = \
+                do_fit_spec_RC_linear(freqlist,FLUXES*1000,FLUXES_err*1000,
+                                    plot_errors_shade = True,
+                                    do_mcmc_fit=do_mcmc_fit,
+                                    basename_save=image_list[base_name],
+                                    verbose=2)
+        print('---------------------------------------------')
+        print('------------ RESTORING BEAM SIZE ------------')
+        Omaj,Omin, _, _, _ = beam_shape(image_list[base_name])
+        print(f"                {Omaj:.3f} arcec            ")
+        print('---------------------------------------------')
+    else:
+        image_list = {}
+        image_statistics = {}
+        Omaj = None
     
     return(image_list,image_statistics,Omaj)
 

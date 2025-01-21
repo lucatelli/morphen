@@ -977,7 +977,7 @@ def do_fit_spec_RC_linear(freqs,
                           plot_errors_shade = False,
                           do_mcmc_fit = False,
                           sigma_shade=3,
-                          sigma_errors = 1.0,
+                          sigma_errors = 3,
                           quantiles = [0.16, 0.5, 0.84],
                           mcmc_version = 'general',
                           burn_in = 1000,
@@ -1027,20 +1027,6 @@ def do_fit_spec_RC_linear(freqs,
         relative_error = yerr / (np.abs(y) + epsilon)
         weights = 1 / (relative_error + epsilon)
         weightned_residual = (y - model) * np.sqrt(weights)
-        # res = (y - model)/yerr
-        # loss = huber_loss(res)
-        # res = (y - model)
-        # res = (y - model) / (y+np.sqrt((yerr)**2.0+0.1))#okay
-        # res = (y - model) / (y * (np.log(yerr)))  # okay
-        # res = (y - model) / (y+np.log(abs(yerr))) # okay 9
-        # res = (y  - model) / (np.sqrt(abs(y+yerr))) # okay 8
-        # res = (y  - model) / (np.log(abs(y+yerr))) # okay 8
-        # residuals = (y - model)/np.sqrt(abs(y+yerr))
-        # res = (y - model) / (np.log(yerr))
-        # res = 0.5 * (residuals**2 + np.sqrt(2 * np.pi * yerr**2))
-        # res = (y - model) / (yerr)  # okay
-        # res = (y - model) / (y + yerr)  # okay
-        # res = data - RC_function_S2(nu, A1l, alpha)
         return weightned_residual.copy()
 
 
@@ -3769,6 +3755,31 @@ def specidx_map(imagelist,residuallist,
                 n_jobs=1,
                 verbose=0):
     
+    """
+    Calculates the spectral index map from a list of images.
+    
+    Parameters:
+    ----------
+    imagelist (list): List of images to calculate the spectral index map.
+    residuallist (list): List of residual images to calculate the spectral index map.
+    ref_image_conv (str): Reference image to use for convolution.
+    freqs (list): List of frequencies corresponding to the images.
+    ref_image_mask (str): Reference image to use for masking.
+    flux_sys_error_frac (float): Fractional systematic error in flux.
+    nu0 (float): Reference frequency.
+    mask (array): Mask to use for masking.
+    sigma_global_mask (float): Sigma value to use for global masking.
+    iterations (int): Number of iterations to use for masking.
+    dilation_size (int): Dilation size to use for masking.
+    needs_convolution (bool): Whether to convolve the images.
+    conv_task (str): Convolution task to use.
+    return_only_cube (bool): Whether to return only the cube.
+    do_average_cube (bool): Whether to average the cube.
+    bin_size (int): Bin size to use for averaging.
+    n_jobs (int): Number of jobs to use for parallel processing.
+    verbose (int): Verbosity level to use.
+    
+    """
     if isinstance(imagelist[0], str):
         cube_image = makecube(imagelist)
         cube_residuals = makecube(residuallist)
