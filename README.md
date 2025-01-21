@@ -37,7 +37,7 @@ Currently, there is no option to install `morphen` (via `pip` or `conda`).
 However, installation and usage are straightforward. The code can be used as a module, 
 interactively via Jupyter notebooks,
 or via the command line interface (see "Important notes" below). For now, we recommend  
-using it via Jupyter notebooks using the set of provided examples.
+using it via Jupyter notebooks using the set of provided examples within [docs/](docs).
 
 To install `morphen`, clone the repository and install using conda through the `environment.yml` file:
 ```bash
