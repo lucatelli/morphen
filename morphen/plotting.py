@@ -176,7 +176,8 @@ def plot_azimuthal_profile(image, rms_image, center, sigma=1.5, bin_size=1.0,
                            which_error='both',
                            min_points_per_bin=5,  # Minimum points required per bin
                            weight_by_points=False, # Weight averages by number of points
-                           r_max = None
+                           r_max = None,
+                           which_statistics = 'mean',
                            ):
     """
     Calculate the azimuthal average profile with improved handling of asymmetric masks.
@@ -208,34 +209,64 @@ def plot_azimuthal_profile(image, rms_image, center, sigma=1.5, bin_size=1.0,
     error_rms = np.zeros_like(bin_centers)
     error_std = np.zeros_like(bin_centers)
     points_per_bin = np.zeros_like(bin_centers)
-
-    for i in range(len(bin_centers)):
-        mask = (r >= bin_edges[i]) & (r < bin_edges[i + 1])
-        # plt.figure()
-        # plt.imshow(mask[center[0]-int(r_max):center[0]+int(r_max),center[1]-int(r_max):center[1]+int(r_max)])
-        # plt.show()
-        valid_pixels = ~np.isnan(image[mask])
-        
-        if np.nansum(valid_pixels) >= min_points_per_bin:
-            points_per_bin[i] = np.nansum(valid_pixels)
-            values = image[mask][valid_pixels]
-            rms_values = rms_image[mask][valid_pixels]
+    
+    if which_statistics == 'mean':
+        for i in range(len(bin_centers)):
+            mask = (r >= bin_edges[i]) & (r < bin_edges[i + 1])
+            # plt.figure()
+            # plt.imshow(mask[center[0]-int(r_max):center[0]+int(r_max),center[1]-int(r_max):center[1]+int(r_max)])
+            # plt.show()
+            valid_pixels = ~np.isnan(image[mask])
             
-            profile[i] = np.nanmean(values)
-            
-            # Weight errors by sqrt(N) if requested
-            if weight_by_points:
-                n_points = len(values)
-                error_rms[i] = np.sqrt(np.nanmean(rms_values**2)) / np.sqrt(n_points)
-                error_std[i] = np.std(values) / np.sqrt(n_points)
+            if np.nansum(valid_pixels) >= min_points_per_bin:
+                points_per_bin[i] = np.nansum(valid_pixels)
+                values = image[mask][valid_pixels]
+                rms_values = rms_image[mask][valid_pixels]
+                
+                profile[i] = np.nanmean(values)
+                
+                # Weight errors by sqrt(N) if requested
+                if weight_by_points:
+                    n_points = len(values)
+                    error_rms[i] = np.sqrt(np.nanmean(rms_values**2)) / np.sqrt(n_points)
+                    error_std[i] = np.std(values) / np.sqrt(n_points)
+                else:
+                    error_rms[i] = np.sqrt(np.nanmean(rms_values**2))
+                    error_std[i] = np.nanstd(values)
             else:
-                error_rms[i] = np.sqrt(np.nanmean(rms_values**2))
-                error_std[i] = np.nanstd(values)
-        else:
-            profile[i] = np.nan
-            error_rms[i] = np.nan
-            error_std[i] = np.nan
-
+                profile[i] = np.nan
+                error_rms[i] = np.nan
+                error_std[i] = np.nan
+            
+    elif which_statistics == 'median':
+        for i in range(len(bin_centers)):
+            mask = (r >= bin_edges[i]) & (r < bin_edges[i + 1])
+            # plt.figure()
+            # plt.imshow(mask[center[0]-int(r_max):center[0]+int(r_max),center[1]-int(r_max):center[1]+int(r_max)])
+            # plt.show()
+            valid_pixels = ~np.isnan(image[mask])
+            
+            if np.nansum(valid_pixels) >= min_points_per_bin:
+                points_per_bin[i] = np.nansum(valid_pixels)
+                values = image[mask][valid_pixels]
+                rms_values = rms_image[mask][valid_pixels]
+                
+                profile[i] = np.nanmedian(values)
+                
+                # Weight errors by sqrt(N) if requested
+                if weight_by_points:
+                    n_points = len(values)
+                    error_rms[i] = np.sqrt(np.nanmedian(rms_values**2)) / np.sqrt(n_points)
+                    error_std[i] = np.std(values) / np.sqrt(n_points)
+                else:
+                    error_rms[i] = np.sqrt(np.nanmedian(rms_values**2))
+                    error_std[i] = np.nanstd(values)
+            else:
+                profile[i] = np.nan
+                error_rms[i] = np.nan
+                error_std[i] = np.nan
+    else:
+        raise ValueError('Invalid value for which_statistics. Must be mean or median.')
     # Remove bins with insufficient points
     valid_bins = ~np.isnan(profile)
     bin_centers = bin_centers[valid_bins]
@@ -252,7 +283,12 @@ def plot_azimuthal_profile(image, rms_image, center, sigma=1.5, bin_size=1.0,
              marker='.',linestyle='-.',
              linewidth=1)
 
-    # if weight_by_points:
+    if weight_by_points:
+        _sigma = sigma * np.sqrt(points_per_bin)
+        _sigma_std = 1 * np.sqrt(points_per_bin)
+    else:
+        _sigma = sigma
+        _sigma_std = 1
     #     sigma = 3
     # else:
     #     sigma = 3
@@ -260,23 +296,23 @@ def plot_azimuthal_profile(image, rms_image, center, sigma=1.5, bin_size=1.0,
     
     if which_error == 'std':
         plt.fill_between(bin_centers*cell_size, 
-                        profile - 1 * error_std, 
-                        profile + 1 * error_std,
+                        profile - _sigma_std * error_std, 
+                        profile + _sigma_std * error_std,
                         color='gray', alpha=0.3)
     if which_error == 'rms':
         plt.fill_between(bin_centers*cell_size, 
-                        profile - sigma * error_rms, 
-                        profile + sigma * error_rms,
+                        profile - _sigma * error_rms, 
+                        profile + _sigma * error_rms,
                         color='gray', alpha=0.3)
     if which_error == 'both':
         plt.fill_between(bin_centers*cell_size, 
-                        profile - sigma * error_rms, 
-                        profile + sigma * error_rms,
+                        profile - _sigma * error_rms, 
+                        profile + _sigma * error_rms,
                         label = 'rms error',
                         color='gray', alpha=0.5)
         plt.fill_between(bin_centers*cell_size,
-                        profile - 1 * error_std, 
-                        profile + 1 * error_std,
+                        profile - _sigma_std * error_std, 
+                        profile + _sigma_std * error_std,
                         label = 'std',
                         color='orange', alpha = 0.3)
         plt.legend()
@@ -2216,7 +2252,8 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
     else:
         return ax
 
-def plot_alpha_map(alphaimage,alphaimage_error,radio_map,frequencies,
+def plot_alpha_map(alphaimage,radio_map,frequencies,
+                   alphaimage_error=None,
                    mask_good_alpha = None,
                    levels_g = None,
                    vmin_factor = 3,neg_levels=np.asarray([-3]),
@@ -2259,11 +2296,11 @@ def plot_alpha_map(alphaimage,alphaimage_error,radio_map,frequencies,
                                    box_size=box_size, 
                                    center=centre, 
                                    return_='data')
-
-        _alphaimage_error = do_cutout_2D(alphaimage_error, 
-                                         box_size=box_size, 
-                                          center=(centre[0],centre[1]), 
-                                          return_='data')
+        if alphaimage_error is not None:
+            _alphaimage_error = do_cutout_2D(alphaimage_error, 
+                                            box_size=box_size, 
+                                            center=(centre[0],centre[1]), 
+                                            return_='data')
         
         
         
@@ -2276,7 +2313,7 @@ def plot_alpha_map(alphaimage,alphaimage_error,radio_map,frequencies,
 
     else:
         _alphaimage = alphaimage.copy()
-        _alphaimage_error = alphaimage_error.copy()
+        _alphaimage_error = alphaimage_error
         _g = g
 
 
@@ -2358,7 +2395,7 @@ def plot_alpha_map(alphaimage,alphaimage_error,radio_map,frequencies,
                          linewidths=1.2, extent=extent,
                          alpha=1.0)
 
-    if plot_alpha_error_points:
+    if plot_alpha_error_points and _alphaimage_error is not None:
         # Downsample the data for scatter plot
         downscale_factor = 10  # Adjust this factor as needed
         x_downsampled, y_downsampled = np.meshgrid(
