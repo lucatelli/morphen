@@ -831,6 +831,10 @@ def construct_model_parameters(n_components, params_values_init_IMFIT=None,
                     else:
                         fix_max_value_Rn_j = False
                         
+                    if fix_max_value_Rn_j <= 1.0:
+                        intensity_multiplier_max_factor = 5000
+                    else:
+                        intensity_multiplier_max_factor = 200
 
                     if fix_x0_y0 is not False:
                         fix_x0_y0_j = fix_x0_y0[j]
@@ -912,32 +916,6 @@ def construct_model_parameters(n_components, params_values_init_IMFIT=None,
                                     'f' + str(j + 1) + '_' + param,
                                     value=0.0, min=-2.0, max=2.0)
 
-                        if param == 'In':
-                            I50 = init_constraints['c' + jj + '_I50']
-                            """
-                            A high value of I50 is required because the
-                            deconvolved model has a higher peak intensity
-                            (and therefore the same for the I50 region) than the
-                            convolved model. The PSF convolution attenuates significantly
-                            the peak intensity.
-                            
-                            To-do:
-                            1. Use a more robust approach, from the theoretical prediction of a 
-                            deconvolved signal from a convolved signal with a Gaussian 
-                            kernel.
-                            """
-                            if observation_type == 'radio':
-                                I50_max = I50 * 100
-                                I50_min = I50 * 0.1
-                                smodel2D.set_param_hint(
-                                    'f' + str(j + 1) + '_' + param,
-                                    value=I50, min=I50_min, max=I50_max)
-                            else:
-                                I50_max = I50 * 25
-                                I50_min = I50 * 0.05
-                                smodel2D.set_param_hint(
-                                    'f' + str(j + 1) + '_' + param,
-                                    value=I50, min=I50_min, max=I50_max)
                         if param == 'Rn':
                             if fix_max_value_Rn_j is not False:
                                 """
@@ -964,6 +942,8 @@ def construct_model_parameters(n_components, params_values_init_IMFIT=None,
                                 if observation_type == 'radio':
                                     R50_max = R50 * 1.0
                                     R50_min = R50 * 0.01 #should be small.
+                                    # if R50_max < 1.0:
+                                    #     intensity_multiplier_max_factor = 5000
                                     smodel2D.set_param_hint(
                                         'f' + str(j + 1) + '_' + param,
                                         value=R50, min=R50_min, max=R50_max)
@@ -973,6 +953,35 @@ def construct_model_parameters(n_components, params_values_init_IMFIT=None,
                                     smodel2D.set_param_hint(
                                         'f' + str(j + 1) + '_' + param,
                                         value=R50, min=R50_min, max=R50_max)
+
+
+                        if param == 'In':
+                            I50 = init_constraints['c' + jj + '_I50']
+                            """
+                            A high value of I50 is required because the
+                            deconvolved model has a higher peak intensity
+                            (and therefore the same for the I50 region) than the
+                            convolved model. The PSF convolution attenuates significantly
+                            the peak intensity.
+                            
+                            To-do:
+                            1. Use a more robust approach, from the theoretical prediction of a 
+                            deconvolved signal from a convolved signal with a Gaussian 
+                            kernel.
+                            """
+                            if observation_type == 'radio':
+                                I50_max = I50 * intensity_multiplier_max_factor
+                                I50_min = I50 * 0.01
+                                smodel2D.set_param_hint(
+                                    'f' + str(j + 1) + '_' + param,
+                                    value=I50, min=I50_min, max=I50_max)
+                            else:
+                                I50_max = I50 * 25
+                                I50_min = I50 * 0.05
+                                smodel2D.set_param_hint(
+                                    'f' + str(j + 1) + '_' + param,
+                                    value=I50, min=I50_min, max=I50_max)
+
 
                         if param == 'x0':
                             if fix_x0_y0_j is not False:
@@ -1263,8 +1272,9 @@ def add_extra_component(petro_properties, copy_from_id):
         if unique_list[k] == 'R50':
             # multiply the R50 value by a factor, e.g., 5.0
             # factor = 5.0
-            factor = np.min([petro_properties['cg_Rp'],2*petro_properties['cg_Rp'] / abs(petro_properties['cg_Rp']-petro_properties_copy['c' + str(copy_from_id) + '_' + unique_list[k]])])
-            print(factor )
+            factor = np.nanmean([petro_properties['cg_Rp']/petro_properties_copy['c' + str(copy_from_id) + '_' + unique_list[k]],
+                                 2*petro_properties['cg_Rp'] / abs(petro_properties['cg_Rp']-petro_properties_copy['c' + str(copy_from_id) + '_' + unique_list[k]])])
+            print(factor)
             petro_properties_copy[
                 'c' + str(new_comp_id) + '_' + unique_list[k]] = \
             petro_properties_copy[
@@ -1356,292 +1366,6 @@ def sorted_detected_coordinates(reference_x,
             np.array(sorted_detected_indices))
     
 
- 
-
-def phot_source_ext(imagename, residual=None, sigma=1.0, iterations=2, dilation_size=None,
-                    deblend_nthresh=5, deblend_cont=1e-6, maskthresh=0.0,
-                    gain=1, filter_kernel=None, mask=None,
-                    segmentation_map=False, clean_param=1.0, clean=True,
-                    minarea=100, minarea_factor=1, npixels = None,
-                    filter_type='matched', 
-                    sort_by='distance', threshold_mode='sigma',
-                    bw=64, bh=64, fw=3, fh=3, ell_size_factor=None,
-                    apply_mask=False, sigma_mask=6,
-                    show_bkg_map=False, show_detection=False,
-                    SE_ref=None):
-    """
-    Simple source extraction algorithm (using SEP https://sep.readthedocs.io/en/v1.1.x/).
-
-
-    """
-
-    data_2D = load_fits_data(imagename)
-    if len(data_2D.shape) == 4:
-        data_2D = data_2D[0][0]
-    # m, s = np.mean(data_2D), np.std(data_2D)
-    if residual is not None:
-        m, s = np.mean(data_2D), mad_std(residual)
-    else:
-        m, s = np.mean(data_2D), mad_std(data_2D)
-    # bkg = 0.0
-    if apply_mask:
-        _, mask = mask_dilation(data_2D, sigma=sigma_mask, iterations=iterations,
-                                rms=s,
-                                PLOT=True,show_figure=True,
-                                dilation_size=dilation_size)
-
-
-    bkg = sep.Background(data_2D, mask=mask, bw=bw, bh=bh, fw=fw, fh=fh)
-    # print(bkg.globalback)
-    # print(bkg.globalrms)
-
-    bkg_image = bkg.back()
-    bkg_rms = bkg.rms()
-    
-    data_sub = data_2D - bkg_image
-
-    if show_bkg_map == True:
-        # plt.figure()
-        # # display bkg map.
-        # plt.imshow(data_2D, interpolation='nearest', cmap='gray', vmin=3*s,
-        #            vmax=0.2*np.max(data_2D), origin='lower')
-        # plt.colorbar()
-        # plt.close()
-        # plt.show()
-        # plt.figure()
-        # plt.imshow(bkg_image)
-        # plt.colorbar()
-        # plt.show()
-        # plt.close()
-        
-        fig = plt.figure(figsize=(18, 6))
-        ax0 = fig.add_subplot(1, 3, 2)
-        ax0 = eimshow(data_sub,ax=ax0,fig=fig,
-                            plot_colorbar=True,
-                            # cbar_orientation = 'horizontal',
-                            show_axis='off',
-                            vmin_factor=0.5,
-                            cbar_n_points = 3,
-                            add_contours=True)
-        ax0.set_title(f'data - bkg')
-        
-        ax1 = fig.add_subplot(1, 3, 1)
-        ax1 = eimshow(data_2D,ax=ax1,fig=fig,
-                            plot_colorbar=True,
-                            # cbar_orientation = 'horizontal',
-                            show_axis='off',
-                            vmin_factor=0.5,
-                            cbar_n_points=3,
-                            plot_title = f'data',
-                            add_contours=True)
-        ax2 = fig.add_subplot(1, 3, 3)
-        ax2 = eimshow(bkg_image,ax=ax2,fig=fig,
-                            plot_colorbar=True,
-                            # cbar_orientation = 'horizontal',
-                            show_axis='off',
-                            # vmin_factor=0.5,
-                            # vmax_factor=1.0,
-                            cbar_n_points=3,
-                            plot_title = f'bkg',
-                            add_contours=False)
-        plt.show()
-        plt.clf()
-        plt.close()
-
-    
-    if mask is not None:
-        data_sub = data_sub * mask
-    else:
-        data_sub = data_sub
-        
-    if (threshold_mode == 'residual') and residual is not None:
-        threshold = sigma * residual
-    elif threshold_mode == 'sigma':
-        threshold = sigma * s
-            
-    # else:
-    #     mask = None
-    # print(data_sub)
-    if npixels is None:
-        npixels = int(minarea * minarea_factor)
-    # print(' INFO: Uinsg min number of pixels of :', npixels)
-    cat, segm, seg_maps = make_catalog(image=data_sub,
-                                       threshold=threshold,
-                                       deblend=True, 
-                                       contrast=deblend_cont,
-                                       nlevels=deblend_nthresh,
-                                       npixels=npixels,
-                                       figsize=(20, 20),
-                                       plot=show_detection, vmin=1.0 * s)
-    # cat, segm, seg_maps = make_catalog(image=data_sub,
-    #                                    threshold=sigma * s,
-    #                                    deblend=True, 
-    #                                    contrast=deblend_cont,
-    #                                    nlevels=deblend_nthresh,
-    #                                    npixels=npixels,
-    #                                    figsize=(20, 20),
-    #                                    plot=show_detection, vmin=1.0 * s)
-    if sort_by == 'flux':
-        indices = list(order_cat(cat, key='segment_flux', reverse=True))
-    if sort_by == 'area':
-        indices = list(order_cat(cat, key='area', reverse=True))
-    if sort_by == 'distance':
-        ref_centre = data_2D.shape[0] / 2, data_2D.shape[1] / 2
-        if SE_ref is not None:
-            coords, distances, indices = \
-                sorted_detected_coordinates(SE_ref.objects['xc'],
-                                            SE_ref.objects['yc'],
-                                            cat.xcentroid, 
-                                            cat.ycentroid, 
-                                            ref_centre)
-            print(indices)
-        else:
-            
-            distances = distances_from_reference(cat.xcentroid, 
-                                            cat.ycentroid,
-                                            ref_centre)
-            indices = np.argsort(distances)
-        
-    masks_deblended = []
-    for k in range(len(indices)):
-        # print(k)
-        masks_deblended.append(seg_maps == seg_maps.labels[indices[k]])
-
-
-    # len(objects)
-    from matplotlib.patches import Ellipse
-    from skimage.draw import ellipse
-
-    # m, s = np.mean(data_sub), np.std(data_sub)
-    if show_detection == True:
-        fig, ax = plt.subplots(figsize=(10, 10))
-        norm = simple_norm(data_sub, stretch='sqrt', asinh_a=0.02, min_cut=s,
-                    max_cut=0.2*np.nanmax(data_sub))
-        im = ax.imshow(data_sub, interpolation='nearest', cmap='gray',
-                       norm=norm, origin='lower')
-        # im = ax.imshow(data_sub, interpolation='nearest', cmap='gray',
-        #                vmin=s, vmax=0.2*np.nanmax(data_sub), origin='lower')
-
-    masks_regions = []
-
-    if ell_size_factor is None:
-        if mask is not None:
-            # ell_size_factor = np.sqrt(np.sum(mask) / (np.pi))/cat[0].equivalent_radius.value
-            ell_size_factor = 0.05*np.sqrt(np.sum(mask) / (np.pi))
-        else:
-            ell_size_factor = 0.5
-    
-    y, x = np.indices(data_2D.shape[:2])
-    
-    # objects = cat
-    for i in range(len(cat)):
-        source = cat[i]
-        seg_mask = (seg_maps.data == i + 1)
-        e = Ellipse(xy=(source.centroid[0], source.centroid[1]),
-                    width=1 * ell_size_factor * source.equivalent_radius.value,
-                    height=1 * ell_size_factor * (
-                                1 - source.ellipticity.value) * source.equivalent_radius.value,
-                    # angle=source.orientation.value * 180. / np.pi
-                    angle=source.orientation.value
-                    )
-
-        xc = source.centroid[0]
-        yc = source.centroid[1]
-        a = ell_size_factor * source.equivalent_radius.value
-        b = ell_size_factor * (
-                    1 - source.ellipticity.value) * source.equivalent_radius.value
-        theta = source.orientation.value
-        rx = (x - xc) * np.cos(theta) + (y - yc) * np.sin(theta)
-        ry = (y - yc) * np.cos(theta) - (x - xc) * np.sin(theta)
-
-        inside = ((rx / a) ** 2 + (ry / b) ** 2) <= 1
-        mask_ell = np.zeros_like(data_2D)
-        mask_ell[inside] = True
-        if show_detection == True:
-            e.set_facecolor('none')
-            e.set_edgecolor('red')
-            ax.add_artist(e)
-        masks_regions.append(seg_mask)
-
-    #         plt.savefig('components_SEP.pdf',dpi=300, bbox_inches='tight')
-    # flux, fluxerr, flag = sep.sum_circle(data_sub, objects['x'], objects['y'],
-    #                                      3.0, err=bkg.globalrms, gain=1.0)
-    # for i in range(len(objects)):
-    #     print("object {:d}: flux = {:f} +/- {:f}".format(i, flux[i], fluxerr[i]))
-    # objects['b'] / objects['a'], np.rad2deg(objects['theta'])
-
-    # sort regions from largest size to smallest size.
-    mask_areas = []
-    mask_fluxes = []
-    for mask_comp in masks_regions:
-        area_mask = np.sum(mask_comp)
-        sum_mask = np.sum(mask_comp * data_2D)
-        mask_areas.append(area_mask)
-        mask_fluxes.append(sum_mask)
-    mask_areas = np.asarray(mask_areas)
-    mask_fluxes = np.asarray(mask_fluxes)
-    if sort_by == 'area':
-        sorted_indices_desc = np.argsort(mask_areas)[::-1]
-        sorted_arr_desc = mask_areas[sorted_indices_desc]
-    if sort_by == 'flux':
-        sorted_indices_desc = np.argsort(mask_fluxes)[::-1]
-        sorted_arr_desc = mask_fluxes[sorted_indices_desc]
-    if sort_by == 'distance':
-        ref_centre = data_2D.shape[0] / 2, data_2D.shape[1] / 2
-        if SE_ref is not None:
-            coords, distances, sorted_indices_desc = \
-                sorted_detected_coordinates(SE_ref.objects['xc'],
-                                            SE_ref.objects['yc'],
-                                            cat.xcentroid, 
-                                            cat.ycentroid, 
-                                            ref_centre)
-            # sorted_indices_desc = np.argsort(distances)
-            # sorted_arr_desc = distances[sorted_indices_desc]
-                
-        else:
-            distances = distances_from_reference(cat.xcentroid, 
-                                                cat.ycentroid,
-                                                ref_centre)
-            sorted_indices_desc = np.argsort(distances)
-            # sorted_arr_desc = distances[sorted_indices_desc]
-
-    objects_sorted = {}
-    objects_sorted['xc'] = np.asarray([1] * len(cat))
-    objects_sorted['yc'] = np.asarray([1] * len(cat))
-    for i in range(len(cat)):
-        source = cat[sorted_indices_desc[i]]
-        objects_sorted['xc'][i] = source.centroid[0]
-        objects_sorted['yc'][i] = source.centroid[1]
-
-    if show_detection == True:
-        for i in range(len(cat)):
-            source = cat[sorted_indices_desc[i]]
-            xc = source.centroid[0]
-            yc = source.centroid[1]
-            label = str('ID' + str(i + 1))
-            
-            label_x = xc + 3 * ell_size_factor
-            label_y = yc + 20 * ell_size_factor
-            
-            line_end_y = label_y - 5 
-            
-            text = Text(label_x, label_y, label, ha='center', va='center', color='red')
-            ax.add_artist(text)
-            
-            ax.plot([xc, label_x], [yc, line_end_y], color='red', alpha=0.4)
-
-        plt.axis('off')
-        plt.savefig(imagename + '_SEP_phot.jpg', dpi=300, bbox_inches='tight')
-        plt.show()
-
-
-
-    if segmentation_map == True:
-        return (masks_deblended, sorted_indices_desc, bkg,
-                seg_maps, objects_sorted)
-    else:
-        return (masks_deblended, sorted_indices_desc, bkg,
-                objects_sorted)
 
 def prepare_fit(ref_image, ref_res, z, ids_to_add=[1],
                 bw=51, bh=51, fw=15, fh=15, sigma=15, ell_size_factor=2.0,
@@ -1852,7 +1576,8 @@ def do_fit2D(imagename, params_values_init_IMFIT=None, ncomponents=None,
              fix_max_value_Rn=False,
              dr_fix=3,
              fix_x0_y0=False, psf_name=None, convolution_mode='GPU',
-             convolve_cutout=False, cut_size=512, self_bkg=False, rms_map=None,
+             convolve_cutout=False, cut_size=512, self_bkg=False, 
+             rms_map=None, is_rms_map_conv = False,
              fix_geometry=True, contrain_nelder=False, workers=6,mask_region = None,
              special_name='', method1='least_squares', method2='least_squares',
              reduce_fcn='neglogcauchy',loss="cauchy",tr_solver="exact",x_scale = 'jac',
@@ -2004,7 +1729,8 @@ def do_fit2D(imagename, params_values_init_IMFIT=None, ncomponents=None,
         
         """
         logger.debug(f" ==> Using provided mask region to constrain fit. ")
-        logger.warning(f" !!==> Fitting with a mask is experimental! ")
+        logger.warning(f" !!++==> Fitting with a mask is faster, but experimental!! \n"
+                       f"         Use with caution.")
         # data_2D = data_2D * mask_region
         if convolution_mode == 'GPU':
             mask_for_fit = jnp.array(mask_region)
@@ -2117,6 +1843,16 @@ def do_fit2D(imagename, params_values_init_IMFIT=None, ncomponents=None,
         except:
             residual_2D = background
 
+    background_dec = background.copy()
+    if is_rms_map_conv is False:
+        logger.debug(f" ==> RMS map is not convolved.")
+        
+        if convolution_mode == 'GPU':
+            background = _fftconvolve_jax(background,PSF_DATA)
+        if convolution_mode == 'CPU':
+            background = scipy.signal.fftconvolve(background, PSF_DATA, 'same')
+        
+    
     size = data_2D.shape
     if convolution_mode == 'GPU':
         x,y = jnp.meshgrid(jnp.arange((size[1])), jnp.arange((size[0])))
@@ -2329,10 +2065,12 @@ def do_fit2D(imagename, params_values_init_IMFIT=None, ncomponents=None,
         # # param_matrix = extract_params(params)
         # param_matrix = func(jnp.array(list(params.valuesdict().values()))[:-1])
         # model = build_model(xy,param_matrix)
+        
+        MODEL_2D_conv = _fftconvolve_jax(model,PSF_DATA) + FlatSky(background,params['s_a'].value)
 
-        MODEL_2D_conv = _fftconvolve_jax(model+
-                                         FlatSky(background,params['s_a'].value),
-                                         PSF_DATA)
+        # MODEL_2D_conv = _fftconvolve_jax(model+
+        #                                  FlatSky(background,params['s_a'].value),
+        #                                  PSF_DATA)
         # residual = ((data_2D_gpu[mask_for_fit] - MODEL_2D_conv[mask_for_fit])/
         #             (1000*(abs(residual_2D[mask_for_fit])+1.0e-6)))
         residual = (data_2D_gpu[mask_for_fit] - MODEL_2D_conv[mask_for_fit])
@@ -2531,8 +2269,14 @@ def do_fit2D(imagename, params_values_init_IMFIT=None, ncomponents=None,
     total_image_results_deconv = []
     total_image_results_conv = []
     bkg_images = []
-    flat_sky_total = FlatSky_cpu(background, params['s_a'].value)
+    if convolution_mode == 'GPU':
+        flat_sky_total = np.asarray(FlatSky(background, params['s_a'].value))
+        flat_sky_total_dec = np.asarray(FlatSky(background_dec, params['s_a'].value))
+    if convolution_mode == 'CPU':
+        flat_sky_total = FlatSky_cpu(background, params['s_a'].value)
+        flat_sky_total_dec = FlatSky_cpu(background_dec, params['s_a'].value)
     bkg_comp_i = flat_sky_total.copy()
+    bkg_comp_i_dec = flat_sky_total_dec.copy()
     for i in range(1, ncomponents + 1):
         model_temp = sersic2D_GPU(xy, params['f' + str(i) + '_x0'].value,
                               params['f' + str(i) + '_y0'].value,
@@ -2545,18 +2289,26 @@ def do_fit2D(imagename, params_values_init_IMFIT=None, ncomponents=None,
 
         model = model + model_temp
         #to each individual component, add the bkg map.
-        model_dict['model_c' + str(i)] = np.asarray(model_temp+bkg_comp_i).copy()
+        model_dict['model_c' + str(i)] = np.asarray(model_temp+bkg_comp_i_dec)
         if PSF_CONV == True:
             if convolution_mode == 'GPU':
                 # model_dict['model_c' + str(i) + '_conv'] = np.asarray(jax_convolve(model_temp, PSF_DATA)).copy()
                 # model_dict['model_c' + str(i) + '_conv'] = (
                 #     np.asarray(_fftconvolve_jax(model_temp,PSF_DATA).copy()+bkg_comp_i))
                 # to each individual component, add the bkg map.
+                # model_dict['model_c' + str(i) + '_conv'] = (
+                #     np.asarray(_fftconvolve_jax(model_temp+bkg_comp_i,PSF_DATA).copy()))
+                
                 model_dict['model_c' + str(i) + '_conv'] = (
-                    np.asarray(_fftconvolve_jax(model_temp+bkg_comp_i,PSF_DATA).copy()))
+                    np.asarray(_fftconvolve_jax(model_temp,PSF_DATA).copy())) + bkg_comp_i
+                
             if convolution_mode == 'CPU':
+                # model_dict['model_c' + str(i) + '_conv'] = (
+                #         scipy.signal.fftconvolve(model_temp+bkg_comp_i, PSF_DATA_raw,'same'))
                 model_dict['model_c' + str(i) + '_conv'] = (
-                        scipy.signal.fftconvolve(model_temp+bkg_comp_i, PSF_DATA_raw,'same'))
+                        scipy.signal.fftconvolve(model_temp, PSF_DATA_raw,'same') + bkg_comp_i
+                        )
+
 
         else:
             model_dict['model_c' + str(i) + '_conv'] = model_temp+bkg_comp_i
@@ -2590,7 +2342,7 @@ def do_fit2D(imagename, params_values_init_IMFIT=None, ncomponents=None,
                                     special_name + save_name_append + '.fits')
 
     #     model = model
-    model_dict['model_total_dec'] = np.asarray(model+flat_sky_total) # +FlatSky_cpu(background,
+    model_dict['model_total_dec'] = np.asarray(model+flat_sky_total_dec) # +FlatSky_cpu(background,
     # params['s_a'].value)
 
     if PSF_CONV == True:
@@ -2601,9 +2353,10 @@ def do_fit2D(imagename, params_values_init_IMFIT=None, ncomponents=None,
             # model_dict['model_total_conv'] = np.asarray(jax_convolve(model,
             #                                                          PSF_DATA)).copy()
             # model_conv = _fftconvolve_jax(model, PSF_DATA).copy() + FlatSky_cpu(background, params['s_a'].value
-            model_conv = _fftconvolve_jax(model+flat_sky_total,PSF_DATA).copy()
+            # model_conv = _fftconvolve_jax(model+flat_sky_total,PSF_DATA).copy()
+            model_conv = _fftconvolve_jax(model,PSF_DATA).copy() + flat_sky_total
         if convolution_mode == 'CPU':
-            model_conv = scipy.signal.fftconvolve(model+flat_sky_total, PSF_DATA_raw,'same')
+            model_conv = scipy.signal.fftconvolve(model, PSF_DATA_raw,'same') + flat_sky_total
             model_dict['model_total_conv'] = model_conv
     else:
         model_dict['model_total_conv'] = model + flat_sky_total
@@ -2612,12 +2365,16 @@ def do_fit2D(imagename, params_values_init_IMFIT=None, ncomponents=None,
     # model_dict['best_residual'] = data_2D - model_dict['model_total']
     # bkg_comp_total
     model_dict['model_total_conv'] = np.asarray(model_conv)
-    model_dict['best_residual_conv'] = np.asarray(data_2D) - model_dict['model_total_conv']
+    if is_rms_map_conv is False and PSF_CONV is True:
+        model_dict['best_residual_conv'] = np.asarray(data_2D) - model_dict['model_total_conv']
+        model_dict['conv_bkg'] = np.asarray(_fftconvolve_jax(flat_sky_total,PSF_DATA).copy())
+    else:
+        model_dict['best_residual_conv'] = np.asarray(data_2D) - model_dict['model_total_conv'] + flat_sky_total
+        model_dict['conv_bkg'] = np.asarray(flat_sky_total)
 
+    model_dict['deconv_bkg'] = np.asarray(flat_sky_total_dec)
+    
 
-    model_dict['deconv_bkg'] = np.asarray(flat_sky_total)
-    # bkg_comp_total
-    model_dict['conv_bkg'] = np.asarray(_fftconvolve_jax(flat_sky_total,PSF_DATA).copy())
 
     pf.writeto(imagename.replace('.fits', '') +
                "_" + "conv_model" + special_name + save_name_append + '.fits',
@@ -2698,18 +2455,18 @@ def do_fit2D(imagename, params_values_init_IMFIT=None, ncomponents=None,
                               "_" + "residual" +
                               special_name + save_name_append + ".fits")
 
-    # save mini results (full) to a pickle file.
-    with open(imagename.replace('.fits',
-                                '_' + 'fit' +
-                                special_name + save_name_append + '.pickle'),
-              "wb") as f:
-        pickle.dump(result, f)
+    # # save mini results (full) to a pickle file.
+    # with open(imagename.replace('.fits',
+    #                             '_' + 'fit' +
+    #                             special_name + save_name_append + '.pickle'),
+    #           "wb") as f:
+    #     pickle.dump(result, f)
 
-    with open(imagename.replace('.fits',
-                                '_' + 'fit' +
-                                special_name + save_name_append + '_modeldict.pickle'),
-              "wb") as f:
-        pickle.dump(model_dict, f)
+    # with open(imagename.replace('.fits',
+    #                             '_' + 'fit' +
+    #                             special_name + save_name_append + '_modeldict.pickle'),
+    #           "wb") as f:
+    #     pickle.dump(model_dict, f)
 
 
     exec_time = time.time() - startTime
@@ -2864,7 +2621,9 @@ def run_image_fitting(imagelist, residuallist, sources_photometries,
                       fix_geometry=True,
                       dr_fix=[10, 10, 10, 10, 10, 10, 10, 10],logger=None,
                       parameters_mini_init = None,
-                      self_bkg=False, bkg_rms_map=None,verbose=0):
+                      self_bkg=False, bkg_rms_map=None,
+                      is_rms_map_conv=False,
+                      verbose=0):
     """
     Support function to run the image fitting to a image or to a list of images.
 
@@ -3012,7 +2771,8 @@ def run_image_fitting(imagelist, residuallist, sources_photometries,
                             fix_max_value_Rn=fix_max_value_Rn,
                             fix_x0_y0=fix_x0_y0,
                             dr_fix=dr_fix,
-                            self_bkg=self_bkg, rms_map=bkg_rms_map,
+                            self_bkg=self_bkg, rms_map=bkg_rms_map, 
+                            is_rms_map_conv=is_rms_map_conv,
                             convolution_mode=convolution_mode,
                             fix_geometry=fix_geometry,
                             workers=workers,
@@ -3156,7 +2916,7 @@ def run_image_fitting(imagelist, residuallist, sources_photometries,
         
         exteded_file_name = crop_image.replace('.fits', '') + \
                             special_name + '_extended.fits'
-        pf.writeto(exteded_file_name,extended_data,overwrite=True)
+        pf.writeto(exteded_file_name,extended_data + load_fits_data(bkg_conv),overwrite=True)
         copy_header(crop_image,exteded_file_name)
         
         compact_file_name = crop_image.replace('.fits', '') + \
@@ -3220,8 +2980,11 @@ def run_image_fitting(imagelist, residuallist, sources_photometries,
 
 
         iterations = 2
-        rms_model = mad_std(compact_model) + rms_std_res
+        # rms_model = mad_std(compact_model) + rms_std_res
+        """testing"""
+        rms_model = rms_std_res
         rms_compact_conv = rms_bkg_conv # * len(comp_ids)
+        
         _, mask_region_conv_comp = mask_dilation(compact_model,
                                         rms=rms_model,
                                         # rms=rms_compact_conv,
@@ -3346,7 +3109,9 @@ def run_image_fitting(imagelist, residuallist, sources_photometries,
 
 
         else:
-            rms_model = mad_std(extended_model) + rms_std_res
+            # rms_model = mad_std(extended_model) + rms_std_res
+            """testing"""
+            rms_model = rms_std_res
             rms_ext_conv = rms_bkg_conv # * len(ext_ids)
             # if _rms_model < 1e-6:
             #     rms_model = mad_std(extended_model[extended_model>1e-6])
@@ -3404,7 +3169,9 @@ def run_image_fitting(imagelist, residuallist, sources_photometries,
                 empty_results = {key: np.nan for key in results_compact_conv_morpho.keys()}
                 list_results_ext_conv_morpho.append(empty_results)
 
-            rms_model = mad_std(extended_model_deconv) + rms_std_res
+            # rms_model = mad_std(extended_model_deconv) + rms_std_res
+            """testing"""
+            rms_model = rms_std_res
             rms_ext_deconv = rms_bkg_deconv # / len(ext_ids)
             # print('**************************')
             # print('**************************')

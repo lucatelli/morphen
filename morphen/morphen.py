@@ -17,16 +17,17 @@
                                                   .. .       . .. .|.|_ ..
 
 """
-__versions__ = ('0.3.1alpha-1', '0.4.0alpha-1', '')
+__versions__ = ('0.3.1alpha-1', '0.4.0alpha-1', '0.5.0alpha-1')
 __codenames__ = ('Pelicoto', 'Saurinho', '')
+__package_name__ = 'morphen'
 __dates__ =  ('2024 03 25','2024 11 13')
-__version__ = '0.4.0alpha-1'
+__version__ = '0.5.0alpha-1'
 __codename__ = 'Saurinho'
 __author__ = 'Geferson Lucatelli'
 __coauthors__ = ('Javier Moldon, Rob Beswick, '
                   'Fabricio Ferrari, Leonardo Ferreira')
 __email__ = 'geferson.lucatelli@postgrad.manchester.ac.uk'
-__date__ = '2024 11 13'
+__date__ = '2024 12 18'
 # print(__doc__)
 
 
@@ -38,7 +39,7 @@ import logging
 from matplotlib import use as mpluse
 # sys.path.append("/mirror/scratch/lucatelli/app/miniconda3/envs/casa6/lib/python3.8/site-packages/")
 sys.path.append('./')
-sys.path.append('../analysis_scripts/')
+sys.path.append('./analysis_scripts/')
 # import sys
 import mlibs as mlibs
 import analysisUtils as au
@@ -154,6 +155,10 @@ class read_data():
         self.psfname = psfname
         self.print_names()
         self.get_data()
+        try:
+            self.get_info()
+        except:
+            pass
 
     def print_names(self):
         if self.filename != None:
@@ -181,6 +186,11 @@ class read_data():
             self.rms_res = mlibs.mad_std(self.residual_data_2D)
         if self.psfname != None:
             self.psf_data_2D = mlibs.load_fits_data(self.psfname)
+    
+    def get_info(self):
+        self.cell_size = mlibs.get_cell_size(self.filename)
+        self.beam_area_px = mlibs.beam_area2(self.filename)
+        
 
 
 class radio_image_analysis():
@@ -319,10 +329,10 @@ class source_extraction():
                  deblend_nthresh=25, deblend_cont=1e-8,
                  clean_param=0.5, clean=True,
                  minarea_factor = 1.0,npixels=None,
-                 sort_by='distance',  # sort detected source by flux
+                 sort_by='distance',  # sort detected source by distance
                  sigma=6,  # min rms to search for sources
                  mask_grow_iterations = 1,
-                 ell_size_factor=2.0,  # unstable, please inspect!
+                 ell_size_factor=None,  # unstable, please inspect!
                  obs_type = 'radio', algorithm='SEP',threshold_mode='sigma',
                  force_circular=False,
                  show_detection=False,show_petro_plots=False,
@@ -597,6 +607,7 @@ class sersic_multifit_radio():
                  tr_solver = "exact",loss = 'cauchy',
                  convolution_mode='GPU',method1='least_squares',
                  self_bkg = False, bkg_rms_map = None,
+                 is_rms_map_conv = False,
                  method2='least_squares',
                  parameters_mini_init = None,
                  z = 0.01,
@@ -674,6 +685,7 @@ class sersic_multifit_radio():
         self.sigma = sigma
         self.self_bkg = self_bkg
         self.bkg_rms_map = bkg_rms_map
+        self.is_rms_map_conv = is_rms_map_conv
         self.verbose = verbose
 
         
@@ -732,6 +744,7 @@ class sersic_multifit_radio():
                                     mask_for_fit=self.mask_for_fit,
                                     bkg_rms_map=self.bkg_rms_map,
                                     self_bkg=self.self_bkg,
+                                    is_rms_map_conv = self.is_rms_map_conv,
                                     save_name_append='',
                                     fix_n=self.fix_n,
                                     loss=self.loss,
