@@ -151,7 +151,7 @@ def compute_model_properties(model_list,  # the model list of each component
                              mask_region = None,
                              z=None,
                              sigma_mask=5.0,
-                             last_level = 1.0,
+                             last_level = 1.5,
                              vmin_factor=1.0,
                              iterations = 2,
                              verbose=0):
@@ -188,7 +188,9 @@ def compute_model_properties(model_list,  # the model list of each component
             if which_model == 'conv':
                 rms_model = rms
             if which_model == 'deconv':
-                rms_model = mad_std(model_component_data) + rms
+                # rms_model = mad_std(model_component_data) + rms
+                """testing"""
+                rms_model = rms
             # if verbose >= 1:
             #     print(' --==>> STD RMS of model component: ', rms_model)
             #     print(' --==>> STD RMS of model bkg: ', rms)
@@ -199,8 +201,33 @@ def compute_model_properties(model_list,  # the model list of each component
                                             sigma=sigma_mask, 
                                             dilation_size=dilation_size,
                                             iterations=iterations, 
-                                            PLOT=show_figure)
+                                            PLOT=True)
+            # """#testing"""
+            # if which_model == 'deconv':
+            #     if np.nansum(mask_component) == 0 and mask_region is not None:
+            #         mask_component = mask_region
+            # """---"""
             
+            """#testing"""
+            if np.nansum(mask_component) == 0 and mask_region is not None:
+                # _, mask_component = mask_dilation(model_component,
+                #                                 rms=rms_model,
+                #                                 sigma=3.0, 
+                #                                 dilation_size=dilation_size,
+                #                                 iterations=iterations, 
+                #                                 PLOT=True)
+                # if np.nansum(mask_component) == 0 and mask_region is not None:
+                #     _, mask_component = mask_dilation(model_component,
+                #                                     rms=mad_std(model_component_data),
+                #                                     sigma=1.0, 
+                #                                     dilation_size=dilation_size,
+                #                                     iterations=iterations, 
+                #                                     PLOT=True)    
+                # mask_component = mask_component * mask_region
+                mask_component = mask_region
+            """---"""
+
+
             # print('number of pixesl in model mask = ', np.sum(mask_component))
             # print('number of pixesl in model mask * regions mask = ', np.sum(mask_component*mask_region))
             # print('number of pixesl in regions mask = ', np.sum(mask_region))
@@ -213,7 +240,7 @@ def compute_model_properties(model_list,  # the model list of each component
                                             vmin_factor=vmin_factor,
                                             dilation_size=dilation_size,
                                             mask = mask_region,
-                                            mask_component=mask_component,
+                                            mask_component=mask_component * mask_region,
                                             show_figure = show_figure,
                                             apply_mask=False,
                                             # data_2D=load_fits_data(model_component),
@@ -226,7 +253,7 @@ def compute_model_properties(model_list,  # the model list of each component
                 'model_file'] = os.path.basename(model_component)
             kk = kk + 1
         except:
-            empty_properties = {key: np.nan for key in model_properties[f"model_c_{which_model}_{kk-1}_props"].keys()}
+            empty_properties = {key: np.nan for key in model_properties[f"model_c_{which_model}_{1}_props"].keys()}
             model_properties[f"model_c_{which_model}_{kk}_props"] = empty_properties.copy()
             model_properties[f"model_c_{which_model}_{kk}_props"]['comp_ID'] = kk
             model_properties[f"model_c_{which_model}_{kk}_props"][
