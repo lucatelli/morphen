@@ -329,7 +329,7 @@ class source_extraction():
                  deblend_nthresh=25, deblend_cont=1e-8,
                  clean_param=0.5, clean=True,
                  minarea_factor = 1.0,npixels=None,
-                 sort_by='distance',  # sort detected source by distance
+                 sort_by='flux',  # sort detected source by distance
                  sigma=6,  # min rms to search for sources
                  mask_grow_iterations = 1,
                  ell_size_factor=None,  # unstable, please inspect!
@@ -601,6 +601,7 @@ class sersic_multifit_radio():
                  fix_n = None, 
                  fix_value_n = None, 
                  fix_max_value_Rn = None,
+                 fix_min_value_Rn = False,
                  dr_fix = None,fix_x0_y0=None,
                  sigma=6.0, use_mask_for_fit=False,mask_for_fit=None,
                  mask=None,
@@ -665,7 +666,11 @@ class sersic_multifit_radio():
                 self.mask_for_fit = mask_for_fit
         else:
             _logging_.logger.info(f" ++>> Fitting without a mask.")
-            self.mask_for_fit = None
+            if mask_for_fit is None:
+                self.mask_for_fit = None
+            else:
+                self.mask_for_fit = mask_for_fit
+
         if mask is None:
             self.mask = self.SE.mask
         else:
@@ -688,6 +693,7 @@ class sersic_multifit_radio():
         self.is_rms_map_conv = is_rms_map_conv
         self.verbose = verbose
 
+        self.fix_min_value_Rn = fix_min_value_Rn
         
         if fix_n is None:
             self.fix_n = [True] * self.SE.n_components
@@ -751,6 +757,7 @@ class sersic_multifit_radio():
                                     tr_solver = self.tr_solver,
                                     fix_value_n=self.fix_value_n,
                                     fix_max_value_Rn = self.fix_max_value_Rn,
+                                    fix_min_value_Rn = self.fix_min_value_Rn,
                                     fix_geometry=self.fix_geometry,  # unstable if  False
                                     dr_fix=self.dr_fix,
                                     fix_x0_y0 = self.fix_x0_y0,
@@ -1150,9 +1157,39 @@ class decompose_emission():
         compact_conv_summary['frequency'] = self.frequency
         
         
+        _logging_.logger.info(f'-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+')
+        _logging_.logger.info(f'Total emission.')
+        _logging_.logger.info(f'-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+')
+        # print(self.SMFR.data_properties['total_flux_mask'])
+        A_R50_data = mlibs.pix_area_to_kpc_area(self.SMFR.data_properties['npix50'].values[0],self.pix_to_pc)
+        A_R50_data_err = mlibs.pix_area_to_kpc_area(self.SMFR.data_properties['npix50_err'].values[0],self.pix_to_pc)
+        A_R95_data = mlibs.pix_area_to_kpc_area(self.SMFR.data_properties['npix95'].values[0],self.pix_to_pc)
+        A_R95_data_err = mlibs.pix_area_to_kpc_area(self.SMFR.data_properties['npix95_err'].values[0],self.pix_to_pc)
+        
+
+        _logging_.logger.info(f"Snu = {1000*self.SMFR.data_properties['total_flux_mask'].values[0]:.2f}" 
+                                f" +/- {1000*self.SMFR.data_properties['flux_error_res_3'].values[0]:.2f} mJy")
+        
+        _logging_.logger.info(f"R50 = {self.pix_to_pc * self.SMFR.data_properties['C50radii'].values[0]:.2f}"
+                                f" +/- {self.pix_to_pc * self.SMFR.data_properties['C50radii_err'].values[0]:.2f} pc")
+        _logging_.logger.info(f"R95 = {self.pix_to_pc * self.SMFR.data_properties['C95radii'].values[0]:.2f}"
+                                f" +/- {self.pix_to_pc * self.SMFR.data_properties['C95radii_err'].values[0]:.2f} pc")
+        _logging_.logger.info(f"A50 = {A_R50_data:.3f}"
+                                f" +/- {A_R50_data_err:.3f} [kpc^2]")
+        _logging_.logger.info(f"A95 = {A_R95_data:.3f}"
+                                f" +/- {A_R95_data_err:.3f} [kpc^2]")
+        _logging_.logger.info(f"A50 = ({1e3*A_R50_data:.3f}"
+                                f" +/- {1e3*A_R50_data_err:.3f}) x 1e3 [kpc^2]")
+        _logging_.logger.info(f"A95 = ({1e3*A_R95_data:.3f}"
+                                f" +/- {1e3*A_R95_data_err:.3f}) x 1e3 [kpc^2]")
+
+
         for component_id in self.SMFR.comp_ids:
             mlibs.print_logger_header(title="Decomposition Results",
                     logger=_logging_.logger)
+            
+
+            
             _logging_.logger.info(f'-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+')
             _logging_.logger.info(f'Compact component ID {component_id}.')
             _logging_.logger.info(f'-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+')
@@ -1621,6 +1658,30 @@ class decompose_emission():
         _logging_.logger.info(f"Snu Extended Total = {1000*ext_conv_summary[f'Snu_ext_total']:.2f}" 
                                 f" +/- {1000*ext_conv_summary[f'Snu_ext_total_err']:.2f} mJy")
         
+        _logging_.logger.info(f'-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+')
+        
+        A50_kpc_ext_conv = mlibs.pix_area_to_kpc_area(self.SMFR.results_ext_conv_morpho['npix50'].values[0],self.pix_to_pc)
+        A50_err_kpc_ext_conv = mlibs.pix_area_to_kpc_area(self.SMFR.results_ext_conv_morpho['npix50_err'].values[0],self.pix_to_pc)
+        A95_kpc_ext_conv = mlibs.pix_area_to_kpc_area(self.SMFR.results_ext_conv_morpho['npix95'].values[0],self.pix_to_pc)
+        A95_err_kpc_ext_conv = mlibs.pix_area_to_kpc_area(self.SMFR.results_ext_conv_morpho['npix95_err'].values[0],self.pix_to_pc)
+        
+        _logging_.logger.info(f"Snu Extended Data = {1000*self.SMFR.results_ext_conv_morpho[f'total_flux_mask'].values[0]:.2f}" 
+                                f" +/- {1000*self.SMFR.results_ext_conv_morpho[f'flux_error_res_3'].values[0]:.2f} mJy")
+
+        _logging_.logger.info(f"R50 ext data = {self.pix_to_pc*self.SMFR.results_ext_conv_morpho[f'C50radii'].values[0]:.2f}"
+                                f" +/- {self.pix_to_pc*self.SMFR.results_ext_conv_morpho[f'C50radii_err'].values[0]:.2f} pc")
+        _logging_.logger.info(f"R95 ext data = {self.pix_to_pc*self.SMFR.results_ext_conv_morpho[f'C95radii'].values[0]:.2f}"
+                                f" +/- {self.pix_to_pc*self.SMFR.results_ext_conv_morpho[f'C95radii_err'].values[0]:.2f} pc")        
+        
+        _logging_.logger.info(f"A50 ext data = ({1e3*A50_kpc_ext_conv:.3f}"
+                                f" +/- {1e3*A50_err_kpc_ext_conv:.3f}) x 1e-3 kpc^2")
+        _logging_.logger.info(f"A95 ext data = ({1e3*A95_kpc_ext_conv:.3f}"
+                                f" +/- {1e3*A95_err_kpc_ext_conv:.3f}) x 1e-3 kpc^2")
+        
+        ext_conv_summary['A50_kpc_ext_data'] = A50_kpc_ext_conv
+        ext_conv_summary['A50_kpc_ext_data_err'] = A50_err_kpc_ext_conv
+        ext_conv_summary['A95_kpc_ext_data'] = A95_kpc_ext_conv
+        ext_conv_summary['A95_kpc_ext_data_err'] = A95_err_kpc_ext_conv
         
         self.ext_dec_summary = ext_dec_summary
         self.ext_conv_summary = ext_conv_summary
@@ -1778,6 +1839,23 @@ class radio_star_formation():
             self.sSFR_95 = self.SFR/self.SMFR_decomp.compact_conv_summary[f'comp_{component_id}_A_R95']
             self.sSFR_95_err = self.SFR_err/self.SMFR_decomp.compact_conv_summary[f'comp_{component_id}_A_R95']
             self.sSFR_95_err_2 = self.sSFR_95 * np.sqrt((self.SFR_err/self.SFR)**2.0 + (self.SMFR_decomp.compact_conv_summary[f'comp_{component_id}_A_R95_err']/self.SMFR_decomp.compact_conv_summary[f'comp_{component_id}_A_R95'])**2.0)
+
+            
+            
+            beam_area_kpc = mlibs.pix_area_to_kpc_area(self.input_data.beam_area_px,self.pix_to_pc)
+
+            # self.sSFR_95_corr = self.SFR/np.sqrt(self.SMFR_decomp.compact_conv_summary[f'comp_{component_id}_A_R95']*beam_area_kpc)
+            # self.sSFR_95_corr_err = self.SFR_err/np.sqrt(self.SMFR_decomp.compact_conv_summary[f'comp_{component_id}_A_R95']*beam_area_kpc)
+            
+            # self.sSFR_95_d_corr = self.SFR/np.sqrt(self.SMFR_decomp.compact_dec_summary[f'comp_{component_id}_A_R95_d']*beam_area_kpc)
+            # self.sSFR_95_d_corr_err = self.SFR_err/np.sqrt(self.SMFR_decomp.compact_dec_summary[f'comp_{component_id}_A_R95_d']*beam_area_kpc)
+            
+            self.sSFR_95_corr = self.SFR/np.sqrt(beam_area_kpc*beam_area_kpc)
+            self.sSFR_95_corr_err = self.SFR_err/np.sqrt(beam_area_kpc*beam_area_kpc)
+            
+            self.sSFR_95_d_corr = self.SFR/np.sqrt(beam_area_kpc*beam_area_kpc)
+            self.sSFR_95_d_corr_err = self.SFR_err/(beam_area_kpc*beam_area_kpc)
+            
             _logging_.logger.info(f'-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+')
             _logging_.logger.info(f'Compact component ID {component_id}.')
             _logging_.logger.info(f'-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+')
@@ -1792,12 +1870,23 @@ class radio_star_formation():
                                 f"Mo/yr/kpc^2")
             _logging_.logger.info(f" ==> sSFR (convolved areas) = {self.sSFR_95:.2f} +/- {self.sSFR_95_err_2:.2f} "
                                 f"Mo/yr/kpc^2")
+
+            _logging_.logger.info(f" ==> Beam Corrected sSFR")
+            _logging_.logger.info(f'Beam Area px {self.input_data.beam_area_px}.')
+            _logging_.logger.info(f'Beam Area kpc {beam_area_kpc}.')
+            _logging_.logger.info(f" ==> sSFR-corr (deconvolved areas) = {self.sSFR_95_d_corr:.2f} +/- {self.sSFR_95_d_corr_err:.2f} "
+                                f"Mo/yr/kpc^2")
+            _logging_.logger.info(f" ==> sSFR-corr (convolved areas) = {self.sSFR_95_corr:.2f} +/- {self.sSFR_95_corr_err:.2f} "
+                                f"Mo/yr/kpc^2")
+
             SFR_estimates_compact[f'comp_{component_id}_SFR'] = self.SFR
             SFR_estimates_compact[f'comp_{component_id}_SFR_err'] = self.SFR_err
             SFR_estimates_compact[f'comp_{component_id}_sSFR_95_d'] = self.sSFR_95_d
             SFR_estimates_compact[f'comp_{component_id}_sSFR_95_d_err'] = self.sSFR_95_d_err
             SFR_estimates_compact[f'comp_{component_id}_sSFR_95'] = self.sSFR_95
             SFR_estimates_compact[f'comp_{component_id}_sSFR_95_err'] = self.sSFR_95
+
+            
             
         _logging_.logger.info(f" ==> SFR (compact total) = {self.SFR_compact:.2f} +/- {self.SFR_compact_err:.2f} "
                             f"Mo/yr")
