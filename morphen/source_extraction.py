@@ -339,8 +339,8 @@ def sep_source_ext(imagename, residualname=None,
     objects_sorted['xc'] = np.asarray([1] * len(objects))
     objects_sorted['yc'] = np.asarray([1] * len(objects))
     for i in range(len(objects)):
-        objects_sorted['xc'][i] = objects['x'][sorted_indices_desc[i]]
-        objects_sorted['yc'][i] = objects['y'][sorted_indices_desc[i]]
+        objects_sorted['xc'][sorted_indices_desc[i]] = objects['x'][sorted_indices_desc[i]]
+        objects_sorted['yc'][sorted_indices_desc[i]] = objects['y'][sorted_indices_desc[i]]
 
     if show_detection == True:
         for i in range(len(objects)):
@@ -694,7 +694,7 @@ def phot_source_ext(imagename, residual=None, sigma=1.0, iterations=2, dilation_
     if ell_size_factor is None:
         if mask is not None:
             # ell_size_factor = np.sqrt(np.sum(mask) / (np.pi))/cat[0].equivalent_radius.value
-            ell_size_factor = 0.1*np.sqrt(np.sum(mask) / (np.pi))
+            ell_size_factor = 0.05*np.sqrt(np.sum(mask) / (np.pi))
         else:
             ell_size_factor = 0.5
     
