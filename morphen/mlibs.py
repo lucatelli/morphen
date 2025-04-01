@@ -17,14 +17,14 @@
                                                   .. .       . .. .|.|_ ..
 
 """
-__versions__ = ('0.3.1alpha-1', '0.4.0alpha-1', '')
+__versions__ = ('0.3.1alpha-1', '0.4.0alpha-1', '0.5.0alpha-1')
 __codenames__ = ('Pelicoto', 'Saurinho', '')
 __package_name__ = 'morphen'
-__version__ = '0.4.0alpha-1'
+__version__ = '0.5.0alpha-1'
 __codename__ = 'Saurinho'
 __author__ = 'Geferson Lucatelli'
 __email__ = 'geferson.lucatelli@postgrad.manchester.ac.uk; gefersonlucatelli@gmail.com'
-__date__ = '2024 11 13'
+__date__ = '2024 12 18'
 print(__doc__)
 print('Version',__version__, '('+__codename__+')')
 print('By',__author__)
@@ -62,6 +62,8 @@ from lmfit import Model
 from lmfit import Parameters, fit_report, minimize
 import emcee
 from prettytable import PrettyTable
+from joblib import Parallel, delayed
+
 
 import string
 from matplotlib.gridspec import GridSpec
@@ -96,6 +98,7 @@ import scipy.ndimage as nd
 import scipy
 from scipy.stats import circmean, circstd
 from scipy.signal import savgol_filter
+
 
 from astropy.cosmology import FlatLambdaCDM
 import numpy as np
