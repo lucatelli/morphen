@@ -20,7 +20,7 @@ def RC_function_SY_FF(nu, A_sy, A_ff, alpha_nt, nu0):
     return A_ff * ((nu / nu0) ** (-0.1)) + A_sy * ((nu / nu0) ** (alpha_nt))
 
 
-def RC_function_SY_ffa(nu,Snu0,fth_nu0,alpha_nt,nu_tau_t,f_cov,nu0=10):
+def RC_function_SY_ffa(nu,Snu0,fth_nu0,alpha_nt,nu_tau_t,nu0=10,f_cov=1.0):
     tau_nu = (nu/nu_tau_t)**(-2.1)
     return((1 - fth_nu0) * Snu0 * (1-f_cov*(1-np.exp(-tau_nu))) * ((nu/nu0)**alpha_nt))
 
@@ -29,18 +29,18 @@ def RC_function_FF_ffa(nu,Snu0,fth_nu0,nu_tau_t,nu0=10):
     return(fth_nu0 * Snu0 * ((1-np.exp(-tau_nu))/(tau_nu)) * ((nu/nu0)**(-0.1)))
     
 
-def RC_function_SY_FF_ffa(nu, Snu0, fth_nu0, alpha_nt, nu_tau_t, f_cov=1.0, nu0=10):
+def RC_function_SY_FF_ffa(nu, Snu0, fth_nu0, alpha_nt, nu_tau_t, nu0=10, f_cov=1.0):
     # return A_ff * (nu0 ** (-0.1)) * ((nu / nu0) ** (-0.1)) + A_sy * (nu0 ** (alpha_nt)) * ((nu / nu0) ** (alpha_nt))
     # tau_nu = (nu/nu_tau_t)**(-2.1)
     # S_ff_abs = fth_nu0 * Snu0 * ((1-np.exp(-tau_nu))/(np.exp(-tau_nu))) * ((nu/nu0)**(-0.1))
     S_ff_abs = RC_function_FF_ffa(nu,Snu0,fth_nu0,nu_tau_t,nu0)
     # S_sy_abs = (1 - fth_nu0) * Snu0 * (1-f_cov*(1-np.exp(-tau_nu))) * ((nu/nu0)**alpha_nt)
-    S_sy_abs = RC_function_SY_ffa(nu,Snu0,fth_nu0,alpha_nt,nu_tau_t,f_cov,nu0)
+    S_sy_abs = RC_function_SY_ffa(nu,Snu0,fth_nu0,alpha_nt,nu_tau_t,nu0,f_cov)
     S_total_abs = S_ff_abs + S_sy_abs
     return S_total_abs
 
 
-def RC_function_SY_ffa_v2(nu,A_sy,alpha_nt,nu_tau_t,f_cov,nu0=10):
+def RC_function_SY_ffa_v2(nu,A_sy,alpha_nt,nu_tau_t,nu0=10,f_cov=1.0):
     tau_nu = (nu/nu_tau_t)**(-2.1)
     return((10**A_sy) * (1-f_cov*(1-np.exp(-tau_nu))) * ((nu/nu0)**alpha_nt))
 
@@ -48,13 +48,13 @@ def RC_function_FF_ffa_v2(nu,A_ff,nu_tau_t,nu0=10):
     tau_nu = (nu/nu_tau_t)**(-2.1)
     return((10**A_ff) * ((1-np.exp(-tau_nu))/(tau_nu)) * ((nu/nu0)**(-0.1)))
 
-def RC_function_SY_FF_ffa_v2(nu, A_sy, A_ff, alpha_nt, nu_tau_t, f_cov=1.0, nu0=10):
+def RC_function_SY_FF_ffa_v2(nu, A_sy, A_ff, alpha_nt, nu_tau_t, nu0=10,f_cov=1.0):
     # return A_ff * (nu0 ** (-0.1)) * ((nu / nu0) ** (-0.1)) + A_sy * (nu0 ** (alpha_nt)) * ((nu / nu0) ** (alpha_nt))
     # tau_nu = (nu/nu_tau_t)**(-2.1)
     # S_ff_abs = fth_nu0 * Snu0 * ((1-np.exp(-tau_nu))/(np.exp(-tau_nu))) * ((nu/nu0)**(-0.1))
     S_ff_abs = RC_function_FF_ffa_v2(nu,A_ff,nu_tau_t,nu0)
     # S_sy_abs = (1 - fth_nu0) * Snu0 * (1-f_cov*(1-np.exp(-tau_nu))) * ((nu/nu0)**alpha_nt)
-    S_sy_abs = RC_function_SY_ffa_v2(nu,A_sy,alpha_nt,nu_tau_t,f_cov,nu0)
+    S_sy_abs = RC_function_SY_ffa_v2(nu,A_sy,alpha_nt,nu_tau_t,nu0,f_cov)
     S_total_abs = S_ff_abs + S_sy_abs
     return S_total_abs
 
@@ -466,6 +466,12 @@ def general_mcmc(x_data, y_data, yerr_data,
     # Define the log-probability function with priors
     # def log_prob(params, x, y, yerr, best_fit_params, params_stderr):
     #     # Prior: within +/- 10 sigma
+        
+    #     # if params[0] < 0:
+    #     #     return -np.inf
+    #     # if params[1] < 0:
+    #     #     return -np.inf
+        
     #     if not all(best_fit_params[i] - prior_sigma*params_stderr[i] < params[i] < best_fit_params[i] + prior_sigma*params_stderr[i] for i in range(ndim)):
     #         return -np.inf
     #     # Calculate the model predictions
@@ -479,6 +485,11 @@ def general_mcmc(x_data, y_data, yerr_data,
     #     # Check for NaNs in the input data or parameters
     #     if np.any(np.isnan(x)) or np.any(np.isnan(y)) or np.any(np.isnan(yerr)) or np.any(np.isnan(params)):
     #         return -np.inf  # Return negative infinity to ignore samples with NaNs
+        
+    #     # if params[0] < 0:
+    #     #     return -np.inf
+    #     # if params[1] < 0:
+    #     #     return -np.inf
         
     #     # Prior: within +/- 10 sigma
     #     if not all(best_fit_params[i] - prior_sigma*params_stderr[i] < params[i] < best_fit_params[i] + prior_sigma*params_stderr[i] for i in range(ndim)):
@@ -497,6 +508,11 @@ def general_mcmc(x_data, y_data, yerr_data,
         # Check for NaN in the parameters
         if np.any(np.isnan(params)):
             return -np.inf
+        
+        # if params[0] < -5:
+        #     return -np.inf
+        # if params[1] < -5:
+        #     return -np.inf
 
         # Prior: within +/- prior_sigma * sigma
         if not all(best_fit_params[i] - prior_sigma * params_stderr[i] < params[i] < best_fit_params[i] + prior_sigma * params_stderr[i] for i in range(ndim)):
@@ -982,7 +998,7 @@ def do_fit_spec_RC_linear(freqs,
                           mcmc_version = 'general',
                           burn_in = 1000,
                           nsteps = 5000,
-                          thin = 5,
+                          thin = 2,
                           title_text = None,
                           add_fit_legend = True,
                           verbose=0):
@@ -1018,16 +1034,25 @@ def do_fit_spec_RC_linear(freqs,
     if nu0 is None:
         nu0 = np.nanmean(x)
     yerr = fluxes_err
-    weights = 1.0 / yerr
-    epsilon = 1e-16
+    # weights = 1.0 / yerr
+    epsilon = 1e-8
+    # def min_func(params):
+    #     A1 = params['A1']
+    #     alpha = params['alpha']
+    #     model = RC_function_linear(x, A1, alpha,nu0)
+    #     relative_error = yerr / (np.abs(y) + epsilon)
+    #     weights = 1 / (relative_error + epsilon)
+    #     # weightned_residual = (y - model) * np.sqrt(weights)
+    #     # weightned_residual = (y - model) / (np.sqrt(weights + yerr))
+    #     weightned_residual = (y - model) / (np.sqrt(weights)+yerr)
+    #     return weightned_residual.copy()
+
     def min_func(params):
         A1 = params['A1']
         alpha = params['alpha']
         model = RC_function_linear(x, A1, alpha,nu0)
-        relative_error = yerr / (np.abs(y) + epsilon)
-        weights = 1 / (relative_error + epsilon)
-        weightned_residual = (y - model) * np.sqrt(weights)
-        return weightned_residual.copy()
+        log_weights = 1.0 / (1.0 + np.log1p(yerr / np.median(yerr)))
+        return (y - model) * log_weights
 
 
     fit_params = lmfit.Parameters()
@@ -1242,6 +1267,9 @@ def do_fit_spec_RC_linear(freqs,
             save_name_append = save_name_append + '_RC_alpha_fit_linear'
         plt.savefig(basename_save.replace('.fits','_')+save_name_append+'.jpg', dpi=600,
                     bbox_inches='tight')
+    plt.show()
+    plt.clf()
+    plt.close()
     # plt.show()
     corner_kwargs = {
         'bins': 30,
@@ -1282,6 +1310,10 @@ def do_fit_spec_RC_linear(freqs,
                 save_name_append_corner = save_name_append + '_corner'
                 plt.savefig(basename_save.replace('.fits','_')+save_name_append_corner+'.jpg', 
                             dpi=600,bbox_inches='tight')
+            
+            plt.show()
+            plt.clf()
+            plt.close()
                 
             print('++==>> Parameter Results (MCMC sampling).')
             print(lmfit.fit_report(results_emcee.params))
@@ -1762,17 +1794,21 @@ def fit_spec_SY_FF(freqs,
                    fluxes,
                    fluxes_err,
                    nu0=None,
+                   nu_th=33.0,
+                   fix_alpha_nt=False,
+                   fix_alpha_nt_value=-0.85,
                    basename_save=None,log_plot=True,
                    save_name_append = None,
                    plot_errors_shade = False,
-                   sigma_shade=3,
+                   sigma_shade=1,
                    quantiles = [0.16, 0.5, 0.84],
                    do_mcmc_fit = False,
                    mcmc_version = 'general',
-                   burn_in = 1000,
-                   nsteps = 5000,
+                   burn_in = 3000,
+                   nsteps = 10000,
                    thin = 5,
                    sigma_errors = 1.0,
+                   prior_sigma = 15.0,
                    title_text = None,
                    add_fit_legend = True,
                    plot_fit_results=True,
@@ -1808,7 +1844,8 @@ def fit_spec_SY_FF(freqs,
     x = freqs / 1e9
     y = fluxes
     yerr = fluxes_err
-    weights = 1.0 / yerr
+    epsilon = 1e-6
+    # weights = 1.0 / yerr
     if nu0 is None:
         nu0 = np.mean(x)
     print(f' ++==>> Using reference frequency of {nu0} GHz.')
@@ -1816,29 +1853,63 @@ def fit_spec_SY_FF(freqs,
 
 
         
+    # def min_func(params):
+    #     A_sy = params['A_sy']
+    #     A_ff = params['A_ff']
+    #     alpha_nt = params['alpha_nt']
+    #     model = RC_function_SY_FF(x, A_sy, A_ff, alpha_nt, nu0)
+    #     # res = (y - model) / (np.log(yerr))
+        
+    #     relative_error = yerr / (np.abs(y) + epsilon)
+    #     weights = 1 / (relative_error + epsilon)
+    #     # weightned_residual = (y - model) * np.sqrt(weights)
+    #     weightned_residual = (y - model) / (np.sqrt(weights)*yerr)
+    #     # weightned_residual = (y - model) / (np.sqrt(weights) + yerr)
+    #     # weightned_residual = (y - model) * np.sqrt(2 / np.log1p(yerr**2))
+        
+    #     return weightned_residual.copy()
+
     def min_func(params):
         A_sy = params['A_sy']
         A_ff = params['A_ff']
         alpha_nt = params['alpha_nt']
         model = RC_function_SY_FF(x, A_sy, A_ff, alpha_nt, nu0)
         # res = (y - model) / (np.log(yerr))
+        log_weights = 1.0 / (1.0 + np.log1p(yerr / np.median(yerr)))
+        return (y - model) * log_weights
+
+
+    # def min_func(params):
+    #     """
+    #     Adaptive weighting to balance low and high-frequency data.
+    #     """
+    #     A_sy = params['A_sy']
+    #     A_ff = params['A_ff']
+    #     alpha_nt = params['alpha_nt']
+    #     model = RC_function_SY_FF(x, A_sy, A_ff, alpha_nt, nu0)
+                
+    #     # Log-based weighting (same as before)
+    #     log_weights = 1.0 / (1.0 + np.log1p(yerr / np.median(yerr)))
         
-        epsilon = 1e-8
-        relative_error = yerr / (np.abs(y) + epsilon)
-        weights = 1 / (relative_error + epsilon)
-        res = (y - model) * np.sqrt(weights)
-        
-        # res = (y - model) * np.sqrt(2 / np.log1p(yerr**2))
-        # res = (y - model)/yerr
-        # loss = huber_loss(res)
-        
-        return res.copy()
+    #     # Frequency correction factor
+    #     freq_weights = (x / np.max(x))**0.5  # Adjust exponent as needed
+
+    #     # Combine weights
+    #     final_weights = log_weights * freq_weights
+
+    #     return (y - model) * final_weights
+
+
 
 
     fit_params = lmfit.Parameters()
-    fit_params.add("A_sy", value=0.5, min=0.0, max=5000)
-    fit_params.add("A_ff", value=0.5, min=0.0, max=5000)
-    fit_params.add("alpha_nt", value=-0.9, min=-2.5, max=2.5)
+    fit_params.add("A_sy", value=0.5, min=0.01, max=5000)
+    fit_params.add("A_ff", value=0.5, min=0.01, max=5000)
+    if fix_alpha_nt == True:
+        fit_params.add("alpha_nt", value=fix_alpha_nt_value, 
+                       min=-2.0, max=0.0, vary=False)
+    else:
+        fit_params.add("alpha_nt", value=-0.9, min=-2.5, max=2.5)
 
     mini = lmfit.Minimizer(min_func, fit_params, max_nfev=15000,
                            nan_policy='omit', reduce_fcn='neglogcauchy')
@@ -1912,21 +1983,37 @@ def fit_spec_SY_FF(freqs,
                                                     nwalkers = nwalkers,
                                                     nsteps = nsteps,
                                                     thin = thin,
+                                                    prior_sigma=prior_sigma,
                                                     sigma_errors = sigma_errors,
                                                     model_func = RC_SY_FF,
                                                     quantiles=quantiles)
             _A_sy = samples_emcee.T[0]
             _A_ff = samples_emcee.T[1]
             _alpha_nt = samples_emcee.T[2]
+            # print(_A_sy.shape[0])
 
             model_samples = np.array(
                 [RC_function_SY_FF(x_resample, 
                                     _A_sy[i], _A_ff[i], 
                                     _alpha_nt[i], nu0) for i in range(_A_sy.shape[0])])
+            
+            Ssy_samples = np.array(
+                [RC_function_SY_FF(x_resample, 
+                                    _A_sy[i], _A_ff[i]*0, 
+                                    _alpha_nt[i], nu0) for i in range(_A_sy.shape[0])])
+            Sff_samples = np.array(
+                [RC_function_SY_FF(x_resample, 
+                                    _A_sy[i]*0, _A_ff[i], 
+                                    _alpha_nt[i], nu0) for i in range(_A_sy.shape[0])])
+            
             print(param_dict)
 
         model_mean = np.mean(model_samples, axis=0)
         model_std = np.std(model_samples, axis=0)
+        Ssy_model_mean = np.mean(Ssy_samples, axis=0)
+        Ssy_model_std = np.std(Ssy_samples, axis=0)
+        Sff_model_mean = np.mean(Sff_samples, axis=0)
+        Sff_model_std = np.std(Sff_samples, axis=0)
 
     model_resample = RC_function_SY_FF(x_resample,
                                     result.params['A_sy'].value,
@@ -1945,20 +2032,50 @@ def fit_spec_SY_FF(freqs,
     A_sy_term = RC_function_SY_FF(x_resample,
                             result.params['A_sy'].value,
                             result.params['A_ff'].value*0,
-                            result.params['alpha_nt'].value,nu0)
+                            result.params['alpha_nt'].value,
+                            nu0)
     
     
     A_ff_term = RC_function_SY_FF(x_resample,
                             result.params['A_sy'].value*0,
                             result.params['A_ff'].value,
-                            result.params['alpha_nt'].value,nu0)
+                            result.params['alpha_nt'].value,
+                            nu0)
     
     A_ff_term_pred = RC_function_SY_FF(x,
                             result.params['A_sy'].value*0,
                             result.params['A_ff'].value,
-                            result.params['alpha_nt'].value,nu0)
+                            result.params['alpha_nt'].value,
+                            nu0)
+    
+    
+    A_sy_term_nu_th = RC_function_SY_FF(nu_th,
+                            result.params['A_sy'].value,
+                            result.params['A_ff'].value*0,
+                            result.params['alpha_nt'].value,
+                            nu0)
+    
+    A_ff_term_nu_th = RC_function_SY_FF(nu_th,
+                            result.params['A_sy'].value*0,
+                            result.params['A_ff'].value,
+                            result.params['alpha_nt'].value,
+                            nu0)
+    
+    
+    thermal_fraction_nu_th = A_ff_term_nu_th / (A_sy_term_nu_th + A_ff_term_nu_th)
+    term_1 = (result.params['A_sy'].value * result.params['A_ff'].stderr) ** 2.0
+    term_2 = (result.params['A_ff'].value * result.params['A_sy'].stderr) ** 2.0
+    term_3 = (result.params['A_ff'].value + result.params['A_sy'].value) ** 4.0
+    # term_1 = (result.params['A_sy'].value * (nu_th**(-0.1)) * (nu_th**(result.params['alpha_nt'].value)) * result.params['A_ff'].stderr) ** 2.0
+    # term_2 = (result.params['A_ff'].value * (nu_th**(-0.1)) * (nu_th**(result.params['alpha_nt'].value)) * result.params['A_sy'].stderr) ** 2.0
+    # term_3 = (result.params['A_ff'].value * (nu_th**(-0.1)) + result.params['A_sy'].value * (nu_th**(result.params['alpha_nt'].value))) ** 4.0
+    
+    thermal_fraction_nu_th_err = np.sqrt((term_1 + term_2) / term_3)
     
     thermal_fraction_freq = A_ff_term_pred / model_best
+    
+    thermal_fraction = {"thermal_fraction_freq": thermal_fraction_freq,
+                        "thermal_fraction_freq_err": thermal_fraction_nu_th_err}
 
     if plot_fit_results:
         fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(7, 4),
@@ -1973,7 +2090,13 @@ def fit_spec_SY_FF(freqs,
                 color='green', ls='dotted', label='Residual')
         ax2.set_ylim(-1.0,1.0)
 
-
+        # if do_mcmc_fit == True:
+        #     ax1.plot(x_resample, Ssy_model_mean,
+        #             '-', label='sy',color='violet')
+            
+        #     ax1.plot(x_resample, Sff_model_mean,
+        #             '-', label='ff', color='orange')
+        # else:
         ax1.plot(x_resample, A_sy_term,
                 '-', label='sy')
         
@@ -1990,8 +2113,20 @@ def fit_spec_SY_FF(freqs,
             if do_mcmc_fit == True:
                 ax1.fill_between(x_resample,
                                 model_mean - sigma_shade*model_std,
-                                model_mean + sigma_shade*model_std, color='lightgray',
+                                model_mean + sigma_shade*model_std, 
+                                color='lightgray',
                                 alpha=0.7)
+                # ax1.fill_between(x_resample,
+                #                 Ssy_model_mean - sigma_shade*Ssy_model_std,
+                #                 Ssy_model_mean + sigma_shade*Ssy_model_std,
+                #                 color='violet',
+                #                 alpha=0.3)
+                # ax1.fill_between(x_resample,
+                #                 Sff_model_mean - sigma_shade*Sff_model_std,
+                #                 Sff_model_mean + sigma_shade*Sff_model_std,
+                #                 color='orange',
+                #                 alpha=0.3)
+                
             else:
                 # Define the number of Monte Carlo samples
                 num_samples = 5000
@@ -2009,21 +2144,49 @@ def fit_spec_SY_FF(freqs,
 
                 # Compute model predictions for each sample
                 model_predictions = np.zeros((num_samples, len(x_resample)))
+                sy_model_predictions = np.zeros((num_samples, len(x_resample)))
+                ff_model_predictions = np.zeros((num_samples, len(x_resample)))
+                
                 for i in range(num_samples):
                     model_predictions[i] = RC_function_SY_FF(x_resample, 
                                                             A_sy_samples[i],
                                                             A_ff_samples[i],
                                                             alpha_nt_samples[i],
                                                             nu0)
+                    sy_model_predictions[i] = RC_function_SY_FF(x_resample, 
+                                                            A_sy_samples[i],
+                                                            A_ff_samples[i]*0,
+                                                            alpha_nt_samples[i],
+                                                            nu0)
+                    ff_model_predictions[i] = RC_function_SY_FF(x_resample, 
+                                                            A_sy_samples[i]*0,
+                                                            A_ff_samples[i],
+                                                            alpha_nt_samples[i],
+                                                            nu0)
 
                 median_prediction = np.median(model_predictions, axis=0)
                 std_prediction = np.std(model_predictions, axis=0)
-
+                sy_median_prediction = np.median(sy_model_predictions, axis=0)
+                sy_std_prediction = np.std(sy_model_predictions, axis=0)
+                ff_median_prediction = np.median(ff_model_predictions, axis=0)
+                ff_std_prediction = np.std(ff_model_predictions, axis=0)
+                
                 ax1.fill_between(x_resample, median_prediction - sigma_shade*std_prediction,
                                 median_prediction + sigma_shade*std_prediction,
-                                color='lightgray', alpha=0.5,
+                                color='lightgray', alpha=0.3,
                                 # label='Uncertainty (1-sigma)'
                                 )
+                ax1.fill_between(x_resample, sy_median_prediction - sigma_shade*sy_std_prediction,
+                                sy_median_prediction + sigma_shade*sy_std_prediction,
+                                color='violet', alpha=0.3,
+                                # label='Uncertainty (1-sigma)'
+                                )
+                ax1.fill_between(x_resample, ff_median_prediction - sigma_shade*ff_std_prediction,
+                                ff_median_prediction + sigma_shade*ff_std_prediction,
+                                color='orange', alpha=0.3,
+                                # label='Uncertainty (1-sigma)'
+                                )
+                
         # plt.ylim(1e-3,1.2*np.max(y))
         if add_fit_legend == True:
             ax1.legend(loc=(0.05, 0.05),frameon=True,prop={'size': 11},ncol=2)
@@ -2036,18 +2199,31 @@ def fit_spec_SY_FF(freqs,
         ax1.set_ylabel(r'$S_{\nu}$ [mJy]')
         
         text_x, text_y = 0.62, 0.72
-        text = (r"$\alpha_{\rm nt}"+f"= {(result.params['alpha_nt'].value):.2f}\pm "
-                rf"{(result.params['alpha_nt'].stderr):.2f}$")
+        if fix_alpha_nt == True:
+            text = (r"$\alpha_{\rm sy}"+f"= {(result.params['alpha_nt'].value):.2f}$")
+        else:
+            text = (r"$\alpha_{\rm sy}"+f"= {(result.params['alpha_nt'].value):.2f}\pm "
+                    rf"{(result.params['alpha_nt'].stderr):.2f}$")
         text_bbox_props = dict(boxstyle='round,pad=0.5', facecolor='lightgray', alpha=0.5)
         text_bbox = plt.text(text_x, text_y, text,
                             # ha='center', va='center',
                             fontsize=12, color='black',
                             bbox=text_bbox_props, transform=fig.transFigure)
         
+        text_x, text_y = 0.40, 0.84
+        text =r"$f_{\rm th}$"f"$({nu_th}) = {(thermal_fraction_nu_th):.2f}\pm{(thermal_fraction_nu_th_err):.2f}$"
+        text_bbox_props = dict(boxstyle='round,pad=0.5', facecolor='lightgray', alpha=0.5)
+        text_bbox = plt.text(text_x, text_y, text,
+                            # ha='center', va='center',
+                            fontsize=12, color='black',
+                            # bbox=text_bbox_props, 
+                            transform=fig.transFigure)
+        
+        
         if do_mcmc_fit == True:
             if mcmc_version == 'general':
-                text_x, text_y = 0.62, 0.82
-                text = (r"$\alpha_{\rm nt}^{\rm MCMC}"+f"= {(param_dict['alpha_nt']['best']):.2f}"
+                text_x, text_y = 0.62, 0.80
+                text = (r"$\alpha_{\rm sy}^{\rm MCMC}"+f"= {(param_dict['alpha_nt']['best']):.2f}"
                         rf"_{{-{param_dict['alpha_nt']['lower']:.2f}}}^{{+{param_dict['alpha_nt']['upper']:.2f}}}$")
                 text_bbox = plt.text(text_x, text_y, text,
                                     # ha='center', va='center',
@@ -2099,34 +2275,49 @@ def fit_spec_SY_FF(freqs,
                 from scipy.stats import gaussian_kde
                 # fig_c = plt.figure(figsize=(2,2))
                 fig_c = plt.figure()
-                _ = corner.corner(samples_emcee,
-                                        labels=[r'$A_{\rm sy}$',
-                                                r'$A_{\rm ff}$',
-                                                r'$\alpha_{\rm nt}$'],
-                                        truths=[result.params['A_sy'].value,
-                                                result.params['A_ff'].value,
-                                                result.params['alpha_nt'].value],
-                                        show_titles=True,
-                                        quantiles=quantiles,
-                                        # **corner_kwargs
-                                        # fig=fig_c
-                                        )
+                if fix_alpha_nt == True:
+                    _ = corner.corner(samples_emcee[:,:2],
+                                            labels=[r'$A_{\rm sy}$',
+                                                    r'$A_{\rm ff}$'
+                                                    ],
+                                            truths=[result.params['A_sy'].value,
+                                                    result.params['A_ff'].value
+                                                    ],
+                                            show_titles=True,
+                                            quantiles=quantiles,
+                                            # **corner_kwargs
+                                            # fig=fig_c
+                                            )
+                else:
+                    _ = corner.corner(samples_emcee,
+                                            labels=[r'$A_{\rm sy}$',
+                                                    r'$A_{\rm ff}$',
+                                                    r'$\alpha_{\rm nt}$'],
+                                            truths=[result.params['A_sy'].value,
+                                                    result.params['A_ff'].value,
+                                                    result.params['alpha_nt'].value],
+                                            show_titles=True,
+                                            quantiles=quantiles,
+                                            # **corner_kwargs
+                                            # fig=fig_c
+                                            )
+
                 print(samples_emcee.shape)
                 if basename_save is not None:
                     save_name_append_corner = save_name_append + '_corner'
                     plt.savefig(basename_save.replace('.fits','_')+save_name_append_corner+'.jpg', 
                                 dpi=600,bbox_inches='tight')
                     
-                print('++==>> Parameter Results (MCMC sampling).')
-                print(lmfit.fit_report(results_emcee.params))
+                # print('++==>> Parameter Results (MCMC sampling).')
+                # print(lmfit.fit_report(results_emcee.params))
             except:
                 pass
     print('++==>> Parameter Results (from least-squares fit).')
     print(lmfit.fit_report(result.params))
     if do_mcmc_fit:
-        return(mini,result,thermal_fraction_freq,samples_emcee, param_dict)
+        return(mini,result,thermal_fraction,samples_emcee, param_dict)
     else:
-        return(mini,result,thermal_fraction_freq)
+        return(mini,result,thermal_fraction)
 
 
 
@@ -2181,7 +2372,7 @@ def fit_spec_SY_FF_FFA(freqs,
     x = freqs / 1e9
     y = fluxes
     yerr = fluxes_err
-    weights = 1.0 / yerr
+    epsilon = 1e-8
     if nu0 is None:
         nu0 = np.mean(x)
     print(f' ++==>> Using reference frequency of {nu0} GHz.')
@@ -2189,32 +2380,54 @@ def fit_spec_SY_FF_FFA(freqs,
 
 
         
+    # def min_func(params):
+    #     Snu0 = params['Snu0']
+    #     fth_nu0 = params['fth_nu0']
+    #     alpha_nt = params['alpha_nt']
+    #     nu_tau_t = params['nu_tau_t']
+    #     # f_cov = params['f_cov']
+    #     model = RC_function_SY_FF_ffa(x, Snu0, fth_nu0, alpha_nt, nu_tau_t, nu0)
+    #     # res = (y - model) / (np.log(yerr))
+    #     relative_error = yerr / (np.abs(y) + epsilon)
+    #     weights = 1 / (relative_error + epsilon)
+    #     # weightned_residual = (y - model) * np.sqrt(weights)
+    #     weightned_residual = (y - model) / (np.sqrt(weights + yerr))
+        
+    #     # res = (y - model) * np.sqrt(2 / np.log1p(yerr**2))
+    #     # res = (y - model)/yerr
+    #     # loss = huber_loss(res)
+        
+    #     # return res.copy()
+    #     return weightned_residual.copy()
+
     def min_func(params):
         Snu0 = params['Snu0']
         fth_nu0 = params['fth_nu0']
         alpha_nt = params['alpha_nt']
         nu_tau_t = params['nu_tau_t']
-        f_cov = params['f_cov']
-        model = RC_function_SY_FF_ffa(x, Snu0, fth_nu0, alpha_nt, nu_tau_t, f_cov, nu0)
-        # res = (y - model) / (np.log(yerr))
-        epsilon = 1e-8
-        relative_error = yerr / (np.abs(y) + epsilon)
-        weights = 1 / (relative_error + epsilon)
-        res = (y - model) * np.sqrt(weights)
-        # res = (y - model) * np.sqrt(2 / np.log1p(yerr**2))
-        # res = (y - model)/yerr
-        # loss = huber_loss(res)
-        
-        return res.copy()
+        # f_cov = params['f_cov']
+        model = RC_function_SY_FF_ffa(x, Snu0, fth_nu0, alpha_nt, nu_tau_t, nu0)
+        log_weights = 1.0 / (1.0 + np.log1p(yerr / np.median(yerr)))
+        return (y - model) * log_weights
 
 
     fit_params = lmfit.Parameters()
-    fit_params.add("Snu0", value=10.0, min=0.5, max=5000)
-    fit_params.add("fth_nu0", value=0.1, min=0.01, max=0.99)
-    fit_params.add("alpha_nt", value=-0.9, min=-2.5, max=2.5)
+    
+    Snu0_init = np.log10(np.nanmean(y*1.0))
+    fth0_init = 0.1
+    a_nth_init = np.polyfit(np.log10(x), 
+                                    np.log10(y), 1)[0]
+    
+    print('Init Snu0=',Snu0_init)
+    print('Init fth0=',fth0_init)
+    print('Init a_nth=',a_nth_init)
+    
+    fit_params.add("Snu0", value=Snu0_init, min=0.5, max=5000)
+    fit_params.add("fth_nu0", value=fth0_init, min=0.001, max=1.0)
+    fit_params.add("alpha_nt", value=a_nth_init, min=-2.5, max=2.5)
     fit_params.add("nu_tau_t", value=1.0, min=0.1, max=10.0)
     # fit_params.add("f_cov", value=0.99, min=0.0, max=1.0)
-    fit_params.add("f_cov", value=1.0, min=0.9999, max=1.0)
+    # fit_params.add("f_cov", value=1.0, min=0.9999, max=1.0)
     # fit_params.add("f_cov", value=1.0, vary=False)
     
 
@@ -2261,13 +2474,13 @@ def fit_spec_SY_FF_FFA(freqs,
             _fth_nu0 = np.asarray(_samples_emcee['fth_nu0'])
             _alpha_nt = np.asarray(_samples_emcee['alpha_nt'])
             _nu_tau_t = np.asarray(_samples_emcee['nu_tau_t'])
-            _f_cov = np.asarray(_samples_emcee['f_cov'])
+            # _f_cov = np.asarray(_samples_emcee['f_cov'])
             model_samples = np.array(
-                [RC_function_SY_FF_ffa(x_resample, _Snu0[i], _fth_nu0[i], _alpha_nt[i], _nu_tau_t, _f_cov, nu0) for i in
+                [RC_function_SY_FF_ffa(x_resample, _Snu0[i], _fth_nu0[i], _alpha_nt[i], _nu_tau_t, nu0) for i in
                 range(_samples_emcee.shape[0])])
-            samples_emcee = np.asarray(_samples_emcee[['Snu0', 'fth_nu0', 'alpha_nt', 'nu_tau_t', 'f_cov']])
+            samples_emcee = np.asarray(_samples_emcee[['Snu0', 'fth_nu0', 'alpha_nt', 'nu_tau_t']])
             param_dict = {}
-            for i, label in enumerate(['Snu0', 'fth_nu0','alpha_nt', 'nu_tau_t', 'f_cov']):
+            for i, label in enumerate(['Snu0', 'fth_nu0','alpha_nt', 'nu_tau_t']):
                 q = np.percentile(samples_emcee[:, i], [2.5, 50, 97.5])
                 param_dict[label] = {
                     'best': q[1],
@@ -2283,7 +2496,8 @@ def fit_spec_SY_FF_FFA(freqs,
             def RC_SY_FF_FFA(params,x):
                 tau_nu = (x/params[3])**(-2.1)
                 S_ff_abs = params[1] * params[0] * ((1-np.exp(-tau_nu))/(tau_nu)) * ((x/nu0)**(-0.1))
-                S_sy_abs = (1 - params[1]) * params[0] * (1-params[4]*(1-np.exp(-tau_nu))) * ((x/nu0)**params[2])
+                # S_sy_abs = (1 - params[1]) * params[0] * (1-params[4]*(1-np.exp(-tau_nu))) * ((x/nu0)**params[2])
+                S_sy_abs = (1 - params[1]) * params[0] * (1-1*(1-np.exp(-tau_nu))) * ((x/nu0)**params[2])
                 S_total_abs = S_ff_abs + S_sy_abs
                 return S_total_abs
                 
@@ -2291,7 +2505,7 @@ def fit_spec_SY_FF_FFA(freqs,
                                                     y_data = y, 
                                                     yerr_data = yerr, 
                                                     result_1 = result, 
-                                                    param_labels = ["Snu0", "fth_nu0", 'alpha_nt', 'nu_tau_t', 'f_cov'], 
+                                                    param_labels = ["Snu0", "fth_nu0", 'alpha_nt', 'nu_tau_t'], 
                                                     burn_in = burn_in,
                                                     nwalkers = nwalkers,
                                                     nsteps = nsteps,
@@ -2303,12 +2517,12 @@ def fit_spec_SY_FF_FFA(freqs,
             _fth_nu0 = samples_emcee.T[1]
             _alpha_nt = samples_emcee.T[2]
             _nu_tau_t = samples_emcee.T[3]
-            _f_cov = samples_emcee.T[4]
+            # _f_cov = samples_emcee.T[4]
 
             model_samples = np.array(
                 [RC_function_SY_FF_ffa(x_resample, 
                                     _Snu0[i], _fth_nu0[i], _alpha_nt[i], 
-                                    _nu_tau_t[i], _f_cov[i], nu0) for i in range(_Snu0.shape[0])])
+                                    _nu_tau_t[i], nu0) for i in range(_Snu0.shape[0])])
             print(param_dict)
 
         model_mean = np.mean(model_samples, axis=0)
@@ -2319,7 +2533,7 @@ def fit_spec_SY_FF_FFA(freqs,
                                         result.params['fth_nu0'].value,
                                         result.params['alpha_nt'].value,
                                         result.params['nu_tau_t'].value,
-                                        result.params['f_cov'].value,
+                                        # result.params['f_cov'].value,
                                     nu0)
 
     model_best = RC_function_SY_FF_ffa(x,
@@ -2327,7 +2541,7 @@ def fit_spec_SY_FF_FFA(freqs,
                                         result.params['fth_nu0'].value,
                                         result.params['alpha_nt'].value,
                                         result.params['nu_tau_t'].value,
-                                        result.params['f_cov'].value,
+                                        # result.params['f_cov'].value,
                                     nu0)
 
 
@@ -2337,7 +2551,7 @@ def fit_spec_SY_FF_FFA(freqs,
                             result.params['fth_nu0'].value,
                             result.params['alpha_nt'].value,
                             result.params['nu_tau_t'].value,
-                            result.params['f_cov'].value,
+                            # result.params['f_cov'].value,
                             nu0)
     
     
@@ -2404,9 +2618,9 @@ def fit_spec_SY_FF_FFA(freqs,
                 nu_tau_t_samples = np.random.normal(result.params['nu_tau_t'].value,
                                                 result.params['nu_tau_t'].stderr,
                                                 num_samples)
-                f_cov_samples = np.random.normal(result.params['f_cov'].value,
-                                                result.params['f_cov'].stderr,
-                                                num_samples)
+                # f_cov_samples = np.random.normal(result.params['f_cov'].value,
+                #                                 result.params['f_cov'].stderr,
+                #                                 num_samples)
 
                 # Compute model predictions for each sample
                 model_predictions = np.zeros((num_samples, len(x_resample)))
@@ -2416,7 +2630,7 @@ def fit_spec_SY_FF_FFA(freqs,
                                                             fth_nu0_samples[i],
                                                             alpha_nt_samples[i],
                                                             nu_tau_t_samples[i],
-                                                            f_cov_samples[i],
+                                                            # f_cov_samples[i],
                                                             nu0)
 
                 median_prediction = np.median(model_predictions, axis=0)
@@ -2513,7 +2727,7 @@ def fit_spec_SY_FF_FFA(freqs,
                                                 result.params['fth_nu0'].value,
                                                 result.params['alpha_nt'].value,
                                                 result.params['nu_tau_t'].value,
-                                                result.params['f_cov'].value
+                                                # result.params['f_cov'].value
                                                 ],
                                         show_titles=True,
                                         quantiles=quantiles,
@@ -2590,7 +2804,7 @@ def fit_spec_SY_FF_FFA_v2(freqs,
     x = freqs / 1e9
     y = fluxes
     yerr = fluxes_err
-    weights = 1.0 / yerr
+    epsilon = 1e-8
     if nu0 is None:
         nu0 = np.mean(x)
     print(f' ++==>> Using reference frequency of {nu0} GHz.')
@@ -2598,30 +2812,47 @@ def fit_spec_SY_FF_FFA_v2(freqs,
 
 
         
+    # def min_func(params):
+    #     A_sy = params['A_sy']
+    #     A_ff = params['A_ff']
+    #     alpha_nt = params['alpha_nt']
+    #     nu_tau_t = params['nu_tau_t']
+    #     # f_cov = params['f_cov']
+    #     # model = RC_function_SY_FF_ffa_v2(x, A_sy, A_ff, alpha_nt, nu_tau_t, nu0, f_cov)
+    #     model = RC_function_SY_FF_ffa_v2(x, A_sy, A_ff, alpha_nt, nu_tau_t, nu0)
+    #     # res = (y - model) / (np.log(yerr))
+        
+    #     relative_error = yerr / (np.abs(y) + epsilon)
+    #     weights = 1 / (relative_error + epsilon)
+    #     # weightned_residual = (y - model) * np.sqrt(weights)
+    #     weightned_residual = (y - model) / (np.sqrt(weights + yerr))
+        
+    #     # res = (y - model) * np.sqrt(2 / np.log1p(yerr**2))
+    #     # res = (y - model)/yerr
+    #     # loss = huber_loss(res)
+        
+    #     # return res.copy()
+    #     return weightned_residual.copy()
+
+
     def min_func(params):
         A_sy = params['A_sy']
         A_ff = params['A_ff']
         alpha_nt = params['alpha_nt']
         nu_tau_t = params['nu_tau_t']
-        f_cov = params['f_cov']
-        model = RC_function_SY_FF_ffa_v2(x, A_sy, A_ff, alpha_nt, nu_tau_t, f_cov, nu0)
-        # res = (y - model) / (np.log(yerr))
-        epsilon = 1e-8
-        relative_error = yerr / (np.abs(y) + epsilon)
-        weights = 1 / (relative_error + epsilon)
-        res = (y - model) * np.sqrt(weights)
-        # res = (y - model) * np.sqrt(2 / np.log1p(yerr**2))
-        # res = (y - model)/yerr
-        # loss = huber_loss(res)
-        
-        return res.copy()
+        # f_cov = params['f_cov']
+        # model = RC_function_SY_FF_ffa_v2(x, A_sy, A_ff, alpha_nt, nu_tau_t, nu0, f_cov)
+        model = RC_function_SY_FF_ffa_v2(x, A_sy, A_ff, alpha_nt, nu_tau_t, nu0)
+        log_weights = 1.0 / (1.0 + np.log1p(yerr / np.median(yerr)))
+        return (y - model) * log_weights
 
 
     fit_params = lmfit.Parameters()
-    A_sy_init = 0.7*np.nanmean(np.log10(y))
-    A_ff_init = 0.2*np.nanmean(np.log10(y))
-    a_nth_init = np.polyfit(np.log10(x), 
-                                    np.log10(y), 1)[0]
+    A_sy_init = np.log10(np.nanmean(y)*0.6)
+    A_ff_init = np.log10(np.nanmean(y)*0.3)
+    # a_nth_init = np.polyfit(np.log10(x), 
+    #                                 np.log10(y), 1)[0]
+    a_nth_init = -0.8
     
     print('Init log A_sy=',A_sy_init)
     print('Init log A_ff=',A_ff_init)
@@ -2629,12 +2860,12 @@ def fit_spec_SY_FF_FFA_v2(freqs,
     print('Init A_ff=',10**A_ff_init)
     print('Init a_nth=',a_nth_init)
     
-    fit_params.add("A_sy", value=A_sy_init, min=-A_sy_init*20, max=A_sy_init*20)
-    fit_params.add("A_ff", value=A_ff_init, min=-A_ff_init*20, max=A_ff_init*20)
-    fit_params.add("alpha_nt", value=a_nth_init, min=-2.0, max=0.0)
+    fit_params.add("A_sy", value=A_sy_init, min=-1, max=A_sy_init*20)
+    fit_params.add("A_ff", value=A_ff_init, min=-1, max=A_ff_init*20)
+    fit_params.add("alpha_nt", value=a_nth_init, min=-2.0, max=2.0)
     fit_params.add("nu_tau_t", value=1.0, min=0.1, max=10.0)
     # fit_params.add("f_cov", value=0.99, min=0.0, max=1.0)
-    fit_params.add("f_cov", value=1.0, min=0.99, max=1.0)
+    # fit_params.add("f_cov", value=1.0, min=0.9999, max=1.0,vary=False)
     # fit_params.add("f_cov", value=1.0, vary=False)
     
 
@@ -2663,7 +2894,7 @@ def fit_spec_SY_FF_FFA_v2(freqs,
     
     
     if do_mcmc_fit == True:
-        nwalkers = int(5 * 25)
+        nwalkers = int(4 * 25)
         
         if mcmc_version == 'lmfit':
             """ 
@@ -2683,8 +2914,9 @@ def fit_spec_SY_FF_FFA_v2(freqs,
             _nu_tau_t = np.asarray(_samples_emcee['nu_tau_t'])
             _f_cov = np.asarray(_samples_emcee['f_cov'])
             model_samples = np.array(
-                [RC_function_SY_FF_ffa_v2(x_resample, _A_sy[i], _A_ff[i], _alpha_nt[i], _nu_tau_t, _f_cov, nu0) for i in
+                [RC_function_SY_FF_ffa_v2(x_resample, _A_sy[i], _A_ff[i], _alpha_nt[i], _nu_tau_t, nu0, _f_cov) for i in
                 range(_samples_emcee.shape[0])])
+            # samples_emcee = np.asarray(_samples_emcee[['A_sy', 'A_ff', 'alpha_nt', 'nu_tau_t', 'f_cov']])
             samples_emcee = np.asarray(_samples_emcee[['A_sy', 'A_ff', 'alpha_nt', 'nu_tau_t', 'f_cov']])
             param_dict = {}
             for i, label in enumerate(['A_sy', 'A_ff','alpha_nt', 'nu_tau_t', 'f_cov']):
@@ -2702,8 +2934,9 @@ def fit_spec_SY_FF_FFA_v2(freqs,
             """
             def RC_SY_FF_FFA_v2(params,x):
                 tau_nu = (x/params[3])**(-2.1)
-                S_ff_abs = params[1] * ((1-np.exp(-tau_nu))/(tau_nu)) * ((x/nu0)**(-0.1))
-                S_sy_abs = params[0] * (1-params[4]*(1-np.exp(-tau_nu))) * ((x/nu0)**params[2])
+                S_ff_abs = (10**params[1]) * ((1-np.exp(-tau_nu))/(tau_nu)) * ((x/nu0)**(-0.1))
+                # S_sy_abs = (10**params[0]) * (1-params[4]*(1-np.exp(-tau_nu))) * ((x/nu0)**params[2])
+                S_sy_abs = (10**params[0]) * (1-1*(1-np.exp(-tau_nu))) * ((x/nu0)**params[2])
                 S_total_abs = S_ff_abs + S_sy_abs
                 return S_total_abs
                 
@@ -2711,7 +2944,8 @@ def fit_spec_SY_FF_FFA_v2(freqs,
                                                     y_data = y, 
                                                     yerr_data = yerr, 
                                                     result_1 = result, 
-                                                    param_labels = ["A_sy", "A_ff", 'alpha_nt', 'nu_tau_t', 'f_cov'], 
+                                                    param_labels = ["A_sy", "A_ff", 'alpha_nt', 'nu_tau_t'], 
+                                                    # param_labels = ["A_sy", "A_ff", 'alpha_nt', 'nu_tau_t', 'f_cov'], 
                                                     burn_in = burn_in,
                                                     nwalkers = nwalkers,
                                                     nsteps = nsteps,
@@ -2723,12 +2957,12 @@ def fit_spec_SY_FF_FFA_v2(freqs,
             _A_ff = samples_emcee.T[1]
             _alpha_nt = samples_emcee.T[2]
             _nu_tau_t = samples_emcee.T[3]
-            _f_cov = samples_emcee.T[4]
+            # _f_cov = samples_emcee.T[4]
 
             model_samples = np.array(
                 [RC_function_SY_FF_ffa_v2(x_resample, 
                                     _A_sy[i], _A_ff[i], _alpha_nt[i], 
-                                    _nu_tau_t[i], _f_cov[i], nu0) for i in range(_A_sy.shape[0])])
+                                    _nu_tau_t[i], nu0) for i in range(_A_sy.shape[0])])
             print(param_dict)
 
         model_mean = np.mean(model_samples, axis=0)
@@ -2739,7 +2973,6 @@ def fit_spec_SY_FF_FFA_v2(freqs,
                                         result.params['A_ff'].value,
                                         result.params['alpha_nt'].value,
                                         result.params['nu_tau_t'].value,
-                                        result.params['f_cov'].value,
                                     nu0)
 
     model_best = RC_function_SY_FF_ffa_v2(x,
@@ -2747,7 +2980,6 @@ def fit_spec_SY_FF_FFA_v2(freqs,
                                         result.params['A_ff'].value,
                                         result.params['alpha_nt'].value,
                                         result.params['nu_tau_t'].value,
-                                        result.params['f_cov'].value,
                                     nu0)
 
 
@@ -2756,7 +2988,6 @@ def fit_spec_SY_FF_FFA_v2(freqs,
                             result.params['A_sy'].value,
                             result.params['alpha_nt'].value,
                             result.params['nu_tau_t'].value,
-                            result.params['f_cov'].value,
                             nu0)
     
     
@@ -2821,9 +3052,9 @@ def fit_spec_SY_FF_FFA_v2(freqs,
                 nu_tau_t_samples = np.random.normal(result.params['nu_tau_t'].value,
                                                 result.params['nu_tau_t'].stderr,
                                                 num_samples)
-                f_cov_samples = np.random.normal(result.params['f_cov'].value,
-                                                result.params['f_cov'].stderr,
-                                                num_samples)
+                # f_cov_samples = np.random.normal(result.params['f_cov'].value,
+                #                                 result.params['f_cov'].stderr,
+                #                                 num_samples)
 
                 # Compute model predictions for each sample
                 model_predictions = np.zeros((num_samples, len(x_resample)))
@@ -2833,7 +3064,7 @@ def fit_spec_SY_FF_FFA_v2(freqs,
                                                             A_ff_samples[i],
                                                             alpha_nt_samples[i],
                                                             nu_tau_t_samples[i],
-                                                            f_cov_samples[i],
+                                                            # f_cov_samples[i],
                                                             nu0)
 
                 median_prediction = np.median(model_predictions, axis=0)
@@ -2930,7 +3161,7 @@ def fit_spec_SY_FF_FFA_v2(freqs,
                                                 result.params['A_ff'].value,
                                                 result.params['alpha_nt'].value,
                                                 result.params['nu_tau_t'].value,
-                                                result.params['f_cov'].value
+                                                # result.params['f_cov'].value
                                                 ],
                                         show_titles=True,
                                         quantiles=quantiles,
@@ -3083,15 +3314,15 @@ def do_fit_spec_RC_S2(freqs,fluxes,fluxes_err,nu0=None,
     Snu0_low = RC_function_S2(1.4,
                             result.params['A1'].value,
                             result.params['A2'].value,
-                            result.params['alpha_nt'].value,1.4)
+                            result.params['alpha_nt'].value,nu0)
     Snu0_mid = RC_function_S2(10.0,
                             result.params['A1'].value,
                             result.params['A2'].value,
-                            result.params['alpha_nt'].value,10.0)
+                            result.params['alpha_nt'].value,nu0)
     Snu0_high = RC_function_S2(33.0,
                             result.params['A1'].value,
                             result.params['A2'].value,
-                            result.params['alpha_nt'].value,33.0)
+                            result.params['alpha_nt'].value,nu0)
     
     thermal_fraction_low = result.params['A1'].value/Snu0_low
     thermal_fraction_mid = result.params['A1'].value/Snu0_mid
@@ -3639,21 +3870,101 @@ def do_fit_spec_map(freqs,fluxes,fluxes_err,nu0=1.0,verbose=0):
     
     epsilon = 1e-10
     delta = 1.0
+    # def min_func(params):
+    #     alpha = params['alpha']
+    #     b = params['b']
+    #     model = linear_function(x, alpha, b,nu0)
+    #     relative_error = yerr / (np.abs(y) + epsilon)
+    #     weights = np.sqrt(1 / (relative_error + epsilon))
+    #     # weightned_residual = (y - model) / yerr
+    #     weightned_residual = (y - model) * (weights)
+    #     # weightned_residual = (y - model) / (weights * yerr)
+    #     # weightned_residual = (y - model) * np.sqrt(relative_error) #bias towards single point with large error
+    #     # weightned_residual = (y - model) / ((weights)*yerr)
+    #     # weightned_residual = (y - model) * ((weights)*yerr)
+    #     # weightned_residual = (y - model)
+    #     # weightned_residual = (y - model) / (weights)
+    #     # weightned_residual = (y - model) * (weights + yerr)
+    #     # weightned_residual = (y - model) * np.sqrt(weights)
+    #     # weightned_residual = (y - model) / np.sqrt(weights)
+    #     # weightned_residual = (y - model) / (np.sqrt(weights) + yerr)
+    #     # weightned_residual = (y - model) * (np.sqrt(weights) + yerr)
+    #     # weightned_residual = (y - model) / (np.sqrt(weights + yerr))
+    #     # weightned_residual = (y - model) * (np.sqrt(weights + yerr))
+    #     # weightned_residual = (y - model) * np.sqrt(weights * yerr)
+    #     # weightned_residual = (y - model) / np.sqrt(weights * yerr)
+    #     # weightned_residual = (y - model) / (np.sqrt(weights) * yerr)
+    #     # weightned_residual = (y - model) * (np.sqrt(weights) * yerr)
+    #     # weightned_residual = (y - model) / np.log(abs(y+yerr))
+    #     # weightned_residual = (y - model) / np.log(abs(yerr))
+    #     # weightned_residual = (y - model) /yerr
+    #     # weightned_residual = (y - model)
+    #     return weightned_residual.copy()
+    
+    # def min_func(params):
+    #     alpha = params['alpha']
+    #     b = params['b']
+    #     model = linear_function(x, alpha, b, nu0)
+        
+    #     # Huber-like weighting
+    #     relative_error = yerr / (np.abs(y) + epsilon)
+    #     c = np.median(relative_error)  # adaptive threshold
+    #     weights = np.where(relative_error <= c,
+    #                     1.0,
+    #                     np.sqrt(c / relative_error))
+        
+    #     return (y - model) * weights    
+    
     def min_func(params):
+        """
+        More robust implementation for uncertainties of y (yerr).
+        """
         alpha = params['alpha']
         b = params['b']
-        model = linear_function(x, alpha, b,nu0)
-        relative_error = yerr / (np.abs(y) + epsilon)
-        weights = 1 / (relative_error + epsilon)
-        weightned_residual = (y - model) * np.sqrt(weights)
-        # weightned_residual = (y - model) / np.log(abs(y+yerr))
-        # weightned_residual = (y - model) / np.log(abs(yerr))
-        # weightned_residual = (y - model) /yerr
-        return weightned_residual.copy()
+        model = linear_function(x, alpha, b, nu0)
         
+        # Log-based weighting
+        log_weights = 1.0 / (1.0 + np.log1p(yerr / np.median(yerr)))
+        return (y - model) * log_weights
+    
+    # def min_func(params):
+    #     """
+    #     More robust implementation for uncertainties of y (yerr).
+    #     """
+    #     alpha = params['alpha']
+    #     b = params['b']
+    #     model = linear_function(x, alpha, b, nu0)
+        
+    #     # Log-based weighting
+    #     log_weights = 1.0 / (1.0 + np.log1p(yerr / np.median(yerr)))
+    #     # Frequency correction factor
+    #     freq_weights = (x / np.max(x))**0.5  # Adjust exponent as needed
+    #     # Combine weights
+    #     final_weights = log_weights * freq_weights
+    #     return (y - model) * final_weights
+    
+    
+    # def min_func(params):
+    #     alpha = params['alpha']
+    #     b = params['b']
+    #     model = linear_function(x, alpha, b, nu0)
+        
+    #     # Add scaling factors to control relative importance
+    #     y_scale = 0.5  # Adjust these values based on your needs
+    #     err_scale = 1.0
+        
+    #     normalized_y = y / np.median(np.abs(y))
+    #     normalized_yerr = yerr / np.median(yerr)
+        
+    #     combined_weights = 1.0 / (1.0 + np.log1p(
+    #         err_scale * normalized_yerr * (1 + y_scale * np.abs(normalized_y))
+    #     ))
+        
+    #     return (y - model) * combined_weights
+    
     
     fit_params = lmfit.Parameters()
-    fit_params.add("alpha", value=-0.5, min=-3, max=3)
+    fit_params.add("alpha", value=-0.5, min=-3, max=5)
     fit_params.add("b", value=5.0, min=-1, max=500)
     
     mini = lmfit.Minimizer(min_func, fit_params, max_nfev=15000,
@@ -3667,6 +3978,16 @@ def do_fit_spec_map(freqs,fluxes,fluxes_err,nu0=1.0,verbose=0):
                            ftol=1e-12, xtol=1e-12, gtol=1e-12, 
                            verbose=verbose
                            )
+    
+    # mini = lmfit.Minimizer(min_func, fit_params, max_nfev=15000,
+    #                     nan_policy='omit')
+
+    # result_1 = mini.minimize(method='least_squares',
+    #                     loss='soft_l1',  # Alternative to Cauchy
+    #                     f_scale=0.1,     # Tune this parameter
+    #                     tr_solver='exact',
+    #                     ftol=1e-12, xtol=1e-12, gtol=1e-12)
+    
     second_run_params = result_1.params
     
     result = mini.minimize(method='least_squares',
@@ -3679,40 +4000,65 @@ def do_fit_spec_map(freqs,fluxes,fluxes_err,nu0=1.0,verbose=0):
                            verbose=0
                         )
     
+    # result = mini.minimize(method='least_squares',
+    #                        params=second_run_params,
+    #                        max_nfev=15000, f_scale = 0.1,
+    #                     #    loss="huber", 
+    #                        loss="soft_l1", 
+    #                        tr_solver="exact",
+    #                        ftol=1e-12, xtol=1e-12, gtol=1e-12, 
+    #                        verbose=0
+    #                     )
+    
     return result
 
 
-def do_fit_spec_SY_FF_map(freqs,fluxes,fluxes_err,nu0=None,verbose=0):
+def do_fit_spec_SY_FF_map(freqs,fluxes,fluxes_err,nu0=None,
+                          fix_alpha_nt=False,
+                          verbose=0):
     x = freqs
     y = fluxes
     yerr = fluxes_err
     if nu0 is None:
         nu0 = np.mean(x)
 
-    epsilon = 1e-16
+    epsilon = 1e-8
+    # def min_func(params):
+    #     A_sy = params['A_sy']
+    #     A_ff = params['A_ff']
+    #     alpha_nt = params['alpha_nt']
+    #     model = RC_function_SY_FF(x, A_sy, A_ff, alpha_nt,nu0)
+        
+    #     relative_error = yerr / (np.abs(y) + epsilon)
+    #     weights = 1 / (relative_error + epsilon)
+    #     # weightned_residual = (y - model) * np.sqrt(weights)
+    #     weightned_residual = (y - model) / (np.sqrt(weights)*yerr)
+    #     # weightned_residual = (y - model) / (np.sqrt(weights) + yerr)
+    #     # res = (y - RC_function_S2(x, A1, A2, alpha_nt,nu0))/(yerr+1)
+    #     # res = (y - model) / (y+np.sqrt((yerr)**2.0+0.1))#okay 
+    #     # res = (y - model) / (y+yerr)
+    #     # res = (y - model) / (np.log(y+yerr))
+    #     # res = data - RC_function_S2(nu, A1l, alpha_nt)
+    #     return weightned_residual.copy()
+    
     def min_func(params):
         A_sy = params['A_sy']
         A_ff = params['A_ff']
         alpha_nt = params['alpha_nt']
         model = RC_function_SY_FF(x, A_sy, A_ff, alpha_nt,nu0)
-        
-        relative_error = yerr / (np.abs(y) + epsilon)
-        weights = 1 / (relative_error + epsilon)
-        weightned_residual = (y - model) * np.sqrt(weights)
-        # res = (y - RC_function_S2(x, A1, A2, alpha_nt,nu0))/(yerr+1)
-        # res = (y - model) / (y+np.sqrt((yerr)**2.0+0.1))#okay 
-        # res = (y - model) / (y+yerr)
-        # res = (y - model) / (np.log(y+yerr))
-        # res = data - RC_function_S2(nu, A1l, alpha_nt)
-        return weightned_residual.copy()
+        # Log-based weighting
+        log_weights = 1.0 / (1.0 + np.log1p(yerr / np.median(yerr)))
+        return (y - model) * log_weights
 
     fit_params = lmfit.Parameters()
     fit_params.add("A_sy", value=1.0, min=1.0e-6, max=1000)
     fit_params.add("A_ff", value=0.1, min=1.0e-6, max=100)
     # fit_params.add("A1", value=0.5, min=-10, max=500)
     # fit_params.add("A2", value=0.5, min=-10, max=5000)
-
-    fit_params.add("alpha_nt", value=-0.85, min=-3.0, max=3.0)
+    if fix_alpha_nt == True:
+        fit_params.add("alpha_nt", value=-0.85, min=-2.0, max=0.0, vary=False)
+    else:
+        fit_params.add("alpha_nt", value=-0.85, min=-3.0, max=3.0)
     # fit_params.add("alpha_nt", value=-0.85, min=-0.9, max=-0.8)
 
     mini = lmfit.Minimizer(min_func, fit_params, max_nfev=15000,
@@ -3940,8 +4286,6 @@ def specidx_map(imagelist,residuallist,
                     y,yerr,results_fit)
         
         
-        from joblib import Parallel, delayed
-        
         pixel_indices = [(i, j) for i, j in idx]
         results = Parallel(n_jobs=n_jobs)(
         delayed(compute_pixel_spectral_index)(i, j, x, masked_cube, masked_cube_res, nu0) 
@@ -4044,6 +4388,7 @@ def specidx_map_SY_FF(imagelist,residuallist,
                       iterations=1,
                       dilation_size=2,
                       sed_model='S2',
+                      fix_alpha_nt=False,
                       needs_convolution=False,conv_task='fft',
                       n_jobs=1,
                       verbose=0):
@@ -4165,10 +4510,19 @@ def specidx_map_SY_FF(imagelist,residuallist,
     f_th_33_err = np.empty_like(conv_cube[:,:,0])
     S_tot_33 = np.empty_like(conv_cube[:,:,0])
     S_tot_33_err = np.empty_like(conv_cube[:,:,0])
+    
+    sy_map_33 = np.empty_like(conv_cube[:,:,0])
+    sy_map_33_err = np.empty_like(conv_cube[:,:,0])
+    ff_map_33 = np.empty_like(conv_cube[:,:,0])
+    ff_map_33_err = np.empty_like(conv_cube[:,:,0])
 
     
     alphaimage[:] = np.nan
     alphaimage_error[:] = np.nan
+    sy_map_33[:] = np.nan
+    sy_map_33_err[:] = np.nan
+    ff_map_33[:] = np.nan
+    ff_map_33_err[:] = np.nan
     A_sy_map[:] = np.nan
     A_sy_map_err[:] = np.nan
     A_ff_map[:] = np.nan
@@ -4196,7 +4550,7 @@ def specidx_map_SY_FF(imagelist,residuallist,
     def compute_pixel_nth_spectral_index(i, j, x, masked_cube, masked_cube_res, nu0):
         y = masked_cube[i, j, :] * 1000
         yerr = np.sqrt((masked_cube_res[i, j, :])**2.0 + (flux_sys_error_frac * masked_cube[i, j, :])**2.0) * 1000
-        results_fit = do_fit_spec_SY_FF_map(x, y, yerr, nu0)
+        results_fit = do_fit_spec_SY_FF_map(x, y, yerr, nu0,fix_alpha_nt)
         return (i, j, 
                 results_fit.params['alpha_nt'].value, 
                 results_fit.params['alpha_nt'].stderr,
@@ -4207,13 +4561,20 @@ def specidx_map_SY_FF(imagelist,residuallist,
                 y,yerr,results_fit
                 )
     
-    from joblib import Parallel, delayed
+    
+    # pixel_indices = [(i, j) for i, j in idx]
+    # results = Parallel(n_jobs=n_jobs)(
+    # delayed(compute_pixel_nth_spectral_index)(i, j, x, masked_cube, masked_cube_res, nu0) 
+    # for i, j in tqdm(pixel_indices, total=len(pixel_indices))
+    # )
     
     pixel_indices = [(i, j) for i, j in idx]
-    results = Parallel(n_jobs=n_jobs)(
-    delayed(compute_pixel_nth_spectral_index)(i, j, x, masked_cube, masked_cube_res, nu0) 
-    for i, j in tqdm(pixel_indices, total=len(pixel_indices))
-    )
+    with Parallel(n_jobs=n_jobs) as parallel:
+        results = parallel(
+            delayed(compute_pixel_nth_spectral_index)(
+                i, j, x, masked_cube, masked_cube_res, nu0
+            ) for i, j in tqdm(pixel_indices, total=len(pixel_indices))
+        )
     
     if sed_model == 'S2':
         # for i, j in tqdm(idx):
@@ -4239,6 +4600,11 @@ def specidx_map_SY_FF(imagelist,residuallist,
             A_ff_map[i, j] = A_ff_value
             A_ff_map_err[i, j] = A_ff_err
             
+            sy_map_33[i,j] = A_sy_value * (33/nu0)**alpha_nt_value
+            ff_map_33[i,j] = A_ff_value * (33/nu0)**(-0.1)
+            sy_map_33_err[i,j] = sy_map_33[i,j] * np.sqrt((A_sy_err/A_sy_value)**2.0 + (alpha_nt_err/alpha_nt_value)**2.0)
+            ff_map_33_err[i,j] = ff_map_33[i,j] * np.sqrt((A_ff_err/A_ff_value)**2.0 + (0.1)**2.0)
+            
             Snu0[i,j] = RC_function_SY_FF(nu0, 
                                     A_sy_value, 
                                     A_ff_value, 
@@ -4256,6 +4622,17 @@ def specidx_map_SY_FF(imagelist,residuallist,
                                     alpha_nt_value,
                                     nu0)
             
+            S_sy_33 = RC_function_SY_FF(33, 
+                                    A_sy_value,
+                                    0.0, 
+                                    alpha_nt_value,
+                                    nu0)
+            S_sy_33_err = RC_function_SY_FF(33, 
+                                    A_sy_err, 
+                                    0.0, 
+                                    alpha_nt_value,
+                                    nu0)
+            
             S_ff_33 = RC_function_SY_FF(33, 
                                     0.0, 
                                     A_ff_value, 
@@ -4264,8 +4641,18 @@ def specidx_map_SY_FF(imagelist,residuallist,
             S_ff_33_err = RC_function_SY_FF(33, 
                                     0.0, 
                                     A_ff_err, 
-                                    alpha_nt_value,
+                                    0.0,
                                     nu0)
+            
+            sed_sy_ff = {'S_sy_33':S_sy_33,
+                         'S_sy_33_err':S_sy_33_err,
+                        'S_ff_33':S_ff_33,
+                        'S_ff_33_err':S_ff_33_err,
+                        'sy_map_33':sy_map_33,
+                        'sy_map_33_err':sy_map_33_err,
+                        'ff_map_33':ff_map_33,
+                        'ff_map_33_err':ff_map_33_err,
+                        'S_tot_33':S_tot_33}
             
             f_th_33[i,j] = S_ff_33 / S_tot_33[i,j]
             
@@ -4357,6 +4744,6 @@ def specidx_map_SY_FF(imagelist,residuallist,
            A_ff_map, A_ff_map_err, 
            A_sy_map, A_sy_map_err, 
            f_th_33,f_th_33_err,
-           conv_cube,masked_cube_res,masked_cube)
+           conv_cube,masked_cube_res,masked_cube,sed_sy_ff)
     
     
