@@ -154,6 +154,9 @@ def azimuthal_average_profile_with_shaded_errors(image, rms_image, center, sigma
                     )
     
 
+
+
+
     if log_scale:
         plt.yscale('log')
     plt.xlabel(fr'{xlabel}', fontsize=14)
@@ -479,7 +482,8 @@ def make_cl(image):
     return (levels[::-1])
 
 
-def plot_slices_fig(data_2D, show_figure=True, label='',color=None,FIG=None,linestyle='--.'):
+def plot_slices_fig(data_2D, show_figure=True, label='',color=None,FIG=None,
+                    linestyle='--.'):
     plot_slice = np.arange(0, data_2D.shape[0])
 
     if FIG is None:
@@ -2217,7 +2221,8 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
                                                  u.dimensionless_angles())
 
         scale_bar_length_pixels = length.value / cell_size
-        scale_bar_position = (-(dx-1*dx_shift) * 0.50, -(dy-1*dy_shift) * 0.9)
+        scale_bar_position = (-(dx-1*dx_shift) * 0.7, +(dy+1*dy_shift) * 0.82)
+        # scale_bar_position = (-(dx-1*dx_shift) * 0.50, -(dy-1*dy_shift) * 0.9)
 
         ax.annotate('',
                     xy=(scale_bar_position[0] + scale_bar_length_pixels,
@@ -2422,7 +2427,7 @@ def plot_alpha_map(alphaimage,radio_map,frequencies,
                         label=fr'Max err $\alpha$ = {(marker_sizes[max_error_pos][0]/50):.2f}')
         plt.legend()
     if label_colorbar == '':
-        label_colorbar = fr"Spectral Index $\alpha$ [{(frequencies[0]/1e9):.1f} ~ {(frequencies[-1]/1e9):.1f} GHz]"
+        label_colorbar = fr"$\alpha$ [{(frequencies[0]/1e9):.1f} ~ {(frequencies[-1]/1e9):.1f} GHz]"
     else:
         _label_colorbar = fr"[{(frequencies[0]/1e9):.1f} ~ {(frequencies[-1]/1e9):.1f} GHz]"
         label_colorbar = label_colorbar + _label_colorbar
