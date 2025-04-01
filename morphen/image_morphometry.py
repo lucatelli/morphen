@@ -1547,6 +1547,7 @@ def measures(imagename, residualname, z, mask_component=None, sigma_mask=6,
         omask2, mask2, results_final = compute_image_properties(imagename,
                                                         residual=residualname,
                                                         cell_size=cell_size,
+                                                        redshift=z,
                                                         mask_component=mask_component,
                                                         last_level=last_level,
                                                         sigma_mask=sigma_mask,
@@ -1622,35 +1623,37 @@ def measures(imagename, residualname, z, mask_component=None, sigma_mask=6,
     rpix = r.copy()
 
     if z is not None:
-        z = z
-    else:
-        z = 0.01
-    if error_petro == False:
-        r_list_arcsec = r_list * cell_size
-        Rp_arcsec = results_final['Rp'] * cell_size
-        R50_arcsec = results_final['R50'] * cell_size
         pix_to_pc = pixsize_to_pc(z=z, cell_size=cell_size)
-        r_list_pc = r_list * pix_to_pc
-        Rp_pc = results_final['Rp'] * pix_to_pc
-        R50_pc = results_final['R50'] * pix_to_pc
-        Rp_arcsec = results_final['Rp'] * cell_size
-        R50_arcsec = results_final['R50'] * cell_size
-        r_list_arcsec = r_list * cell_size
-        Rp_arcsec = results_final['Rp'] * cell_size
-        R50_arcsec = results_final['R50'] * cell_size
-    if error_petro == True:
-        r_list_arcsec = rpix * cell_size
-        Rp_arcsec = results_final['C95radii'] * cell_size
-        R50_arcsec = results_final['C50radii'] * cell_size
-        pix_to_pc = pixsize_to_pc(z=z, cell_size=cell_size)
-        r_list_pc = rpix * pix_to_pc
-        Rp_pc = results_final['C95radii'] * pix_to_pc
-        R50_pc = results_final['C50radii'] * pix_to_pc
-        Rp_arcsec = results_final['C95radii'] * cell_size
-        R50_arcsec = results_final['C50radii'] * cell_size
-        r_list_arcsec = rpix * cell_size
-        Rp_arcsec = results_final['C95radii'] * cell_size
-        R50_arcsec = results_final['C50radii'] * cell_size
+        results_final['C95radii_pc'] = results_final['C95radii'] * pix_to_pc
+        results_final['C50radii_pc'] = results_final['C50radii'] * pix_to_pc
+        results_final['C95radii_asec'] = results_final['C95radii'] * cell_size
+        results_final['C50radii_asec'] = results_final['C50radii'] * cell_size
+        
+        results_final['C95radii_pc_err'] = results_final['C95radii_err'] * pix_to_pc
+        results_final['C50radii_pc_err'] = results_final['C50radii_err'] * pix_to_pc
+        results_final['C95radii_asec_err'] = results_final['C95radii_err'] * cell_size
+        results_final['C50radii_asec_err'] = results_final['C50radii_err'] * cell_size
+        
+        if error_petro == False:
+            r_list_arcsec = r_list * cell_size
+            pix_to_pc = pixsize_to_pc(z=z, cell_size=cell_size)
+            r_list_pc = r_list * pix_to_pc
+            Rp_arcsec = results_final['Rp'] * cell_size
+            R50_arcsec = results_final['R50'] * cell_size
+            results_final['Rp_pc'] = results_final['Rp'] * pix_to_pc
+            results_final['R50_pc'] = results_final['R50'] * pix_to_pc
+            results_final['Rp_asec'] = results_final['Rp'] * cell_size
+            results_final['R50_asec'] = results_final['R50'] * cell_size
+                        
+        if error_petro == True:
+            r_list_arcsec = rpix * cell_size
+            pix_to_pc = pixsize_to_pc(z=z, cell_size=cell_size)
+            r_list_pc = rpix * pix_to_pc
+            results_final['Rp_pc'] = results_final['C95radii'] * pix_to_pc
+            results_final['R50_pc'] = results_final['C50radii'] * pix_to_pc
+            results_final['Rp_asec'] = results_final['C95radii'] * cell_size
+            results_final['R50_asec'] = results_final['C50radii'] * cell_size
+
 
     
     if do_measurements=='all':
@@ -1673,8 +1676,8 @@ def measures(imagename, residualname, z, mask_component=None, sigma_mask=6,
             # idx_R50 = np.where(flux_arr < 0.5 * results_final['flux_rp'])[0][-1]
             # flux_arr[idx_R50], r_list[idx_R50], results_final['R50']
             # if mask_component is None:
-            if verbose >= 1:
-                print('--==>> Computing image statistics...')
+            # if verbose >= 1:
+                # print('--==>> Computing image statistics...')
             results_final = get_image_statistics(imagename=imagename,
                                                 mask_component=mask_component,
                                                 mask=mask,
@@ -1899,13 +1902,17 @@ def concentration_index_errors(C80radii, C20radii,
 
 
 
-def compute_image_properties(img, residual, cell_size=None, mask_component=None,
+def compute_image_properties(img, residual,
+                             cell_size=None, mask_component=None,
+                             redshift = None,
                              aspect=1, last_level=1.5, mask=None, 
                              bins = 64,
                              data_2D=None,data_res=None,
                              dilation_size=None, iterations=2,
                              dilation_type='disk',do_fit_ellipse=True,
-                             sigma_mask=6, rms=None, results=None, bkg_to_sub=None,
+                             sigma_mask=6, rms=None, 
+                             systematic_error_fraction = 0.05,
+                             results=None, bkg_to_sub=None,
                              apply_mask=True, vmin_factor=3, vmax_factor=0.5,
                              crop=False, box_size=256,
                              SAVE=True, add_save_name='', show_figure=True,
@@ -2108,7 +2115,6 @@ def compute_image_properties(img, residual, cell_size=None, mask_component=None,
     # results['flux_error_mc'] = flux_error_m
 
     if residual is not None:
-        systematic_error_fraction = 0.05
         if data_res is None: 
             data_res = load_fits_data(residual)
         else:
@@ -2119,16 +2125,29 @@ def compute_image_properties(img, residual, cell_size=None, mask_component=None,
         # rms_res =imstat(residual_name)['flux'][0]
 
         total_flux_density_residual = np.nansum(data_res * mask) / beam_area_
+        # total_flux_density_residual = np.sqrt(np.nansum((data_res * mask)**2.0)) / beam_area_
         res_error_rms =np.sqrt(
             np.nansum((abs(data_res * mask -
                         np.nanmean(data_res * mask))) ** 2 * np.nansum(mask))) / beam_area_
+        # res_error_rms = np.sqrt(
+        #     np.nansum((data_res * mask - np.nanmean(data_res * mask)) ** 2 * np.nansum(mask))
+        # ) / beam_area_
 
         # Calculate systematic error as a fraction of the total flux density of the image
         systematic_error = systematic_error_fraction * results['total_flux_mask']
 
         # Calculate total flux density error in quadrature
         total_flux_density_error = np.sqrt(
-            systematic_error ** 2 + (std / beam_area_) ** 2 + total_flux_density_residual ** 2)
+            systematic_error ** 2 + (std) ** 2 + total_flux_density_residual ** 2)
+        
+        # bootstrap_fluxes = \
+        #     calculate_robust_flux_error(g_,data_res,mask,results['total_flux_mask'],
+        #                                 total_flux_density_residual,
+        #                                 systematic_error_fraction,beam_area_,
+        #                                 np.nansum(mask),std
+        #                                 )
+            
+        
         # print('total_flux_density_residual = ',total_flux_density_residual)
         # print('systematic_error = ', systematic_error)
         # print('(std / beam_area_) = ', (std / beam_area_))
@@ -2143,6 +2162,14 @@ def compute_image_properties(img, residual, cell_size=None, mask_component=None,
                   f"+/- {total_flux_density_error * 1000:.2f} mJy")
             print(f"Fractional error = {(total_flux_density_error / results['total_flux_mask']):.2f}")
             print('-----------------------------------------------------------------')
+            # print('Flux Density and error (bootstrap): ')
+            # print(f"Flux Density = {results['total_flux_mask'] * 1000:.2f} "
+            #       f"+/- {bootstrap_fluxes['total_error'] * 1000:.2f} mJy")
+            # print(f"Fractional error = {(bootstrap_fluxes['total_error'] / results['total_flux_mask']):.2f}")
+            # print(f"SNR = {bootstrap_fluxes['snr']:.2f}")
+            # print(f"Conf Level = {bootstrap_fluxes['confidence_level']:.2f}")
+            # print('-----------------------------------------------------------------')
+
 
         results['max_residual'] = np.nanmax(data_res * mask)
         results['min_residual'] = np.nanmin(data_res * mask)
@@ -2164,9 +2191,27 @@ def compute_image_properties(img, residual, cell_size=None, mask_component=None,
         levels2 = np.geomspace(np.nanmax(g), last_level * std,100)
         levels_ellipse = np.geomspace(np.nanmax(g), last_level * std,32)
     except:
-        levels = np.geomspace(np.nanmax(g), last_level * np.nanstd(g),bins)
-        levels2 = np.geomspace(np.nanmax(g), last_level * np.nanstd(g),100)
-        levels_ellipse = np.geomspace(np.nanmax(g), last_level * np.nanstd(g),32)
+        try:
+            # plt.figure()
+            # plt.imshow(g)
+            # plt.show()
+            # print('@@@@@@@@@@@@@@@@@@@@@@@@')
+            # print('np.nanmax(g)',np.nanmax(g))
+            # print('np.nanstd(g)',np.nanstd(g))
+            # print('last_level * np.nanstd(g)',last_level * np.nanstd(g))
+            # print('@@@@@@@@@@@@@@@@@@@@@@@@')
+            levels = np.geomspace(np.nanmax(g), last_level * np.nanstd(g),bins)
+            levels2 = np.geomspace(np.nanmax(g), last_level * np.nanstd(g),100)
+            levels_ellipse = np.geomspace(np.nanmax(g), last_level * np.nanstd(g),32)
+        except:
+            levels = np.linspace(np.nanmax(g), last_level * std,bins)
+            levels2 = np.linspace(np.nanmax(g), last_level * std,100)
+            levels_ellipse = np.linspace(np.nanmax(g), last_level * std,32)
+            
+            # levels = np.geomspace(abs(np.nanmax(g)), last_level * np.nanstd(g)+1e-6,bins)
+            # levels2 = np.geomspace(abs(np.nanmax(g)), last_level * np.nanstd(g)+1e-6,100)
+            # levels_ellipse = np.geomspace(abs(np.nanmax(g)), last_level * np.nanstd(g)+1e-6,32)
+
 
     fluxes = []
     areas = []
@@ -2337,7 +2382,10 @@ def compute_image_properties(img, residual, cell_size=None, mask_component=None,
 
         vx = results['x0'] - results['x0m']
         vy = results['y0'] - results['y0m']
-        TvPA, Tvlenght = trail_vector(vx=vx, vy=vy, v0=np.asarray([1, 0]))
+        try:
+            TvPA, Tvlenght = trail_vector(vx=vx, vy=vy, v0=np.asarray([1, 0]))
+        except:
+            TvPA, Tvlenght = 0.0, 0.0
         results['TvPA'] = TvPA
         results['Tvlenght'] = Tvlenght
 
@@ -2731,33 +2779,82 @@ def compute_image_properties(img, residual, cell_size=None, mask_component=None,
     results['area_ratio'] = area_ratio
     results['area_ratio_full'] = area_ratio_full
     results['beam_area'] = beam_area_
+    
+    if redshift is not None:
+        pix_to_pc = pixsize_to_pc(z=redshift,cell_size = cell_size)
+        scale_size = 1 * pix_to_pc
+        scale_size_units = 'pc'
+    else:
+        scale_size = 1 * cell_size
+        scale_size_units = scale_units
 
-    if logger is not None:
-        print_logger_header(title="Basic Source Properties",
-                            logger=logger)
-        logger.debug(f" ==>  Peak of Flux="
-                     f"{results['peak_of_flux']*1000:.2f} [mJy/beam]")
-        logger.debug(f" ==>  Total Flux Inside Mask='"
-                     f"{results['total_flux_mask']*1000:.2f} [mJy]")
-        logger.debug(f" ==>  Total Flux Image="
-                     f"{results['total_flux_nomask'] * 1000:.2f} [mJy]")
-        logger.debug(f" ==>  Half-Light Radii="
-                     f"{results['C50radii']:.2f} [px]")
-        logger.debug(f" ==>  Total Source Size="
-                     f"{results['C95radii']:.2f} [px]")
-        if do_fit_ellipse:
-            logger.debug(f" ==>  Source Global Axis Ratio="
-                        f"{results['qm']:.2f}")
-            logger.debug(f" ==>  Source Global PA="
-                        f"{results['PAm']:.2f} [degrees]")
-            logger.debug(f" ==>  Inner Axis Ratio="
-                        f"{results['qmi']:.2f}")
-            logger.debug(f" ==>  Outer Axis Ratio="
-                        f"{results['qmo']:.2f}")
-            logger.debug(f" ==>  Inner PA="
-                        f"{results['PAmi']:.2f} [degrees]")
-            logger.debug(f" ==>  Outer PA="
-                        f"{results['PAmo']:.2f} [degrees]")
+    if verbose > 0:
+        if logger is not None:
+            print_logger_header(title="Basic Source Properties",
+                                logger=logger)
+            logger.debug(f" ==>  Peak of Flux="
+                        f"{results['peak_of_flux']*1000:.2f} [mJy/beam]")
+            logger.debug(f" ==>  Total Flux Inside Mask="
+                        f"{results['total_flux_mask']*1000:.2f} [mJy]")
+            logger.debug(f" ==>  Total Flux Image="
+                        f"{results['total_flux_nomask'] * 1000:.2f} [mJy]")
+            logger.debug(f" ==>  Half-Light Radii="
+                        f"{results['C50radii']:.2f} [px]")
+            logger.debug(f" ==>  Total Source Size="
+                        f"{results['C95radii']:.2f} [px]")
+            if do_fit_ellipse:
+                logger.debug(f" ==>  Source Global Axis Ratio="
+                            f"{results['qm']:.2f}")
+                logger.debug(f" ==>  Source Global PA="
+                            f"{results['PAm']:.2f} [degrees]")
+                logger.debug(f" ==>  Inner Axis Ratio="
+                            f"{results['qmi']:.2f}")
+                logger.debug(f" ==>  Outer Axis Ratio="
+                            f"{results['qmo']:.2f}")
+                logger.debug(f" ==>  Inner PA="
+                            f"{results['PAmi']:.2f} [degrees]")
+                logger.debug(f" ==>  Outer PA="
+                            f"{results['PAmo']:.2f} [degrees]")
+        else:
+            print(f" ==>  Peak of Flux      = "
+                  f"{results['peak_of_flux']*1000:.2f} +/- {results['std_image']*1000:.2f} [mJy/beam]")
+            print(f" ==>  Snu (within mask) = "
+                  f"{results['total_flux_mask']*1000:.2f} +/- {results['flux_error_res_2'] * 1000:.2f} [mJy]")
+            print(f" ==>  Snu (image)       = "
+                  f"{results['total_flux_nomask'] * 1000:.2f} +/- {results['flux_error_res_2'] * 1000:.2f} [mJy]")
+            print(f" ==>  R50               = "
+                  f"{cell_size * results['C50radii']:.4f} +/- {cell_size * results['C50radii_err']:.4f} [{scale_units}]")
+            print(f" ==>  R95               = "
+                  f"{cell_size * results['C95radii']:.4f} +/- {cell_size * results['C95radii_err']:.4f} [{scale_units}]")
+            if scale_size_units == 'pc':
+                A50_phy = pix_area_to_kpc_area(results['npix50'],scale_size)
+                A50_phy_err = pix_area_to_kpc_area(results['npix50_err'],scale_size)
+                A95_phy = pix_area_to_kpc_area(results['npix95'],scale_size)
+                A95_phy_err = pix_area_to_kpc_area(results['npix95_err'],scale_size)
+
+                print(f" ==>  A50               = "
+                    f"({1e3*A50_phy:.4f} +/- {1e3*A50_phy_err:.4f}) x 1e3 [kpc^-2]")
+                print(f" ==>  A95               = "
+                    f"({1e3*A95_phy:.4f} +/- {1e3*A95_phy_err:.4f}) x 1e3 [kpc^-2]")
+                            
+            if redshift is not None:
+                print(f" ==>  R50               = "
+                    f"{scale_size * results['C50radii']:.4f} +/- {scale_size * results['C50radii_err']:.4f} [{scale_size_units}]")
+                print(f" ==>  R95               = "
+                    f"{scale_size * results['C95radii']:.4f} +/- {scale_size * results['C95radii_err']:.4f} [{scale_size_units}]")
+            # if do_fit_ellipse:
+            #     print(f" ==>  Source Global Axis Ratio="
+            #           f"{results['qm']:.2f}")
+            #     print(f" ==>  Source Global PA="
+            #           f"{results['PAm']:.2f} [degrees]")
+            #     print(f" ==>  Inner Axis Ratio="
+            #           f"{results['qmi']:.2f}")
+            #     print(f" ==>  Outer Axis Ratio="
+            #           f"{results['qmo']:.2f}")
+            #     print(f" ==>  Inner PA="
+            #           f"{results['PAmi']:.2f} [degrees]")
+            #     print(f" ==>  Outer PA="
+            #           f"{results['PAmo']:.2f} [degrees]")
 
 
 
@@ -2922,12 +3019,115 @@ def compute_image_properties(img, residual, cell_size=None, mask_component=None,
             writer.writerow(results)
     return (levels, fluxes, agrow, omask, mask, results)
 
+def calculate_robust_flux_error(data, data_res, mask, total_flux, total_flux_density_residual,
+                              systematic_error_fraction, beam_area_, total_pixels, res_std_mad,
+                              n_bootstrap=1000, confidence_level=0.68):
+    """
+    Calculate robust flux density error using pre-computed statistics and maps.
+    
+    Parameters:
+    -----------
+    data : numpy.ndarray
+        2D array of the science image
+    data_res : numpy.ndarray
+        2D array of the residual image
+    mask : numpy.ndarray
+        2D array boolean mask
+    total_flux : float
+        Pre-computed total flux density within mask
+    total_flux_density_residual : float
+        Pre-computed total residual flux density within mask
+    systematic_error_fraction : float
+        Systematic error as a fraction (e.g., 0.05 for 5%)
+    beam_area_ : int
+        Beam area in pixels
+    total_pixels : int
+        Total number of pixels within mask
+    res_std_mad : float
+        Pre-computed MAD standard deviation of residual map within mask
+    n_bootstrap : int
+        Number of bootstrap iterations
+    confidence_level : float
+        Confidence level for error estimation (0.68 = 1σ)
+        
+    Returns:
+    --------
+    dict
+        Dictionary containing various error estimates and statistics
+    """
+    # Calculate number of independent beams
+    n_beams = total_pixels / beam_area_
+    
+    # Get masked pixels for bootstrap
+    masked_data = data[mask]
+    
+    # Bootstrap resampling
+    bootstrap_fluxes = np.zeros(n_bootstrap)
+    for i in range(n_bootstrap):
+        # Resample pixels with replacement
+        indices = np.random.randint(0, total_pixels, size=total_pixels)
+        bootstrap_fluxes[i] = np.sum(masked_data[indices]) / beam_area_
+    
+    # Calculate errors using different methods
+    
+    # 1. MAD-based error (using pre-computed MAD std)
+    # mad_error = res_std_mad * np.sqrt(total_pixels) / beam_area_
+    mad_error = res_std_mad * np.sqrt(total_pixels) / np.sqrt(n_beams)
+    
+    # 2. Bootstrap-based error
+    bootstrap_std = np.std(bootstrap_fluxes)
+    bootstrap_percentiles = np.percentile(bootstrap_fluxes, 
+                                        [50 - confidence_level*50, 50 + confidence_level*50])
+    bootstrap_error = (bootstrap_percentiles[1] - bootstrap_percentiles[0]) / 2
+    
+    # 3. Systematic error
+    systematic_error = systematic_error_fraction * total_flux
+    
+    # 4. Residual-based error (using your pre-computed total residual)
+    # residual_error = abs(total_flux_density_residual) / beam_area_
+    residual_error = abs(total_flux_density_residual) / np.sqrt(n_beams)
+    
+    # Combine errors (using bootstrap as statistical component)
+    total_error = np.sqrt(bootstrap_error**2 + systematic_error**2)
+    
+    # Alternative total error using MAD
+    total_error_mad = np.sqrt(mad_error**2 + systematic_error**2)
+    
+    # Alternative total error using residual
+    total_error_residual = np.sqrt(residual_error**2 + systematic_error**2)
+    
+    # Calculate signal-to-noise ratios
+    snr = total_flux / total_error
+    snr_mad = total_flux / total_error_mad
+    snr_residual = total_flux / total_error_residual
+    
+    return {
+        'total_flux': total_flux,
+        'total_error': total_error,
+        'total_error_mad': total_error_mad,
+        'total_error_residual': total_error_residual,
+        'bootstrap_error': bootstrap_error,
+        'mad_error': mad_error,
+        'residual_error': residual_error,
+        'systematic_error': systematic_error,
+        'snr': snr,
+        'snr_mad': snr_mad,
+        'snr_residual': snr_residual,
+        'confidence_level': confidence_level,
+        'n_beams': n_beams,
+        'bootstrap_percentiles': bootstrap_percentiles
+    }
+
+
 
 def structural_morphology(imagelist, residuallist,
                           indices, masks_deblended,
-                          zd, big_mask=None, data_2D=None,sigma_mask=6.0,
-                          iterations = 2,
+                          zd, ref_mask=None, data_2D=None,sigma_mask=6.0,
+                          iterations = 1,
+                          iterations_subregions = 1,
+                          min_sigma = 1.5,
                           do_PLOT=False, show_figure=False,
+                          do_petro = True,
                           sigma_loop_init=6.0, do_measurements='all',
                           verbose=0):
     """
@@ -2981,7 +3181,7 @@ def structural_morphology(imagelist, residuallist,
                                                           residualname=crop_residual,
                                                           z=zd, deblend=False,
                                                           apply_mask=True,
-                                                        #   mask = big_mask,
+                                                          mask = ref_mask,
                                                           results_final=processing_results_source,
                                                           plot_catalog=False,
                                                           rms=std,
@@ -2991,11 +3191,12 @@ def structural_morphology(imagelist, residuallist,
                                                           npixels=npixels, fwhm=121,
                                                           kernel_size=121,
                                                           sigma_mask=sigma_mask,
-                                                          last_level=1.5,
+                                                          last_level=min_sigma,
                                                           iterations=iterations,
                                                           dilation_size=None,
                                                           do_measurements=do_measurements,
                                                           do_PLOT=do_PLOT,
+                                                          do_petro = do_petro,
                                                           show_figure=show_figure,
                                                           add_save_name='',
                                                           verbose=verbose)
@@ -3003,8 +3204,9 @@ def structural_morphology(imagelist, residuallist,
             processing_results_source['freq'] = getfreqs([crop_image])[0]
             processing_results_source['comp_ID'] = str(0)
             processing_results_source['flag_subcomponent'] = flag_subcomponent
-            # ref_mask = mask*big_mask
-            
+            # ref_mask = mask*ref_mask
+            if ref_mask is None:
+                ref_mask = mask
             results_conc.append(processing_results_source)
             # bkg_ = sep_background(crop_image, apply_mask=True, mask=None, bw=11,
             #                       bh=11, fw=12, fh=12)
@@ -3032,12 +3234,12 @@ def structural_morphology(imagelist, residuallist,
                             mask_dilation_from_mask(data_2D,
                                                     mask_component,
                                                     sigma=sigma_loop,
-                                                    PLOT=False,iterations=iterations,
+                                                    PLOT=False,iterations=iterations_subregions,
                                                     dilation_size=dilation_size,
                                                     show_figure=False)
-
+                        mask_new = mask_new * ref_mask #avoind increasing mask above the reference mask
                         # dilated masks must not overlap >> non conservation of flux
-                        # mask_new = mask_new * big_mask
+                        # mask_new = mask_new * ref_mask
                         for l in range(len(indices)):
                             if l != j:
                                 mask_new[masks_deblended[l]] = False
@@ -3045,22 +3247,23 @@ def structural_morphology(imagelist, residuallist,
                                 pass
                         # masks_expanded[f'mask_ex_{j}'] = mask_new
                         # plt.figure()
-                        # plt.imshow(mask_new*big_mask)
+                        # plt.imshow(mask_new*ref_mask)
                         # plt.show()
                         processing_results_components, mask, _ = \
                             measures(crop_image, crop_residual, z=zd,
                                         deblend=False, apply_mask=False,
                                         plot_catalog=False, bkg_sub=False,
-                                        mask = big_mask,
+                                        mask = ref_mask,
                                         mask_component=mask_new, rms=std,
-                                        iterations=iterations, npixels=50, fwhm=121,
+                                        iterations=iterations_subregions, npixels=50, fwhm=121,
                                         kernel_size=121, sigma_mask=sigma_loop,
-                                        last_level=1.5,
+                                        last_level=min_sigma,
                                         # bkg_to_sub = bkg_.back(),
                                         dilation_size=dilation_size,
                                         add_save_name=add_save_name,
                                         do_measurements=do_measurements,
                                         do_PLOT=do_PLOT, show_figure=show_figure,
+                                        do_petro = do_petro,
                                         verbose=verbose,
                                         results_final=processing_results_components)
                         flag_subcomponent = 0
@@ -3094,7 +3297,7 @@ def structural_morphology(imagelist, residuallist,
                                     # masks_expanded[f'mask_ex_{j}'] = mask_new
                                     
                                     if sigma_loop >= 3.0:
-                                        last_level = 1.5
+                                        last_level = min_sigma
                                     if sigma_loop < 3.0:
                                         last_level = sigma_loop - 0.5
 
@@ -3104,7 +3307,7 @@ def structural_morphology(imagelist, residuallist,
                                                    apply_mask=False,
                                                    plot_catalog=False,
                                                    bkg_sub=False,
-                                                   mask = big_mask,
+                                                   mask = ref_mask,
                                                    mask_component=mask_new,
                                                    rms=std, iterations=3,
                                                    npixels=1000, fwhm=121,
@@ -3115,6 +3318,7 @@ def structural_morphology(imagelist, residuallist,
                                                    dilation_size=dilation_size,
                                                    do_measurements=do_measurements,
                                                    do_PLOT=do_PLOT, 
+                                                   do_petro = do_petro,
                                                    show_figure=show_figure,
                                                    verbose=verbose,
                                                    results_final=processing_results_components)
@@ -3144,7 +3348,7 @@ def structural_morphology(imagelist, residuallist,
                                 'with mininum threshold allowed.')
                             processing_results_components, mask, _ = measures(
                                 crop_image, crop_residual, z=zd, deblend=False,
-                                apply_mask=False,mask = big_mask,
+                                apply_mask=False,mask = ref_mask,
                                 plot_catalog=False, bkg_sub=False,
                                 # bkg_to_sub = bkg_.back(),
                                 mask_component=mask_new, rms=std,
@@ -3155,6 +3359,7 @@ def structural_morphology(imagelist, residuallist,
                                 add_save_name=add_save_name,
                                 do_measurements=do_measurements,
                                 do_PLOT=do_PLOT, show_figure=show_figure,
+                                do_petro = do_petro,
                                 verbose=verbose,
                                 results_final=processing_results_components)
                             processing_results_components['subreg_sigma'] = 1.0
@@ -3169,7 +3374,7 @@ def structural_morphology(imagelist, residuallist,
             else:
                 processing_results_source['ncomps'] = 1
         except:
-            print('Some imaging data is missing!')
+            print(f'Some error occured for image file {os.path.basename(crop_image)}.')
             missing_data_im.append(os.path.basename(crop_image))
             missing_data_re.append(os.path.basename(crop_residual))
             pass
@@ -4176,21 +4381,24 @@ def convex_morpho(image, mask, scale=1.0, do_plot=False):
 
     if do_plot:
         # Plot image
+
         plt.figure(figsize=(5, 5))
-        plt.imshow(image*mask, cmap='gray', origin='lower')
+        norm = simple_norm(image, stretch='sqrt', asinh_a=0.02, min_cut= 3 * mad_std(image),
+                           max_cut=0.2 * np.nanmax(image))
+        plt.imshow(image, cmap='gray', origin='lower',norm=norm)
         
         # Plot semi-major and minor axes
         plt.quiver(
             centroid[0], centroid[1], major_axis[0], major_axis[1],
-            angles='xy', scale_units='xy', scale=1, color='r'
+            angles='xy', scale_units='xy', scale=1, color='limegreen'
         )
         plt.quiver(
             centroid[0], centroid[1], minor_axis[0], minor_axis[1],
-            angles='xy', scale_units='xy', scale=1, color='b'
+            angles='xy', scale_units='xy', scale=1, color='red'
         )
     
         # Plot centroid
-        plt.scatter(centroid[0], centroid[1], color='orange', zorder=5)
+        plt.scatter(centroid[0], centroid[1], color='limegreen', zorder=5)
     
         
         plt.xlabel("$x$ image coordinates")

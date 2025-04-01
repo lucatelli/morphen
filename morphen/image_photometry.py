@@ -405,7 +405,7 @@ def compute_petrosian_properties(data_2D, imagename, mask_component=None,
     if (source_props['rlast'] < 2 * source_props['Rp']) or \
             (np.isnan(p.r_total_flux)):
         if verbose>0:
-            print('WARNING: Number of pixels for petro region is to small. '
+            print('WARNING: Number of pixels for petro region is too small. '
                   'Looping over until good condition is satisfied.')
             print(f"Rlast        = {source_props['rlast']}")
             print(f"2*Rp           =  {2*source_props['Rp']}")
@@ -436,7 +436,7 @@ def compute_petrosian_properties(data_2D, imagename, mask_component=None,
     if (source_props['rlast'] < 2 * source_props['Rp']) or \
             (np.isnan(p.r_total_flux)):
         if verbose>0:
-            print('WARNING: Number of pixels for petro region is to small. '
+            print('WARNING: Number of pixels for petro region is too small. '
                   'Looping over until good condition is satisfied.')
             print(f"Rlast        = {source_props['rlast']}")
             print(f"2*Rp         =  {2*source_props['Rp']}")
@@ -608,12 +608,12 @@ def compute_petro_source(data_2D, mask_component=None, global_mask=None,
     if mask_component is not None:
         data_component = data_2D * mask_component
         if npixels is None:
-            npixels = int(np.nansum(mask_component)/50)
+            npixels = int(np.nansum(mask_component)/50 +5)
     else:
         mask_component = np.ones(data_2D.shape)
         data_component = data_2D
         if npixels is None:
-            npixels = int(data_2D.shape[0]/50)
+            npixels = int(data_2D.shape[0]/50 + 5)
     
     # print(' ++==>> Making catalog...')
     cat, segm, segm_deblend = make_catalog(image=data_component,
@@ -675,7 +675,7 @@ def compute_petro_source(data_2D, mask_component=None, global_mask=None,
     if (source_props['c' + ii + '_rlast'] < 2 * source_props['c' + ii + '_Rp']) \
             or (np.isnan(p.r_total_flux)):
         if verbose>0:
-            print('WARNING: Number of pixels for petro region is to small. '
+            print('WARNING: Number of pixels for petro region is too small. '
                   'Looping over until good condition is satisfied.')
         # Rlast_new = 2 * source_props['c' + ii + '_Rp'] + 3
 
@@ -696,7 +696,7 @@ def compute_petro_source(data_2D, mask_component=None, global_mask=None,
         if (source_props['c' + ii + '_rlast'] < 2 * source_props['c' + ii + '_Rp']) \
                 or (np.isnan(p.r_total_flux)):
             if verbose>0:
-                print('WARNING: Number of pixels for petro region is to small. '
+                print('WARNING: Number of pixels for petro region is too small. '
                     'Looping over until good condition is satisfied.')
             # Rlast_new = 2 * source_props['Rp'] + 3
             # print(' ++==>> Re-computing petrosian parameters...')
@@ -787,16 +787,27 @@ def petro_params(source, data_2D, segm, mask_source, positions=None,
                                                       plot=plot, vmax=0.3 * data_2D.max(),
                                                       vmin=vmin * mad_std(data_2D)
                                                       )
+    # print(flux_arr)
     #     fast_plot2(mask_source * data_2D)
     p = Petrosian(r_list, area_arr, flux_arr)
 
     if eta_value is None:
-        R50 = p.r_half_light
-        R20 = p.fraction_flux_to_r(fraction=0.2)
-        R80 = p.fraction_flux_to_r(fraction=0.8)
+        try:
+            R50 = p.r_half_light
+            R20 = p.fraction_flux_to_r(fraction=0.2)
+            R80 = p.fraction_flux_to_r(fraction=0.8)
+        except:
+            R50 = 3.0
+            R20 = 2.0
+            R80 = 4.0
         C1p = np.log10(R80 / R20)
-        Snu = p.total_flux
-        Rp = p.r_petrosian
+        try:
+            Snu = p.total_flux
+            Rp = p.r_petrosian
+        except:
+            Snu = np.nancumsum(flux_arr)[-1]
+            Rp = 2 * R50
+            plot = False
         p_return = p
         if plot == True:
             plt.figure()
@@ -811,13 +822,25 @@ def petro_params(source, data_2D, segm, mask_source, positions=None,
         from copy import copy
         p_new = copy(p)
         p_new.eta = eta_value
-        R50 = p_new.r_half_light
-        R20 = p_new.fraction_flux_to_r(fraction=0.2)
-        R80 = p_new.fraction_flux_to_r(fraction=0.8)
+        try:
+            R50 = p_new.r_half_light
+            R20 = p_new.fraction_flux_to_r(fraction=0.2)
+            R80 = p_new.fraction_flux_to_r(fraction=0.8)
+        except:
+            R50 = 3.0
+            R20 = 2.0
+            R80 = 4.0
         C1p = np.log10(R80 / R20)
-        Snu = p_new.total_flux
-        Rp = p_new.r_petrosian
+        try:
+            Snu = p_new.total_flux
+            Rp = p_new.r_petrosian
+        except:
+            Snu = np.nancumsum(flux_arr)[-1]
+            Rp = 2 * R50
+            plot = False
         p_return = p_new
+        
+        
         if plot == True:
             plt.figure()
             p_new.plot(plot_r=plot)
@@ -889,7 +912,7 @@ def source_props(data_2D, source_props={},sigma_mask = 5,
         if ((source_props['c' + ii + '_rlast'] < 2 * source_props['c' + ii + '_Rp'])) \
                 or (np.isnan(p.r_total_flux)):
             if verbose>0:
-                print('WARNING: Number of pixels for petro region is to small. '
+                print('WARNING: Number of pixels for petro region is too small. '
                     'Looping over until good condition is satisfied.')
             # Rlast_new = 2 * source_props['c' + ii + '_Rp'] + 3
 
@@ -907,7 +930,7 @@ def source_props(data_2D, source_props={},sigma_mask = 5,
         if (source_props['c' + ii + '_rlast'] < 2 * source_props['c' + ii + '_Rp']) \
                 or (np.isnan(p.r_total_flux)):
             if verbose>0:
-                print('WARNING: Number of pixels for petro region is to small. '
+                print('WARNING: Number of pixels for petro region is too small. '
                     'Looping over until good condition is satisfied.')
             # Rlast_new = 2 * source_props['Rp'] + 3
             Rlast_new = 2 * source_props['c' + ii + '_Rp'] + 3

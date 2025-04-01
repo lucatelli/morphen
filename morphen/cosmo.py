@@ -36,7 +36,7 @@ def angular_distance_cosmo(z, Om0=0.308):
     # print('D_a = ', d_A)  # 946.9318492873492 Mpc
     return(d_A)
 
-def arcsec_to_pc(z, cell_size, Om0=0.308):
+def arcsec_to_pc(z, cell_size=1, Om0=0.308):
     h = 67.8# * (h1 + h2) / 2
     cosmo = FlatLambdaCDM(H0=h, Om0=Om0)
     d_A = cosmo.angular_diameter_distance(z=z)
@@ -46,6 +46,40 @@ def arcsec_to_pc(z, cell_size, Om0=0.308):
     # unit is Mpc only now
     # print('Linear Distance = ', distance_pc)  # 3.384745689510495 Mpc
     return (distance_pc)
+
+    
+    
+
+def pc_to_arcsec(parsecs, redshift, h=67.8, Om0=0.308):
+    """
+    Convert a distance in parsecs to an angular size in arcseconds,
+    based on the angular diameter distance to an object at redshift z.
+    
+    Parameters:
+    parsecs (float): Distance in parsecs
+    redshift (float): Redshift of the object
+    h (float): Hubble constant in km/s/Mpc
+    Om0 (float): Matter density parameter
+    
+    Returns:
+    float: Angular size in arcseconds
+    """
+    # Create the cosmology object
+    cosmo = FlatLambdaCDM(H0=h, Om0=Om0)
+    
+    # Calculate the angular diameter distance in Mpc
+    d_A = cosmo.angular_diameter_distance(z=redshift)
+    
+    # Convert parsecs to the same units as d_A (Mpc)
+    distance_mpc = parsecs * u.pc.to(u.Mpc)
+    
+    # Calculate the angle in radians: theta = physical_size / d_A
+    theta_rad = distance_mpc / d_A.value
+    
+    # Convert radians to arcseconds
+    theta_arcsec = theta_rad * u.rad.to(u.arcsec)
+    
+    return theta_arcsec
 
 def pixsize_to_pc(z, cell_size, Om0=0.308):
     h = 67.8  # * (h1 + h2) / 2

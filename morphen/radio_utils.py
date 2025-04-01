@@ -822,6 +822,56 @@ def Tb_source(Snu,freq,theta1,theta2,z,
     else:
         return(Tb)
 
+def extrapolate_flux(Snu_1, nu_1, nu_2, alpha, dSnu_1=None, sigma=1):
+    """
+    Estimate the flux density at nu_2 using a power-law model and propagate errors.
+    """
+    Snu_2 = Snu_1 * (nu_2 / nu_1) ** alpha
+    dSnu_2 = None
+    Snu_2_lower = None
+    
+    if dSnu_1 is not None:
+        relative_error = dSnu_1 / Snu_1
+        dSnu_2 = sigma * Snu_2 * relative_error
+        Snu_2_lower = max(0, Snu_2 - dSnu_2)
+    
+    return Snu_2, dSnu_2, Snu_2_lower
+
+def extrapolate_flux_array(fluxes, flux_errors, frequencies, alpha=None, sigma=3):
+    """
+    Fill NaN values in the flux array using power-law extrapolation from the nearest previous measured point.
+    """
+    filled_fluxes = np.copy(fluxes)
+    filled_errors = np.copy(flux_errors)
+    
+    for i in range(len(fluxes)):
+        if np.isnan(fluxes[i]):
+            prev_idx = i - 1
+            while prev_idx >= 0 and np.isnan(fluxes[prev_idx]):
+                prev_idx -= 1
+            
+            if prev_idx >= 0:
+                Snu_1, nu_1 = fluxes[prev_idx], frequencies[prev_idx]
+                nu_2 = frequencies[i]
+                dSnu_1 = flux_errors[prev_idx] if not np.isnan(flux_errors[prev_idx]) else None
+                
+                computed_alpha = alpha
+                if alpha is None:
+                    prev_prev_idx = prev_idx - 1
+                    while prev_prev_idx >= 0 and np.isnan(fluxes[prev_prev_idx]):
+                        prev_prev_idx -= 1
+                    
+                    if prev_prev_idx >= 0:
+                        Snu_0, nu_0 = fluxes[prev_prev_idx], frequencies[prev_prev_idx]
+                        computed_alpha = np.log10(Snu_1 / Snu_0) / np.log10(nu_1 / nu_0)
+                    else:
+                        computed_alpha = -0.7
+                
+                filled_fluxes[i], filled_errors[i], _ = extrapolate_flux(Snu_1, nu_1, nu_2, computed_alpha, dSnu_1, sigma)
+    
+    return filled_fluxes, filled_errors
+
+
 def Olim(Omaj,SNR):
     Olim_ = Omaj * np.sqrt((4*np.log(2)/np.pi) * np.log(SNR/(SNR-1)))
     return(Olim_)
