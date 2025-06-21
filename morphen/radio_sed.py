@@ -4374,106 +4374,104 @@ def specidx_map(imagelist,residuallist,
             copy_header(ref_image_conv,alphaimage_error_name,alphaimage_error_name)
         
         return(alphaimage, alphaimage_error,conv_cube,masked_cube_res,masked_cube)
-        
-        
-    
-    
-def specidx_map_SY_FF(imagelist,residuallist,
+
+
+def specidx_map_SY_FF(imagelist, residuallist,
                       ref_image_conv=None,
                       freqs=None,
-                      ref_image_mask = None,
-                      flux_sys_error_frac = 0.05,
+                      ref_image_mask=None,
+                      flux_sys_error_frac=0.1,
                       nu0=10.0,
-                      mask=None,sigma_global_mask=6,
+                      mask=None, sigma_global_mask=6,
                       iterations=1,
                       dilation_size=2,
                       sed_model='S2',
                       fix_alpha_nt=False,
-                      needs_convolution=False,conv_task='fft',
+                      needs_convolution=False, conv_task='fft',
+                      do_average_cube=False, bin_size=int(2),
                       n_jobs=1,
                       verbose=0):
-    
     if isinstance(imagelist[0], str):
         cube_image = makecube(imagelist)
         cube_residuals = makecube(residuallist)
     else:
         cube_image = imagelist
         cube_residuals = residuallist
-    
+
     if mask is None:
         if ref_image_mask is not None:
             ref_image_mask = ref_image_mask
         else:
             ref_image_mask = imagelist[-1]
-        _,mask = mask_dilation(ref_image_mask,
-                               rms=mad_std(load_fits_data(residuallist[-1])),
-                                     show_figure=True,
-                                     PLOT=True,
-                                     iterations=iterations,
-                                     dilation_size=dilation_size,
-                                     sigma=sigma_global_mask)
+        _, mask = mask_dilation(ref_image_mask,
+                                rms=mad_std(load_fits_data(residuallist[-1])),
+                                show_figure=True,
+                                PLOT=True,
+                                iterations=iterations,
+                                dilation_size=dilation_size,
+                                sigma=sigma_global_mask)
     mask_3d = mask[:, :, np.newaxis]
     inv_mask = ~mask
     inv_mask_3d = inv_mask[:, :, np.newaxis]
-    
+
     if needs_convolution == False:
         if ref_image_conv is None:
             ref_image_conv = sort_list_by_beam_size(imagelist=imagelist,
-                                                return_df = False)[0][::-1][0]
+                                                    return_df=False)[0][::-1][0]
         else:
             ref_image_conv = imagelist[0]
 
-    
     if isinstance(ref_image_conv, str):
         psf_zise = int(get_beam_size_px(ref_image_conv)[0])
         psf_image_size = int(load_fits_data(ref_image_conv).shape[0])
         print(f"PSF BEAM SIZE is --> {psf_zise} px")
         print(f"PSF IMAGE SIZE is --> {psf_image_size} px")
         larger_beam_image_data = load_fits_data(ref_image_conv)
-        
 
         psf_name = tcreate_beam_psf(ref_image_conv,
-                                        size=(psf_image_size, psf_image_size),
-                                        aspect = 'elliptical')
+                                    size=(psf_image_size, psf_image_size),
+                                    aspect='elliptical')
         PSF_DATA = load_fits_data(psf_name)
-        
+
     num_images = cube_image.shape[2]
     if needs_convolution:
         conv_cube = np.empty_like(cube_image)
         conv_cube_res = np.empty_like(cube_residuals)
         if conv_task == 'fft':
             for i in tqdm(range(num_images)):
-                conv_image_i_uncor = scipy.signal.fftconvolve(cube_image[:, :, i], 
-                                                            PSF_DATA, 'same')
-                conv_residual_i_uncor = scipy.signal.fftconvolve(cube_residuals[:, :, i], 
-                                                            PSF_DATA, 'same')
-                
+                conv_image_i_uncor = scipy.signal.fftconvolve(cube_image[:, :, i],
+                                                              PSF_DATA, 'same')
+                conv_residual_i_uncor = scipy.signal.fftconvolve(cube_residuals[:, :, i],
+                                                                 PSF_DATA, 'same')
+
                 larger_beam_area = beam_area2(ref_image_conv)
                 beam_area_i = beam_area2(imagelist[i])
-                
+
                 # factor_conv = np.max(larger_beam_image_data)/np.max(conv_image_i_uncor)
-                factor_conv_i = larger_beam_area/beam_area_i
-                
+                factor_conv_i = larger_beam_area / beam_area_i
+
                 print(f"Factor Convolution is --> {factor_conv_i}")
                 # factor_conv = 1.0
 
                 conv_cube[:, :, i] = conv_image_i_uncor * factor_conv_i
                 conv_image_i = conv_cube[:, :, i]
-                
+
                 conv_cube_res[:, :, i] = conv_residual_i_uncor * factor_conv_i
                 conv_res_i = conv_cube_res[:, :, i]
-                
-                conv_name = imagelist[i].replace('-image.','-image-conv.').replace('-image.cutout','-image-conv.cutout')
+
+                conv_name = imagelist[i].replace('-image.', '-image-conv.').replace('-image.cutout',
+                                                                                    '-image-conv.cutout')
                 pf.writeto(conv_name,
-                                conv_image_i,
-                                overwrite=True)
-                copy_header(ref_image_conv,conv_name,conv_name)
-                
-                conv_res_name = residuallist[i].replace('-residual.','-residual-conv.').replace('-residual.cutout','-residual-conv.cutout')
+                           conv_image_i,
+                           overwrite=True)
+                copy_header(ref_image_conv, conv_name, conv_name)
+
+                conv_res_name = residuallist[i].replace('-residual.', '-residual-conv.').replace(
+                    '-residual.cutout', '-residual-conv.cutout')
                 pf.writeto(conv_res_name,
-                                conv_res_i,
-                                overwrite=True)
-                copy_header(ref_image_conv,conv_res_name,conv_res_name)
+                           conv_res_i,
+                           overwrite=True)
+                copy_header(ref_image_conv, conv_res_name, conv_res_name)
         # if conv_task == 'imsmooth':
         #     if isinstance(imagelist[0], str):
         #         for i in tqdm(range(num_images)):
@@ -4482,41 +4480,64 @@ def specidx_map_SY_FF(imagelist,residuallist,
         #                             cube_image[:, :, i],
         #                             overwrite=True)
         #             copy_header(imagelist[0],conv_name,conv_name)
-                    
+
         #             convolve_2D_smooth(imagelist[0],conv_name,mode='transfer',add_prefix='')
         #             conv_cube[:,:,i] = load_fits_data(conv_name)
-            
+
     else:
         conv_cube = cube_image.copy()
         conv_cube_res = cube_residuals.copy()
-    
+
     # conv_cube_res = cube_residuals.copy()
     masked_cube = np.where(inv_mask_3d, np.nan, conv_cube)
     masked_cube_res = np.where(inv_mask_3d, np.nan, conv_cube_res)
-    
+
+    if do_average_cube:
+        # bin_size = 2
+        # assert masked_cube.shape[2] % bin_size == 0, "Frequency axis size must be divisible by bin size."
+        reshaped_cube = masked_cube.reshape(masked_cube.shape[0],
+                                            masked_cube.shape[1], -1,
+                                            bin_size)
+        averaged_cube = reshaped_cube.mean(axis=3)
+
+        reshaped_residual = masked_cube_res.reshape(masked_cube_res.shape[0],
+                                                    masked_cube_res.shape[1], -1,
+                                                    bin_size)
+        averaged_cube_res = np.sqrt(np.sum(reshaped_residual ** 2, axis=3)) / bin_size
+
+        print("Original cube shape:", masked_cube.shape)
+        print("Averaged cube shape:", averaged_cube.shape)
+        reshaped_frequencies = freqs.reshape(-1, bin_size)
+        averaged_frequencies = reshaped_frequencies.mean(axis=1)
+        freqs = averaged_frequencies
+        masked_cube = averaged_cube.astype(np.float32)
+        masked_cube_res = averaged_cube_res.astype(np.float32)
+    else:
+        masked_cube = masked_cube.astype(np.float32)
+        masked_cube_res = masked_cube_res.astype(np.float32)
+
     # cube_image * mask_3d
-    idx = np.column_stack(np.where(mask==True))
+    idx = np.column_stack(np.where(mask == True))
     if freqs is None:
         freqs = getfreqs(imagelist)
-    alphaimage = np.empty_like(conv_cube[:,:,0])
-    alphaimage_error = np.empty_like(conv_cube[:,:,0])
-    A_sy_map = np.empty_like(conv_cube[:,:,0])
-    A_sy_map_err = np.empty_like(conv_cube[:,:,0])
-    A_ff_map = np.empty_like(conv_cube[:,:,0])
-    A_ff_map_err = np.empty_like(conv_cube[:,:,0])
-    Snu0 = np.empty_like(conv_cube[:,:,0])
-    Snu0_err = np.empty_like(conv_cube[:,:,0])
-    f_th_33 = np.empty_like(conv_cube[:,:,0])
-    f_th_33_err = np.empty_like(conv_cube[:,:,0])
-    S_tot_33 = np.empty_like(conv_cube[:,:,0])
-    S_tot_33_err = np.empty_like(conv_cube[:,:,0])
-    
-    sy_map_33 = np.empty_like(conv_cube[:,:,0])
-    sy_map_33_err = np.empty_like(conv_cube[:,:,0])
-    ff_map_33 = np.empty_like(conv_cube[:,:,0])
-    ff_map_33_err = np.empty_like(conv_cube[:,:,0])
+    alphaimage = np.empty_like(conv_cube[:, :, 0])
+    alphaimage_error = np.empty_like(conv_cube[:, :, 0])
+    A_sy_map = np.empty_like(conv_cube[:, :, 0])
+    A_sy_map_err = np.empty_like(conv_cube[:, :, 0])
+    A_ff_map = np.empty_like(conv_cube[:, :, 0])
+    A_ff_map_err = np.empty_like(conv_cube[:, :, 0])
+    Snu0 = np.empty_like(conv_cube[:, :, 0])
+    Snu0_err = np.empty_like(conv_cube[:, :, 0])
+    f_th_33 = np.empty_like(conv_cube[:, :, 0])
+    f_th_33_err = np.empty_like(conv_cube[:, :, 0])
+    S_tot_33 = np.empty_like(conv_cube[:, :, 0])
+    S_tot_33_err = np.empty_like(conv_cube[:, :, 0])
 
-    
+    sy_map_33 = np.empty_like(conv_cube[:, :, 0])
+    sy_map_33_err = np.empty_like(conv_cube[:, :, 0])
+    ff_map_33 = np.empty_like(conv_cube[:, :, 0])
+    ff_map_33_err = np.empty_like(conv_cube[:, :, 0])
+
     alphaimage[:] = np.nan
     alphaimage_error[:] = np.nan
     sy_map_33[:] = np.nan
@@ -4534,40 +4555,38 @@ def specidx_map_SY_FF(imagelist,residuallist,
     S_tot_33[:] = np.nan
     S_tot_33_err[:] = np.nan
 
-    
-#     x = np.log10(freqs)
-    x = freqs.copy()/1e9
-    
+    #     x = np.log10(freqs)
+    x = freqs.copy() / 1e9
+
     nspec = len(idx)
     tenpc = int(nspec / 10.0)
     count = 0
     pcount = 0
-    
+
     masked_cube = masked_cube.astype(np.float32)
     masked_cube_res = masked_cube_res.astype(np.float32)
-    
-    
+
     def compute_pixel_nth_spectral_index(i, j, x, masked_cube, masked_cube_res, nu0):
         y = masked_cube[i, j, :] * 1000
-        yerr = np.sqrt((masked_cube_res[i, j, :])**2.0 + (flux_sys_error_frac * masked_cube[i, j, :])**2.0) * 1000
-        results_fit = do_fit_spec_SY_FF_map(x, y, yerr, nu0,fix_alpha_nt)
-        return (i, j, 
-                results_fit.params['alpha_nt'].value, 
+        yerr = np.sqrt((1 * masked_cube_res[i, j, :]) ** 2.0 + (
+                    flux_sys_error_frac * masked_cube[i, j, :]) ** 2.0) * 1000
+        results_fit = do_fit_spec_SY_FF_map(x, y, yerr, nu0, fix_alpha_nt)
+        return (i, j,
+                results_fit.params['alpha_nt'].value,
                 results_fit.params['alpha_nt'].stderr,
                 results_fit.params['A_sy'].value,
                 results_fit.params['A_sy'].stderr,
                 results_fit.params['A_ff'].value,
                 results_fit.params['A_ff'].stderr,
-                y,yerr,results_fit
+                y, yerr, results_fit
                 )
-    
-    
+
     # pixel_indices = [(i, j) for i, j in idx]
     # results = Parallel(n_jobs=n_jobs)(
-    # delayed(compute_pixel_nth_spectral_index)(i, j, x, masked_cube, masked_cube_res, nu0) 
+    # delayed(compute_pixel_nth_spectral_index)(i, j, x, masked_cube, masked_cube_res, nu0)
     # for i, j in tqdm(pixel_indices, total=len(pixel_indices))
     # )
-    
+
     pixel_indices = [(i, j) for i, j in idx]
     with Parallel(n_jobs=n_jobs) as parallel:
         results = parallel(
@@ -4575,175 +4594,176 @@ def specidx_map_SY_FF(imagelist,residuallist,
                 i, j, x, masked_cube, masked_cube_res, nu0
             ) for i, j in tqdm(pixel_indices, total=len(pixel_indices))
         )
-    
+
     if sed_model == 'S2':
         # for i, j in tqdm(idx):
         # for i, j in idx:
         for (i, j, alpha_nt_value, alpha_nt_err,
-             A_sy_value,A_sy_err,
-             A_ff_value,A_ff_err,
-             y,yerr,results_fit) in results:
+             A_sy_value, A_sy_err,
+             A_ff_value, A_ff_err,
+             y, yerr, results_fit) in results:
             # if count == 0:
             #     print(str(pcount) + '%...')
-            
-            
-    #         y = np.log10(masked_cube[i,j,:])
+
+            #         y = np.log10(masked_cube[i,j,:])
             # y = masked_cube[i,j,:]*1000
             # yerr = masked_cube_res[i,j,:]*1000
-        
+
             # results_fit = do_fit_spec_SY_FF_map(x,y,yerr,nu0)
-            
+
             alphaimage[i, j] = alpha_nt_value
             alphaimage_error[i, j] = alpha_nt_err
             A_sy_map[i, j] = A_sy_value
             A_sy_map_err[i, j] = A_sy_err
             A_ff_map[i, j] = A_ff_value
             A_ff_map_err[i, j] = A_ff_err
-            
-            sy_map_33[i,j] = A_sy_value * (33/nu0)**alpha_nt_value
-            ff_map_33[i,j] = A_ff_value * (33/nu0)**(-0.1)
-            sy_map_33_err[i,j] = sy_map_33[i,j] * np.sqrt((A_sy_err/A_sy_value)**2.0 + (alpha_nt_err/alpha_nt_value)**2.0)
-            ff_map_33_err[i,j] = ff_map_33[i,j] * np.sqrt((A_ff_err/A_ff_value)**2.0 + (0.1)**2.0)
-            
-            Snu0[i,j] = RC_function_SY_FF(nu0, 
-                                    A_sy_value, 
-                                    A_ff_value, 
-                                    alpha_nt_value,
-                                    nu0)
-            S_tot_33[i,j] = RC_function_SY_FF(33, 
-                                    A_sy_value, 
-                                    A_ff_value, 
-                                    alpha_nt_value,
-                                    nu0)
-            
-            S_tot_33_err = RC_function_SY_FF(33, 
-                                    A_sy_err, 
-                                    A_ff_err, 
-                                    alpha_nt_value,
-                                    nu0)
-            
-            S_sy_33 = RC_function_SY_FF(33, 
-                                    A_sy_value,
-                                    0.0, 
-                                    alpha_nt_value,
-                                    nu0)
-            S_sy_33_err = RC_function_SY_FF(33, 
-                                    A_sy_err, 
-                                    0.0, 
-                                    alpha_nt_value,
-                                    nu0)
-            
-            S_ff_33 = RC_function_SY_FF(33, 
-                                    0.0, 
-                                    A_ff_value, 
-                                    0.0,
-                                    nu0)
-            S_ff_33_err = RC_function_SY_FF(33, 
-                                    0.0, 
-                                    A_ff_err, 
-                                    0.0,
-                                    nu0)
-            
-            sed_sy_ff = {'S_sy_33':S_sy_33,
-                         'S_sy_33_err':S_sy_33_err,
-                        'S_ff_33':S_ff_33,
-                        'S_ff_33_err':S_ff_33_err,
-                        'sy_map_33':sy_map_33,
-                        'sy_map_33_err':sy_map_33_err,
-                        'ff_map_33':ff_map_33,
-                        'ff_map_33_err':ff_map_33_err,
-                        'S_tot_33':S_tot_33}
-            
-            f_th_33[i,j] = S_ff_33 / S_tot_33[i,j]
-            
-            f_th_33_err[i,j] = f_th_33[i,j] * np.sqrt((S_ff_33_err/S_ff_33)**2.0 + (S_tot_33_err/S_tot_33[i,j])**2.0)
-            
-            try:
-                Snu0_err[i,j] = RC_function_SY_FF(nu0, 
-                                        A_sy_err, 
-                                        A_ff_err, 
+
+            sy_map_33[i, j] = A_sy_value * (33 / nu0) ** alpha_nt_value
+            ff_map_33[i, j] = A_ff_value * (33 / nu0) ** (-0.1)
+            sy_map_33_err[i, j] = sy_map_33[i, j] * np.sqrt(
+                (A_sy_err / A_sy_value) ** 2.0 + (alpha_nt_err * np.log(33 / nu0)) ** 2.0)
+            ff_map_33_err[i, j] = ff_map_33[i, j] * np.sqrt(
+                (A_ff_err / A_ff_value) ** 2.0 + (0.1 * np.log(33 / nu0)) ** 2)
+
+            Snu0[i, j] = RC_function_SY_FF(nu0,
+                                           A_sy_value,
+                                           A_ff_value,
+                                           alpha_nt_value,
+                                           nu0)
+            S_tot_33[i, j] = RC_function_SY_FF(33,
+                                               A_sy_value,
+                                               A_ff_value,
+                                               alpha_nt_value,
+                                               nu0)
+
+            S_tot_33_err = RC_function_SY_FF(33,
+                                             A_sy_err,
+                                             A_ff_err,
+                                             alpha_nt_value,
+                                             nu0)
+
+            S_sy_33 = RC_function_SY_FF(33,
+                                        A_sy_value,
+                                        0.0,
                                         alpha_nt_value,
                                         nu0)
+            S_sy_33_err = RC_function_SY_FF(33,
+                                            A_sy_err,
+                                            0.0,
+                                            alpha_nt_value,
+                                            nu0)
+
+            S_ff_33 = RC_function_SY_FF(33,
+                                        0.0,
+                                        A_ff_value,
+                                        0.0,
+                                        nu0)
+            S_ff_33_err = RC_function_SY_FF(33,
+                                            0.0,
+                                            A_ff_err,
+                                            0.0,
+                                            nu0)
+
+            sed_sy_ff = {'S_sy_33': S_sy_33,
+                         'S_sy_33_err': S_sy_33_err,
+                         'S_ff_33': S_ff_33,
+                         'S_ff_33_err': S_ff_33_err,
+                         'sy_map_33': sy_map_33,
+                         'sy_map_33_err': sy_map_33_err,
+                         'ff_map_33': ff_map_33,
+                         'ff_map_33_err': ff_map_33_err,
+                         'S_tot_33': S_tot_33}
+
+            f_th_33[i, j] = S_ff_33 / S_tot_33[i, j]
+
+            f_th_33_err[i, j] = f_th_33[i, j] * np.sqrt(
+                (S_ff_33_err / S_ff_33) ** 2.0 + (S_tot_33_err / (S_ff_33 + S_sy_33)) ** 2.0)
+
+            try:
+                Snu0_err[i, j] = RC_function_SY_FF(nu0,
+                                                   A_sy_err,
+                                                   A_ff_err,
+                                                   alpha_nt_value,
+                                                   nu0)
             except:
-                Snu0_err[i,j] = np.nan                 
-                
+                Snu0_err[i, j] = np.nan
+
             count += 1
             if count == tenpc:
                 count = 0
                 pcount += 10
-                if verbose>0:
-                    model_best = RC_function_SY_FF(x, 
-                                                A_sy_value, 
-                                                A_ff_value,
-                                                alpha_nt_value,
-                                                nu0
-                                                )
-                    
-                    model_best_sy = RC_function_SY_FF(x, 
-                                                A_sy_value, 
-                                                0.0,
-                                                alpha_nt_value,
-                                                nu0
-                                                )
-                    model_best_ff = RC_function_SY_FF(x, 
-                                                0.0, 
-                                                A_ff_value,
-                                                alpha_nt_value,
-                                                nu0
-                                                )
-                    
-                    
-                    plt.figure()
+                if verbose > 0:
+                    model_best = RC_function_SY_FF(x,
+                                                   A_sy_value,
+                                                   A_ff_value,
+                                                   alpha_nt_value,
+                                                   nu0
+                                                   )
 
-                    plt.errorbar(x, 
-                                y, 
-                                yerr=abs(yerr), 
-                                fmt='o',
-                                label='Data', color='k', ecolor='gray',
-                                alpha=0.5)
+                    model_best_sy = RC_function_SY_FF(x,
+                                                      A_sy_value,
+                                                      0.0,
+                                                      alpha_nt_value,
+                                                      nu0
+                                                      )
+                    model_best_ff = RC_function_SY_FF(x,
+                                                      0.0,
+                                                      A_ff_value,
+                                                      alpha_nt_value,
+                                                      nu0
+                                                      )
+
+                    plt.figure(figsize=(4, 5))
+
+                    plt.errorbar(x,
+                                 y,
+                                 yerr=abs(yerr),
+                                 fmt='o',
+                                 label='Data', color='k', ecolor='gray',
+                                 alpha=0.5)
                     plt.plot(x, model_best,
-                            color='red', ls='-.', label='Best-fit model')
+                             color='red', ls='-.', label='Best-fit model')
                     plt.plot(x, model_best_sy,
-                            color='blue', ls='-.', label='SY term')
+                             color='blue', ls='-.', label='SY term')
                     plt.plot(x, model_best_ff,
-                            color='orange', ls='-.', label='FF term')
-                    
-                    
-                    plt.ylim(abs(np.nanmin(y)*0.1),np.nanmax(y)*5)
+                             color='orange', ls='-.', label='FF term')
+
+                    plt.ylim(abs(np.nanmin(y) * 0.1), np.nanmax(y) * 100)
                     plt.semilogy()
                     plt.semilogx()
-                    
+                    plt.xlabel('Frequency [GHz]')
+                    plt.ylabel('Pixel Flux Density [mJy/Beam]')
                     plt.legend()
                     plt.show()
                     print(lmfit.fit_report(results_fit.params))
-        
-    
+
     if isinstance(imagelist[0], str):
         """
         Only save the alpha image if the input is a list of strings.
         """
         # alphaimage_name = imagelist[0].replace('-0000-image.fits','-alpha.fits')
         # alphaimage_error_name = imagelist[0].replace('-0000-image.fits','-alphaerror.fits')
-        _alphaimage_name = (ref_image_conv.replace('-image.','-alpha_nt.').
-                        replace('-image.cutout','-alpha_nt.cutout').
-                        replace('-image-pb','-alpha_nt-pb'))
-        
-        _alphaimage_error_name = (ref_image_conv.replace('-image.','-alpha_nt_error.').
-                                replace('-image.cutout','-alpha_nt_error.cutout').
-                                replace('-image-pb','-alpha_nt_error-pb'))
-        
-        alphaimage_name = os.path.dirname(os.path.dirname(_alphaimage_name))+'/'+os.path.basename(_alphaimage_name)
-        alphaimage_error_name = os.path.dirname(os.path.dirname(_alphaimage_error_name))+'/'+os.path.basename(_alphaimage_error_name)
+        _alphaimage_name = (ref_image_conv.replace('-image.', '-alpha_nt.').
+                            replace('-image.cutout', '-alpha_nt.cutout').
+                            replace('-image-pb', '-alpha_nt-pb'))
 
-        pf.writeto(alphaimage_name,alphaimage,overwrite=True)
-        pf.writeto(alphaimage_error_name,alphaimage_error,overwrite=True)
-        copy_header(ref_image_conv,alphaimage_name,alphaimage_name)
-        copy_header(ref_image_conv,alphaimage_error_name,alphaimage_error_name)
-    
-    return(alphaimage, alphaimage_error,Snu0,Snu0_err,
-           A_ff_map, A_ff_map_err, 
-           A_sy_map, A_sy_map_err, 
-           f_th_33,f_th_33_err,
-           conv_cube,masked_cube_res,masked_cube,sed_sy_ff)
-    
-    
+        _alphaimage_error_name = (ref_image_conv.replace('-image.', '-alpha_nt_error.').
+                                  replace('-image.cutout', '-alpha_nt_error.cutout').
+                                  replace('-image-pb', '-alpha_nt_error-pb'))
+
+        alphaimage_name = os.path.dirname(
+            os.path.dirname(_alphaimage_name)) + '/' + os.path.basename(_alphaimage_name)
+        alphaimage_error_name = os.path.dirname(
+            os.path.dirname(_alphaimage_error_name)) + '/' + os.path.basename(
+            _alphaimage_error_name)
+
+        pf.writeto(alphaimage_name, alphaimage, overwrite=True)
+        pf.writeto(alphaimage_error_name, alphaimage_error, overwrite=True)
+        copy_header(ref_image_conv, alphaimage_name, alphaimage_name)
+        copy_header(ref_image_conv, alphaimage_error_name, alphaimage_error_name)
+
+    return (alphaimage, alphaimage_error, Snu0, Snu0_err,
+            A_ff_map, A_ff_map_err,
+            A_sy_map, A_sy_map_err,
+            f_th_33, f_th_33_err,
+            conv_cube, masked_cube_res, masked_cube, sed_sy_ff)
