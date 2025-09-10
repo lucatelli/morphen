@@ -242,7 +242,7 @@ def get_peak_pos(imagename):
     return (maxpos)
 
 
-def get_profile(imagename, center=None,binsize=1,interpnan=True,stddev=False):
+def get_profile(imagename, center=None,binsize=1,interpnan=True,stddev=False,return_nr=False):
     if isinstance(imagename, str) == True:
         data_2D = load_fits_data(imagename)
     else:
@@ -253,13 +253,18 @@ def get_profile(imagename, center=None,binsize=1,interpnan=True,stddev=False):
                                                 interpnan=interpnan,center=center,
                                                 stddev = stddev,
                                                 binsize=binsize)
-        return (radius, profile, profile_std)
+        if return_nr:
+            return (nr, radius, profile, profile_std)
+        else:
+            return (radius, profile, profile_std)
     else:
         nr, radius, profile = azimuthalAverage(data_2D,return_nr = True,
                                                 interpnan=interpnan,center=center,
                                                 binsize=binsize)
-        return (radius, profile)
-    
+        if return_nr:
+            return (nr, radius, profile)
+        else:
+            return (radius, profile)
 
 
 def azimuthalAverage(image, center=None, stddev=False, returnradii=False, return_nr=False,
@@ -526,3 +531,17 @@ def radialAverageBins(image, radbins, corners=True, center=None, **kwargs):
         radavlist.append(zz)
 
     return radbins, az, radavlist
+
+
+def get_err_frac(x,y,x_err,y_err):
+    """
+    Get the fractional error of a ratio of two values.
+    """
+    z = x/y
+    _sigma_z = z * np.sqrt((x_err / x)**2 + (y_err / y)**2)
+    sigma_z = np.nan_to_num(_sigma_z,nan=0)
+    return(z,sigma_z)
+
+
+
+
