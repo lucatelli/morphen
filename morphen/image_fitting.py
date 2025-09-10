@@ -543,6 +543,7 @@ def construct_model_parameters(n_components, params_values_init_IMFIT=None,
                                constrained=True, fix_n=False, fix_value_n=False,
                                fix_x0_y0=False,dr_fix = None,fix_geometry=True,
                                fix_max_value_Rn = False,
+                               fix_min_value_Rn = False,
                                init_params=0.25, final_params=4.0):
     """
     This function creates a single or multi-component Sersic model to be fitted
@@ -750,13 +751,13 @@ def construct_model_parameters(n_components, params_values_init_IMFIT=None,
                             _PA = init_constraints['c' + ii + '_PA']
                             smodel2D.set_param_hint(
                                 'f' + str(i + 1) + '_' + param,
-                                value=_PA, min=_PA - 60,
-                                max=_PA + 60)
+                                value=_PA, min=_PA - 90,
+                                max=_PA + 90)
                         else:
                             smodel2D.set_param_hint(
                                 'f' + str(i + 1) + '_' + param,
-                                value=eval(param), min=-50.0,
-                                max=190.0)
+                                value=eval(param), min=0.0,
+                                max=180.0)
                     if param == 'In':
                         if (init_constraints is not None) and (
                                 init_constraints['ncomps'] == n_components):
@@ -831,10 +832,12 @@ def construct_model_parameters(n_components, params_values_init_IMFIT=None,
                     else:
                         fix_max_value_Rn_j = False
                         
-                    if fix_max_value_Rn_j <= 1.0:
+                    if fix_max_value_Rn_j <= 3.0:
                         intensity_multiplier_max_factor = 5000
+                        intensity_multiplier_min_factor = 1.0
                     else:
-                        intensity_multiplier_max_factor = 200
+                        intensity_multiplier_max_factor = 50
+                        intensity_multiplier_min_factor = 0.01
 
                     if fix_x0_y0 is not False:
                         fix_x0_y0_j = fix_x0_y0[j]
@@ -865,57 +868,6 @@ def construct_model_parameters(n_components, params_values_init_IMFIT=None,
                                     'f' + str(j + 1) + '_' + param,
                                     value=0.5, min=0.3, max=8.0)
 
-                        """
-                        Constraining PA and q from the pre-analysis of the image
-                        (e.g. petro analysys) is not robust, since that image is
-                        already convolved with the restoring beam, which can be
-                        rotated. So the PA and q of a DECONVOLVED_MODEL
-                        (the actual minimization problem here) can be different
-                        from the PA and q of a CONVOLVED_MODEL
-                        (as well Rn_conv > Rn_decon; In_conv< In_deconv).
-                        So, at least we give some large bound.
-                        """
-                        if param == 'PA':
-                            dO = 90
-                            _PA = init_constraints['c' + jj + '_PA']
-                            PA_max = _PA + dO
-                            PA_min = _PA - dO
-                            smodel2D.set_param_hint(
-                                'f' + str(j + 1) + '_' + param,
-                                value=_PA, min=PA_min, max=PA_max)
-                        if param == 'ell':
-                            ell = 1 - init_constraints['c' + jj + '_q']
-                            ell_min = ell * 0.2
-                            #                         if ell + dell <= 1.0:
-                            # if ell * 1.0 <= 0.5:
-                            if ell <= 0.15:
-                                ell_max = 0.15
-                            else:
-                                ell_max = 0.75
-                                
-                            smodel2D.set_param_hint(
-                                'f' + str(j + 1) + '_' + param,
-                                value=ell, min=ell_min, max=ell_max)
-                            # print(f" -- Init value for ell: {ell}")
-                            # print(f" -- min value for ell: {ell_min}")
-                            # print(f" -- max value for ell: {ell_max}")
-                            # smodel2D.set_param_hint(
-                            #     'f' + str(j + 1) + '_' + param,
-                            #     value=ell, min=0.01, max=0.9)
-
-
-                        if param == 'cg':
-                            if fix_geometry_j == True:
-                                smodel2D.set_param_hint(
-                                    'f' + str(j + 1) + '_' + param,
-                                    value=0.0, min=-0.01, max=0.01)
-                            else:
-                                print('Using general elliptical geometry during '
-                                      'fitting... may take longer.')
-                                smodel2D.set_param_hint(
-                                    'f' + str(j + 1) + '_' + param,
-                                    value=0.0, min=-2.0, max=2.0)
-
                         if param == 'Rn':
                             if fix_max_value_Rn_j is not False:
                                 """
@@ -924,10 +876,19 @@ def construct_model_parameters(n_components, params_values_init_IMFIT=None,
                                 That is, Rn=1.0 ~ delta functio, 1 pixel component.
                                 """
                                 print(f" ++==>> Limiting {param}_{jj} to {fix_max_value_Rn_j}")
+                                if fix_max_value_Rn_j <= 3.0:
+                                    if fix_min_value_Rn:
+                                        min_Rn = fix_max_value_Rn_j * 0.98
+                                    else:
+                                        min_Rn = 0.5
+                                else:
+                                    min_Rn = 0.5
+                                    
+                                R50_max = fix_max_value_Rn_j
                                 smodel2D.set_param_hint(
                                     'f' + str(j + 1) + '_' + param,
-                                    value=fix_max_value_Rn_j*0.9, 
-                                    min=0.1, 
+                                    value=fix_max_value_Rn_j*0.99,
+                                    min=min_Rn, 
                                     max=fix_max_value_Rn_j)
                                 # smodel2D.set_param_hint(
                                 #     'f' + str(j + 1) + '_' + param,
@@ -940,8 +901,12 @@ def construct_model_parameters(n_components, params_values_init_IMFIT=None,
                                 # R50_max = R50 * 4.0
                                 # R50_max = init_constraints['c' + jj + '_Rp']
                                 if observation_type == 'radio':
-                                    R50_max = R50 * 1.0
-                                    R50_min = R50 * 0.01 #should be small.
+                                    if j == 0:
+                                        # R50_min = R50 * 0.01
+                                        R50_min = 0.5
+                                    else:
+                                        R50_min = R50 * 0.1 #should be small.
+                                    R50_max = R50 * 2.0
                                     # if R50_max < 1.0:
                                     #     intensity_multiplier_max_factor = 5000
                                     smodel2D.set_param_hint(
@@ -971,7 +936,7 @@ def construct_model_parameters(n_components, params_values_init_IMFIT=None,
                             """
                             if observation_type == 'radio':
                                 I50_max = I50 * intensity_multiplier_max_factor
-                                I50_min = I50 * 0.01
+                                I50_min = I50 * intensity_multiplier_min_factor
                                 smodel2D.set_param_hint(
                                     'f' + str(j + 1) + '_' + param,
                                     value=I50, min=I50_min, max=I50_max)
@@ -981,6 +946,69 @@ def construct_model_parameters(n_components, params_values_init_IMFIT=None,
                                 smodel2D.set_param_hint(
                                     'f' + str(j + 1) + '_' + param,
                                     value=I50, min=I50_min, max=I50_max)
+
+                        """
+                        Constraining PA and q from the pre-analysis of the image
+                        (e.g. petro analysys) is not robust, since that image is
+                        already convolved with the restoring beam, which can be
+                        rotated. So the PA and q of a DECONVOLVED_MODEL
+                        (the actual minimization problem here) can be different
+                        from the PA and q of a CONVOLVED_MODEL
+                        (as well Rn_conv > Rn_decon; In_conv< In_deconv).
+                        So, at least we give some large bound.
+                        """
+                        if param == 'PA':
+                            dO = 110
+                            _PA = init_constraints['c' + jj + '_PA'] + 30
+                            PA_max = _PA + dO
+                            PA_min = _PA - dO
+                            smodel2D.set_param_hint(
+                                'f' + str(j + 1) + '_' + param,
+                                value=_PA, min=PA_min, max=PA_max)
+                            
+                        if param == 'ell':
+                            ell = 1 - init_constraints['c' + jj + '_q']
+                            # ell_min = ell * 0.2
+                            ell_min = 0.0
+                            #                         if ell + dell <= 1.0:
+                            # if ell * 1.0 <= 0.5:
+                            if fix_max_value_Rn_j is not False:
+                                if fix_max_value_Rn_j <= 3.0:
+                                    ell_max = 0.03
+                                    ell = 0.01
+                                else:
+                                    ell_max = 0.5
+                                    ell = 0.01
+                            else:
+                                if ell <= 0.15:
+                                    ell_max = 0.15
+                                elif ell <= 0.02:
+                                    ell_max = 0.02
+                                else:
+                                    ell_max = 0.7
+                                
+                            smodel2D.set_param_hint(
+                                'f' + str(j + 1) + '_' + param,
+                                value=ell, min=ell_min, max=ell_max)
+                            # print(f" -- Init value for ell: {ell}")
+                            # print(f" -- min value for ell: {ell_min}")
+                            # print(f" -- max value for ell: {ell_max}")
+                            # smodel2D.set_param_hint(
+                            #     'f' + str(j + 1) + '_' + param,
+                            #     value=ell, min=0.01, max=0.9)
+
+
+                        if param == 'cg':
+                            if fix_geometry_j == True:
+                                smodel2D.set_param_hint(
+                                    'f' + str(j + 1) + '_' + param,
+                                    value=0.0, min=-0.01, max=0.01)
+                            else:
+                                print('Using general elliptical geometry during '
+                                      'fitting... may take longer.')
+                                smodel2D.set_param_hint(
+                                    'f' + str(j + 1) + '_' + param,
+                                    value=0.0, min=-2.0, max=2.0)
 
 
                         if param == 'x0':
@@ -1261,7 +1289,7 @@ def add_extra_component(petro_properties, copy_from_id):
     unique_list = list(OrderedDict.fromkeys(
         [elem.split('_')[1] for elem in dict_keys if '_' in elem]))
     #     print(unique_list)
-    print(unique_list)
+    # print(unique_list)
     petro_properties_copy = petro_properties.copy()
     new_comp_id = petro_properties['ncomps'] + 1
     for k in range(len(unique_list)):
@@ -1272,9 +1300,9 @@ def add_extra_component(petro_properties, copy_from_id):
         if unique_list[k] == 'R50':
             # multiply the R50 value by a factor, e.g., 5.0
             # factor = 5.0
-            factor = np.nanmean([petro_properties['cg_Rp']/petro_properties_copy['c' + str(copy_from_id) + '_' + unique_list[k]],
+            factor = 2*np.nanmean([petro_properties['cg_Rp']/petro_properties_copy['c' + str(copy_from_id) + '_' + unique_list[k]],
                                  2*petro_properties['cg_Rp'] / abs(petro_properties['cg_Rp']-petro_properties_copy['c' + str(copy_from_id) + '_' + unique_list[k]])])
-            print(factor)
+            print(f"Factor to scale radius of extra component = {factor}")
             petro_properties_copy[
                 'c' + str(new_comp_id) + '_' + unique_list[k]] = \
             petro_properties_copy[
@@ -1375,7 +1403,8 @@ def prepare_fit(ref_image, ref_res, z, ids_to_add=[1],
                 show_detection=True,use_extraction_positions=False,
                 clean_param=0.9,clean=True,sort_by='distance',
                 apply_mask=False, mask_grow_iterations=3,
-                obs_type = 'radio',algorithm='SEP',force_circular=True,
+                obs_type = 'radio',algorithm='SEP',
+                force_circular=True,force_circular_all=False,
                 show_petro_plots=False):
     """
     Prepare the imaging data to be modeled.
@@ -1550,14 +1579,20 @@ def prepare_fit(ref_image, ref_res, z, ids_to_add=[1],
         print(f"<> Forcing components to be circular.")
         # for i in range(len(indices)):
         for i in range(sources_photometries['ncomps']):
-            if i+1 <= n_IDs:
+            if force_circular_all:
                 sources_photometries[f'c{i+1}_q'] = 0.99
+            else:
+                if i+1 <= n_IDs:
+                    sources_photometries[f'c{i+1}_q'] = 0.99
+                else:
+                    sources_photometries[f'c{i+1}_q'] = 0.5
             print(f"<> q_{i+1} {sources_photometries[f'c{i+1}_q']}")
     else:
         print(f"<> Leaving components to be elliptical.")
         for i in range(sources_photometries['ncomps']):
-            if i+1 > n_IDs:
-                sources_photometries[f'c{i+1}_q'] = 0.6
+            # if i+1 > n_IDs:
+            #     sources_photometries[f'c{i+1}_q'] = 0.6
+            sources_photometries[f'c{i+1}_q'] = 0.5
                 # sources_photometries[f'c{i+1}_R50'] = sources_photometries[f'cg_Rp']
                 # sources_photometries[f'c{i+1}_Rp'] = sources_photometries[f'cg_Rp']
             print('<> q = ',sources_photometries[f'c{i+1}_q'])
@@ -1573,7 +1608,7 @@ def do_fit2D(imagename, params_values_init_IMFIT=None, ncomponents=None,
              residualname=None,which_residual='shuffled',observation_type = 'radio',
              init_params=0.25, final_params=4.0, constrained=True,
              fix_n=True, fix_value_n=False, 
-             fix_max_value_Rn=False,
+             fix_max_value_Rn=False,fix_min_value_Rn = False,
              dr_fix=3,
              fix_x0_y0=False, psf_name=None, convolution_mode='GPU',
              convolve_cutout=False, cut_size=512, self_bkg=False, 
@@ -2116,7 +2151,7 @@ def do_fit2D(imagename, params_values_init_IMFIT=None, ncomponents=None,
         params_values_init_IMFIT=params_values_init_IMFIT, n_components=nfunctions,
         init_constraints=init_constraints,observation_type=observation_type,
         fix_n=fix_n, fix_value_n=fix_value_n,
-        fix_max_value_Rn = fix_max_value_Rn,
+        fix_max_value_Rn = fix_max_value_Rn, fix_min_value_Rn = fix_min_value_Rn,
         fix_x0_y0=fix_x0_y0, dr_fix=dr_fix, fix_geometry=fix_geometry,
         init_params=init_params, final_params=final_params,
         constrained=constrained)
@@ -2618,6 +2653,7 @@ def run_image_fitting(imagelist, residuallist, sources_photometries,
                       fix_x0_y0 = [True, True, True, True, True, True, True, True],
                       fix_value_n=[0.5, 0.5, 0.5, 1.0], 
                       fix_max_value_Rn = [False, False, False, False],
+                      fix_min_value_Rn = False,
                       fix_geometry=True,
                       dr_fix=[10, 10, 10, 10, 10, 10, 10, 10],logger=None,
                       parameters_mini_init = None,
@@ -2681,7 +2717,6 @@ def run_image_fitting(imagelist, residuallist, sources_photometries,
         # dilation_size = int(
         # np.sqrt(omaj * omin) / (2 * get_cell_size(crop_image)))
 
-
         if verbose >= 1:
             do_PLOT = True
             PLOT = True
@@ -2710,25 +2745,36 @@ def run_image_fitting(imagelist, residuallist, sources_photometries,
                 plt.show()
                 plt.clf()
                 plt.close()
-
-        _, mask_region_i = mask_dilation(crop_image,
-                                        rms=rms_std_res,
-                                        sigma=5.0, dilation_size=None,
-                                        iterations=4, PLOT=True)
         
-        mask_region = mask_for_fit.copy() * mask_region_i
-        
+        # mask_region = mask_for_fit * mask_region_i
+        if mask is not None:
+            _, mask_region_i = mask_dilation(crop_image,
+                                            rms=rms_std_res,
+                                            sigma=6.0, dilation_size=None,
+                                            iterations=4, PLOT=True)
+            mask_region = mask * mask_region_i
+            # mask_region = mask.copy()
+            # last_level = 2.5
+        else:
+            _, mask_region_i = mask_dilation(crop_image,
+                                            rms=rms_std_res,
+                                            sigma=6.0, dilation_size=None,
+                                            iterations=2, PLOT=True)
+            mask_region = mask_region_i.copy()
+            # last_level = 1.0
+        last_level = 1.0
         data_properties, _, _ = \
             measures(imagename=crop_image,
                      residualname=crop_residual, z=z,
                      sigma_mask=6.0,
-                     last_level=1.0, vmin_factor=1.0,
+                     last_level=last_level, 
+                     vmin_factor=1.0,
                      dilation_size=None,
                      results_final={},
                      rms=rms_std_res,
                      apply_mask=True,
                      iterations = 3,
-                     mask=mask_region_i*mask_region,
+                     mask=mask_region,
                      do_PLOT=do_PLOT, SAVE=SAVE,
                      do_petro = True,
                      show_figure=show_figure,
@@ -2769,6 +2815,7 @@ def run_image_fitting(imagelist, residuallist, sources_photometries,
                             mask_region=mask_for_fit,
                             fix_value_n=fix_value_n,
                             fix_max_value_Rn=fix_max_value_Rn,
+                            fix_min_value_Rn=fix_min_value_Rn,
                             fix_x0_y0=fix_x0_y0,
                             dr_fix=dr_fix,
                             self_bkg=self_bkg, rms_map=bkg_rms_map, 
@@ -2794,12 +2841,14 @@ def run_image_fitting(imagelist, residuallist, sources_photometries,
         #                                               mask_region,
         #                                               rms=rms_std_res,
         #                                               iterations=10)
-
+        # print(image_results_deconv)
+        # print(image_results_deconv[:-1])
         rms_bkg_deconv = mad_std(load_fits_data(bkg_deconv))
         deconv_model_properties = compute_model_properties(model_list=image_results_deconv[:-1],
                                                            which_model='deconv',
                                                            residualname=crop_residual,
                                                            rms=rms_std_res,
+                                                           z = z,
                                                            mask_region = mask_region,
                                                            verbose=verbose
                                                            )
@@ -2808,6 +2857,7 @@ def run_image_fitting(imagelist, residuallist, sources_photometries,
                                                          which_model='conv',
                                                          residualname=crop_residual,
                                                          rms=rms_std_res,
+                                                         z = z,
                                                          mask_region = mask_region,
                                                          verbose=verbose
                                                          )
@@ -2995,7 +3045,10 @@ def run_image_fitting(imagelist, residuallist, sources_photometries,
                                         PLOT=PLOT,
                                         special_name=' compact conv ')#*mask_region_i
 
-
+        """#testing"""
+        if np.nansum(mask_region_conv_comp) == 0 and mask_region is not None:
+            mask_region_conv_comp = mask_region
+        """---"""
 
         # print('++++ Computing properties of convolved compact model.')
 
@@ -3009,7 +3062,7 @@ def run_image_fitting(imagelist, residuallist, sources_photometries,
             measures(imagename=crop_image,
                      residualname=crop_residual, z=z,
                      sigma_mask=5.0,
-                     last_level=1.0, vmin_factor=1.0,
+                     last_level=1.5, vmin_factor=1.0,
                      data_2D=compact_model,
                      dilation_size=None,
                      results_final={},
@@ -3058,7 +3111,7 @@ def run_image_fitting(imagelist, residuallist, sources_photometries,
                 measures(imagename=crop_image,
                          residualname=crop_residual, z=z,
                          sigma_mask=5.0,
-                         last_level=1.0, vmin_factor=1.0,
+                         last_level=1.5, vmin_factor=1.0,
                          data_2D=compact_model_deconv,
                          dilation_size=None,
                          results_final={},
