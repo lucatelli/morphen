@@ -250,31 +250,178 @@ def do_cutout_2D(image_data, box_size=(300,300),
         return(box)
 
 
-
-
-def copy_header(image, image_to_copy, file_to_save=None):
+def copy_header(source_image, target_image, file_to_save=None):
     """
-    For image files with no wcs, copy the header from a similar/equal image to
-    the wanted file.
-    Note: This is intended to be used to copy headers from images to their
-    associated models and residuals.
-    Note: Residual CASA images do not have Jy/Beam units, so this function
-        can be used to copy the header/wcs information to the wanted file
-        in order to compute the total flux in residual maps after the
-        header has been copied.
+    Copy header information from a source FITS file to a target FITS file.
+    Specially designed to work with HST and other multi-extension FITS files.
+    
+    This function preserves the exact structure of the source file while
+    replacing the data with that from the target file.
+    
+    Parameters
+    ----------
+    source_image : str
+        Path to the source FITS file (from which headers will be copied).
+    target_image : str
+        Path to the target FITS file (to which headers will be copied).
+    file_to_save : str, optional
+        If provided, save the result to this path instead of modifying target_image.
+        Default is None (modify target_image directly).
+        
+    Returns
+    -------
+    str
+        Path to the updated FITS file
     """
     from astropy.io import fits
-    if file_to_save is None:
-        file_to_save = image_to_copy.replace('.fits', 'header.fits')
-    # Open the source image and get its header
-    with fits.open(image) as hdu1:
-        header = hdu1[0].header
-        # Open the target image and update its header
-        with fits.open(image_to_copy, mode='update') as hdu2:
-            hdu2[0].header.update(header)
-            hdu2.flush()
-            hdu2.close()
-    pass
+    import numpy as np
+    
+    # Determine output file
+    output_file = file_to_save if file_to_save is not None else target_image
+    
+    # Read in source and target data
+    with fits.open(source_image) as source_hdul, fits.open(target_image) as target_hdul:
+        # Create a new HDUList for the output
+        new_hdus = fits.HDUList()
+        
+        # Get the target data
+        target_data = None
+        if len(target_hdul) > 0 and target_hdul[0].data is not None:
+            target_data = target_hdul[0].data
+        elif len(target_hdul) > 1:
+            # If primary HDU has no data, try the first extension
+            target_data = target_hdul[1].data
+        
+        # Copy each HDU from source, but replace data with target data
+        for i, hdu in enumerate(source_hdul):
+            # Create a copy of the source HDU
+            new_hdu = hdu.copy()
+            
+            # Replace the data if this is the HDU that should contain it
+            if i == 0 and source_hdul[0].data is not None:
+                # Primary HDU has data in source, so put target data here
+                new_hdu.data = target_data
+            elif i == 1 and (source_hdul[0].data is None or len(source_hdul) == 1):
+                # First extension should get the data if primary doesn't have it
+                new_hdu.data = target_data
+            
+            # Add to our new HDUList
+            new_hdus.append(new_hdu)
+    
+    # Write to output file
+    new_hdus.writeto(output_file, overwrite=True)
+    
+    return output_file
+
+def get_cell_size_old(imagename):
+    """
+    Get the cell size/pixel size in arcsec from an image header wcs.
+    """
+    hdu = pf.open(imagename)
+    ww = WCS(hdu[0].header)
+    pixel_scale = (ww.pixel_scale_matrix[1,1]*3600)
+    cell_size =  pixel_scale.copy()
+    return(cell_size)
+
+
+def get_cell_size(imagename, ext=None):
+    """
+    Get the pixel scale (cell size) from a FITS header in arcseconds.
+    
+    Parameters
+    ----------
+    imagename : str
+        Path to the FITS file.
+    ext : int, optional
+        Extension number to use. If None, will find the best extension.
+        
+    Returns
+    -------
+    float
+        Cell size in arcseconds.
+    """
+    from astropy.io import fits
+    from astropy.wcs import WCS
+    
+    with fits.open(imagename) as hdul:
+        if ext is None:
+            # Find the extension with valid WCS
+            for i, hdu in enumerate(hdul):
+                try:
+                    if hdu.header and ('CD1_1' in hdu.header or 'CDELT1' in hdu.header):
+                        ext = i
+                        break
+                except Exception:
+                    pass
+            
+            # If still None, use primary header
+            if ext is None:
+                ext = 0
+        
+        header = hdul[ext].header
+        
+        # Try different keywords for pixel scale
+        if 'CD1_1' in header:
+            cell_size = abs(header['CD1_1']) * 3600.0  # deg to arcsec
+        elif 'CDELT1' in header:
+            cell_size = abs(header['CDELT1']) * 3600.0  # deg to arcsec
+        else:
+            # Try to get from WCS
+            try:
+                wcs = WCS(header, naxis=2)
+                if wcs.has_celestial:
+                    cell_size = wcs.proj_plane_pixel_scales()[0].to('arcsec').value
+                else:
+                    cell_size = 1.0
+            except Exception:
+                cell_size = 1.0
+                
+    return cell_size
+
+def find_sci_extension(hdul):
+    """
+    Find the science extension with valid data in a FITS file.
+    
+    Parameters
+    ----------
+    hdul : HDUList
+        The HDUList from a FITS file.
+        
+    Returns
+    -------
+    tuple
+        (extension_index, data, wcs)
+    """
+    from astropy.wcs import WCS
+    
+    # First, try to find SCI extension which is standard for HST
+    for i, hdu in enumerate(hdul):
+        if hasattr(hdu, 'name') and hdu.name == 'SCI' and hdu.data is not None:
+            try:
+                wcs = WCS(hdu.header, naxis=2)
+                if wcs.has_celestial:
+                    return i, hdu.data, wcs
+            except Exception:
+                pass
+    
+    # If no SCI extension found, try any extension with data and valid WCS
+    for i, hdu in enumerate(hdul):
+        if hdu.data is not None:
+            try:
+                wcs = WCS(hdu.header, naxis=2)
+                if wcs.has_celestial:
+                    return i, hdu.data, wcs
+            except Exception:
+                pass
+    
+    # Fall back to primary HDU
+    try:
+        wcs = WCS(hdul[0].header, naxis=2)
+        return 0, hdul[0].data, wcs
+    except Exception:
+        return 0, hdul[0].data, None
+
+
 
 def get_frequency(imagename):
     """
