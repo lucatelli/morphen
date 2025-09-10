@@ -16,7 +16,8 @@
 
 
 def do_petrofit(image, cell_size, mask_component=None, fwhm=8, kernel_size=5, npixels=32,
-                main_feature_index=0, sigma_mask=7, dilation_size=10,deblend=False,
+                main_feature_index=0, sigma_mask=6, dilation_size=None,deblend=False,
+                iterations=3,
                 apply_mask=True, PLOT=True, show_figure = True, results=None):
     # from petrofit.photometry import order_cat
     # from petrofit.photometry import make_radius_list
@@ -40,6 +41,7 @@ def do_petrofit(image, cell_size, mask_component=None, fwhm=8, kernel_size=5, np
         data_2D_ = data_2D_ * mask_component
     if apply_mask == True:
         omask, mask = mask_dilation(image, cell_size=cell_size,
+                                    iterations=iterations,
                                     sigma=sigma_mask, dilation_size=dilation_size,
                                     PLOT=False)
 
@@ -174,10 +176,12 @@ def do_petrofit(image, cell_size, mask_component=None, fwhm=8, kernel_size=5, np
     results['R50p'] = p_copy.r_half_light
     results['R80p'] = p_copy.fraction_flux_to_r(fraction=0.8)
     results['R90p'] = p_copy.fraction_flux_to_r(fraction=0.9)
+    results['R95p'] = p_copy.fraction_flux_to_r(fraction=0.95)
     results['R20p_2'] = p.fraction_flux_to_r(fraction=0.2)
     results['R50p_2'] = p.r_half_light
     results['R80p_2'] = p.fraction_flux_to_r(fraction=0.8)
     results['R90p_2'] = p.fraction_flux_to_r(fraction=0.9)
+    results['R95p_2'] = p.fraction_flux_to_r(fraction=0.95)
 
     C1p = np.log10(results['R80p'] / results['R20p'])
     C2p = np.log10(results['R90p'] / results['R50p'])
@@ -501,6 +505,7 @@ def compute_petrosian_properties(data_2D, imagename, mask_component=None,
     source_props['R50p'] = p.r_half_light
     source_props['R80p'] = p.fraction_flux_to_r(fraction=0.8)
     source_props['R90p'] = p.fraction_flux_to_r(fraction=0.9)
+    source_props['R95p'] = p.fraction_flux_to_r(fraction=0.95)
 
     C1p = np.log10(source_props['R80p'] / source_props['R20p'])
     C2p = np.log10(source_props['R90p'] / source_props['R50p'])
@@ -714,7 +719,12 @@ def compute_petro_source(data_2D, mask_component=None, global_mask=None,
                                         bkg_sub=bkg_sub, plot=plot)
 
 
-
+    # print('Hint R50 = ', source_props['c' + ii + '_R50'])
+    # print('Hint R_LAST = ',source_props['c' + ii + '_rlast'])
+    # print('Hint R_P = ',source_props['c' + ii + '_Rp'])
+    # print('Hint FLUX = ',np.isnan(p.r_total_flux))
+    
+    
     """
     Now, estimate the effective intensity.
     """
@@ -730,6 +740,11 @@ def compute_petro_source(data_2D, mask_component=None, global_mask=None,
         # I50 = ir[0]*0.1
 
     source_props['c' + ii + '_I50'] = I50
+    
+    if np.isnan(source_props['c' + ii + '_R50']):
+        source_props['c' + ii + '_R50'] = source_props['c' + ii + '_Re']
+    if np.isnan(source_props['c' + ii + '_Rp']):
+        source_props['c' + ii + '_Rp'] = source_props['c' + ii + '_rlast']
 
     if (global_mask is not None) and (imagename is not None):
         data_comp_mask = data_component * global_mask
