@@ -97,84 +97,123 @@ def cut_image(img, center=None, size=(1024, 1024),
     hdu2.writeto(cutout_filename_res, overwrite=True)
     return(cutout_filename,cutout_filename_res)
 
-
-def do_cutout(image, box_size=(200,200), center=None, return_='data'):
+def do_cutout(image, box_size=(200, 200), center=None, return_='data'):
     """
-    Fast cutout of a numpy array.
-
-    Returs: numpy data array or a box for that cutout, if asked.
+    Perform a cutout of a 2D astronomical image array.
+    
+    COORDINATE CONVENTION:
+    - Input coordinates follow (x, y) convention where x=column, y=row
+    - Array indexing follows numpy convention: array[y, x] or array[row, column]
+    - Image shape is (height, width) corresponding to (n_rows, n_columns)
+    
+    Parameters
+    ----------
+    image : str or numpy.ndarray
+        Either a file path to a FITS image or a 2D numpy array
+    box_size : int or tuple of int, default (200, 200)
+        Size of the cutout box. If int, creates a square box.
+        Values represent half-width in each dimension.
+    center : tuple of int, optional
+        Center coordinates (x, y) for the cutout, where x is the column index
+        and y is the row index. If None, uses the position of the maximum value in the image.
+    return_ : {'data', 'box'}, default 'data'
+        What to return: 'data' returns the cutout array,
+        'box' returns the bounding box coordinates (xmin, xmax, ymin, ymax)
+    
+    Returns
+    -------
+    numpy.ndarray or tuple
+        Either the cutout data array or bounding box coordinates
+        
+    Raises
+    ------
+    ValueError
+        If inputs are invalid or cutout extends beyond image boundaries
+    TypeError
+        If image type is not supported
     """
+    
+    # Input validation and normalization
     if isinstance(box_size, int):
-        box_size = (box_size,box_size)
-
-    if center is None:
-        if isinstance(image, str) == True:
-            # imhd = imhead(image)
-            st = imstat(image)
-            print('  >> Center --> ', st['maxpos'])
-            xin, xen, yin, yen = (st['maxpos'][0] - box_size[0],
-                                  st['maxpos'][0] + box_size[0],
-                                  st['maxpos'][1] - box_size[1],
-                                  st['maxpos'][1] + box_size[1])
-            data_cutout = load_fits_data(image)[xin:xen, yin:yen]
-
-        else:
-            try:
-                max_x, max_y = np.where(load_fits_data(image) == load_fits_data(image).max())
-                xin = max_x[0] - box_size[0]
-                xen = max_x[0] + box_size[0]
-                yin = max_y[0] - box_size[1]
-                yen = max_y[0] + box_size[1]
-            except:
-                max_x, max_y = np.where(image == image.max())
-                xin = max_x[0] - box_size[0]
-                xen = max_x[0] + box_size[0]
-                yin = max_y[0] - box_size[1]
-                yen = max_y[0] + box_size[1]
-
-            data_cutout = image[xin:xen, yin:yen]
-
-
+        box_size = (box_size, box_size)
+    elif not (isinstance(box_size, (tuple, list)) and len(box_size) == 2):
+        raise ValueError("box_size must be an integer or a tuple/list of two integers")
+    
+    box_size = tuple(int(s) for s in box_size)
+    if any(s <= 0 for s in box_size):
+        raise ValueError("box_size values must be positive")
+    
+    if return_ not in ['data', 'box']:
+        raise ValueError("return_ must be 'data' or 'box'")
+    
+    # Load data if image is a file path
+    if isinstance(image, str):
+        try:
+            data = load_fits_data(image)
+        except Exception as e:
+            raise ValueError(f"Failed to load image from path '{image}': {e}")
+    elif isinstance(image, np.ndarray):
+        data = image
     else:
-        xin, xen, yin, yen = (center[0] - box_size[0], center[0] + box_size[0],
-                              center[1] - box_size[1], center[1] + box_size[1])
-        if isinstance(image, str) == True:
-            data_cutout = load_fits_data(image)[xin:xen, yin:yen]
-        else:
-            data_cutout = image[xin:xen, yin:yen]
-
-    if return_ == 'data':
-        return (data_cutout)
+        raise TypeError("image must be a string (file path) or numpy array")
+    
+    # Validate data is 2D
+    if data.ndim != 2:
+        raise ValueError(f"Image data must be 2D, got {data.ndim}D array")
+    
+    height, width = data.shape
+    
+    # Determine center coordinates
+    if center is None:
+        # Find position of maximum value (replacing CASA imstat functionality)
+        max_indices = np.unravel_index(np.nanargmax(data), data.shape)
+        center_y, center_x = max_indices
+        print(f'  >> Center (auto-detected at max value) --> ({center_x}, {center_y})')
+    else:
+        if not (isinstance(center, (tuple, list)) and len(center) == 2):
+            raise ValueError("center must be a tuple/list of two numbers")
+        center_x, center_y = int(center[0]), int(center[1])
+    
+    # Calculate bounding box coordinates
+    half_width_x, half_width_y = box_size
+    xmin = center_x - half_width_x
+    xmax = center_x + half_width_x
+    ymin = center_y - half_width_y
+    ymax = center_y + half_width_y
+    
+    # Bounds checking and adjustment
+    original_bounds = (xmin, xmax, ymin, ymax)
+    
+    # Clamp coordinates to image boundaries
+    xmin = max(0, xmin)
+    xmax = min(width, xmax)
+    ymin = max(0, ymin)
+    ymax = min(height, ymax)
+    
+    # Check if any adjustment was needed
+    if (xmin, xmax, ymin, ymax) != original_bounds:
+        print(f"Warning: Cutout box adjusted to fit within image boundaries")
+        print(f"  Original: x=[{original_bounds[0]}:{original_bounds[1]}], "
+              f"y=[{original_bounds[2]}:{original_bounds[3]}]")
+        print(f"  Adjusted: x=[{xmin}:{xmax}], y=[{ymin}:{ymax}]")
+    
+    # Validate final box size
+    if xmin >= xmax or ymin >= ymax:
+        raise ValueError(f"Invalid cutout box: center ({center_x}, {center_y}) "
+                        f"with box_size {box_size} results in empty or invalid region")
+    
+    # Return requested output
     if return_ == 'box':
-        box = xin, xen, yin, yen  # [xin:xen,yin:yen]
-        return (box)
+        return (xmin, xmax, ymin, ymax)
+    else:
+        # Extract cutout (note: numpy indexing is [y, x])
+        cutout = data[ymin:ymax, xmin:xmax]
+        
+        if cutout.size == 0:
+            raise ValueError("Cutout resulted in empty array")
+            
+        return cutout
 
-
-# def do_cutout_2D(image_data, box_size=300, center=None, return_='data'):
-#     """
-#     Fast cutout of a numpy array.
-#
-#     Returs: numpy data array or a box for that cutout, if asked.
-#     """
-#
-#     if center is None:
-#         x0, y0= nd.maximum_position(image_data)
-#         print('  >> Center --> ', x0, y0)
-#         if x0-box_size>1:
-#             xin, xen, yin, yen = x0 - box_size, x0 + box_size, \
-#                                  y0 - box_size, y0 + box_size
-#         else:
-#             print('Box size is larger than image!')
-#             return ValueError
-#     else:
-#         xin, xen, yin, yen = center[0] - box_size, center[0] + box_size, \
-#             center[1] - box_size, center[1] + box_size
-#     if return_ == 'data':
-#         data_cutout = image_data[xin:xen, yin:yen]
-#         return (data_cutout)
-#     if return_ == 'box':
-#         box = xin, xen, yin, yen  # [xin:xen,yin:yen]
-#         return(box)
 
 def do_cutout_2D(image_data, box_size=(300,300), 
                  center=None, centre_mode='max',
