@@ -35,13 +35,18 @@ def prepare_data(root_paths,prefix_images):
         prefix_images_i = prefix_images[i]
         imagelist_i = glob.glob(root_path_i+prefix_images_i)
         imagelist_i, residuallist_i, freqs_i = sort_list_by_freq(imagelist_i)
-        MFS_images.append(imagelist_i[0].replace('0000-image','MFS-image'))
-        MFS_residuals.append(residuallist_i[0].replace('0000-residual','MFS-residual'))
-
+        for kk in range(len(imagelist_i)):
+            if '0000-image' in imagelist_i[kk]:
+                MFS_images.append(imagelist_i[kk].replace('0000-image','MFS-image'))
+                MFS_residuals.append(residuallist_i[kk].replace('0000-residual','MFS-residual'))
         imagelist.extend(imagelist_i)
         residuallist.extend(residuallist_i)
         freqlist.extend(freqs_i)
-        
+    
+    i = 0
+    for image in MFS_images:
+        print(i, '>>', os.path.basename(image))
+        i = i + 1    
     freqlist_MFS = getfreqs(MFS_images)
 
 
@@ -198,7 +203,9 @@ def run_wsclean(g_name, imsize='2048', imsizey='2048',cell='0.06asec',
             ax0 = eimshow(imagename = image_list[base_name],
                                 center=centre,
                                 projection = 'offset',plot_colorbar=True,
-                                vmax_factor=0.8,
+                                vmax_factor=1.0,
+                                vmin_factor=2.0,
+                                plot_rms=True,
                                 rms=mad_std(load_fits_data(image_list[base_name + '_residual'])),
                                 # crop=True,box_size=300,
                                 figsize=(8, 8), ax=ax0,fig=fig,
@@ -210,7 +217,7 @@ def run_wsclean(g_name, imsize='2048', imsizey='2048',cell='0.06asec',
             ax1 = eimshow(imagename = image_list[base_name + '_residual'],
                                 center=centre,
                                 projection='offset',
-                                vmin_factor=-3.0, vmax_factor=0.99,
+                                vmin_factor=-3.0, vmax_factor=1.0,
                                 add_contours=False,
                                 figsize=(8, 8), ax=ax1,fig=fig,
                                 crop=True, box_size=int(4 * image_statistics[base_name]['C95radii']),
@@ -485,10 +492,10 @@ def sort_list_by_freq(imagelist, return_df=False):
 
     imagelist_sort = np.asarray(sorted_image_list)
     residuallist_sort = np.asarray(residuallist)
-    i = 0
-    for image in imagelist_sort:
-        print(i, '>>', os.path.basename(image))
-        i = i + 1
+    # i = 0
+    # for image in imagelist_sort:
+    #     print(i, '>>', os.path.basename(image))
+    #     i = i + 1
     return (imagelist_sort, residuallist_sort, sorted_freq_array)
 
 
@@ -518,9 +525,9 @@ def beam_physical_area(imagename,z):
     bmin = Omin*pc_scale
 
     fwhm_to_sigma = 1./(8*np.log(2))**0.5
-    BAarcsec = 2.*np.pi*(bmaj*bmin*fwhm_to_sigma**2)
+    BA_pc2 = 2.*np.pi*(bmaj*bmin*fwhm_to_sigma**2)
 
-    return (pc_scale,bmaj,bmin,BAarcsec)
+    return (pc_scale,bmaj,bmin,BA_pc2)
 
 
 def get_phase_centre(vis):
@@ -818,6 +825,9 @@ def Tb_source(Snu,freq,theta1,theta2,z,
         Tb_err = Tb * np.sqrt((Snu_err/Snu)**2.0 
                               + (theta1_err/theta1)**2.0 
                               + (theta2_err/theta2)**2.0)
+        return(Tb,Tb_err)
+    elif (Snu_err is not None):
+        Tb_err = Tb * (Snu_err/Snu)
         return(Tb,Tb_err)
     else:
         return(Tb)
@@ -1123,10 +1133,135 @@ def calc_params(flux, flux_error, redshift, redshift_error, freqs, alphas=-0.85,
 #     else:
 #         return (SFR)
 
-def compute_SFR_general(flux, frequency, z, alpha, alpha_NT=-0.85, 
+# def compute_SFR_general(flux, frequency, z, alpha, alpha_NT=-0.85, 
+#                         nu0 = 1.0,
+#                         flux_error=None,
+#                         calibration_kind='Murphy12'):
+#     '''
+#         To do:
+#             [ ] - Implement error estimates
+#             [ ] - Check the thermal contribution
+#             [ ] - Use spectral index from the image
+#             [ ] - Explore different Te's (electron temperature)
+#     '''
+
+#     Lnu,Lnu_error,SFR,SFR_error = None, None, None, None
+#     if calibration_kind == 'Murphy11':
+#         Lnu_NT = compute_Lnu(flux, z, alpha)  # 0.0014270422727500343
+#         SFR = 6.64 * (1e-29) * ((frequency) ** (-alpha_NT)) * Lnu_NT
+#         if flux_error is not None:
+#             Lnu_NT_error = compute_Lnu(flux_error, z, alpha)
+#             SFR_error = 6.64 * (1e-29) * ((frequency) ** (-alpha_NT)) * Lnu_NT_error
+#         else:
+#             SFR_error = 0.0
+
+#     # if calibration_kind == 'Tabatabaei2017':
+#     #     '''
+#     #     There is something wrong for this kind!
+#     #     '''
+#     #     Lnu_NT = compute_Lnu(flux, z, alpha)  # 0.0014270422727500343
+#     #     SFR = 1.11 * 1e-37 * 1e9 * frequency * Lnu_NT
+#     #     if flux_error is not None:
+#     #         Lnu_NT_error = compute_Lnu(flux_error, z, alpha)
+#     #         SFR_error = 1.11 * 1e-37 * 1e9 * frequency * Lnu_NT_error
+#     #     else:
+#     #         SFR_error = 0.0
+
+#     # if calibration_kind == 'Murphy12':
+#     #     Te = 1e4
+#     #     Lnu_NT = compute_Lnu(flux, z, alpha_NT)
+#     #     SFR = 1e-27 * ( \
+#     #                 (2.18 * ((Te / (1e4)) ** (0.45)) * (frequency ** (-0.1)) + \
+#     #                  15.1 * (frequency ** (alpha_NT))) ** (-1.00) \
+#     #         ) * Lnu_NT
+
+#     #     if flux_error is not None:
+#     #         Lnu_NT_error = compute_Lnu(flux_error, z, alpha_NT)
+#     #         SFR_error = 1e-27 * ( \
+#     #                     (2.18 * ((Te / (1e4)) ** (0.45)) * (frequency ** (-0.1)) + \
+#     #                      15.1 * (frequency ** (alpha_NT))) ** (-1.00) \
+#     #             ) * Lnu_NT_error
+#     #     else:
+#     #         SFR_error = 0.0
+    
+#     if calibration_kind == 'Murphy12':
+#         Te = 1e4
+#         Lnu = compute_Lnu(flux, z, alpha_NT)
+#         SFR = 1*1e-27 * ( \
+#                     (2.18 * ((Te / (1e4)) ** (0.45)) * (frequency ** (-0.1)) + \
+#                      15.1 * (frequency ** (alpha_NT))) ** (-1.00) \
+#             ) * Lnu
+
+#         if flux_error is not None:
+#             Lnu_error = compute_Lnu(flux_error, z, alpha_NT)
+#             SFR_error = 1*1e-27 * ( \
+#                         (2.18 * ((Te / (1e4)) ** (0.45)) * (frequency ** (-0.1)) + \
+#                          15.1 * (frequency ** (alpha_NT))) ** (-1.00) \
+#                 ) * Lnu_error
+#         else:
+#             SFR_error = 0.0
+
+#     if calibration_kind == 'Tabatabaei2017':
+#         Te = 1e4
+#         Lnu = compute_Lnu(flux, z, alpha_NT)
+#         SFR = 1*1e-27 * ( \
+#                     (2.18 * ((Te / (1e4)) ** (0.45)) * (frequency ** (-0.1)) + \
+#                      15.1 * (frequency ** (alpha_NT))) ** (-1.00) \
+#             ) * Lnu
+
+#         if flux_error is not None:
+#             Lnu_error = compute_Lnu(flux_error, z, alpha_NT)
+#             SFR_error = 1*1e-27 * ( \
+#                         (2.18 * ((Te / (1e4)) ** (0.45)) * (frequency ** (-0.1)) + \
+#                          15.1 * (frequency ** (alpha_NT))) ** (-1.00) \
+#                 ) * Lnu_error
+#         else:
+#             SFR_error = 0.0
+    
+#     if calibration_kind == 'Murphy12_NT':
+#         Lnu = compute_Lnu(flux, z, alpha_NT)
+#         SFR = 6.64*(1e-29) * ((frequency/nu0)**(-alpha_NT)) * Lnu
+        
+#         if flux_error is not None:
+#             Lnu_error = compute_Lnu(flux_error, z, alpha_NT)
+#             SFR_error = 6.64*1e-29 * ((frequency/nu0)**(-alpha_NT)) * Lnu_error
+#         else:
+#             SFR_error = 0.0
+            
+#     if calibration_kind == 'Murphy12_T':
+#         Te = 1e4
+#         Lnu = compute_Lnu(flux, z, alpha)
+#         SFR = 4.59*1e-28 * ((frequency/nu0)**(-alpha)) * ((Te / (1e4)) ** (-0.45)) * Lnu
+        
+#         if flux_error is not None:
+#             Lnu_error = compute_Lnu(flux_error, z, alpha)
+#             SFR_error = 4.59*1e-28 * ((frequency/nu0)**(-alpha)) * ((Te / (1e4)) ** (-0.45)) * Lnu_error
+#         else:
+#             SFR_error = 0.0
+#     # print(f'nu =', frequency)
+#     # print(f'alpha =', alpha)
+#     # print(f'SFR =', SFR, '+/-', SFR_error, 'Mo/yr')
+#     print(f'Lnu =', Lnu, '+/-', Lnu_error, 'erg/s/Hz')
+#     # print('SFR =', SFR, '+/-', SFR_error, 'Mo/yr')
+#     return (SFR, SFR_error)
+
+
+def SFR_1_4(L_1_4):
+    '''
+    SFR from 1.4 GHz luminosity in erg/s/Hz
+    '''
+    return(6.35 * 1e-29 * L_1_4)
+
+def compute_SFR_general_old(flux, 
+                        frequency, 
+                        z, 
+                        alpha, 
+                        alpha_NT=-0.85,
                         nu0 = 1.0,
                         flux_error=None,
-                        calibration_kind='Murphy12'):
+                        calibration_kind='Murphy12',
+                        fth = 0.1,
+                       ):
     '''
         To do:
             [ ] - Implement error estimates
@@ -1136,12 +1271,15 @@ def compute_SFR_general(flux, frequency, z, alpha, alpha_NT=-0.85,
     '''
 
     Lnu,Lnu_error,SFR,SFR_error = None, None, None, None
+    alpha_T = -0.1
+    Te = 1e4
+    
     if calibration_kind == 'Murphy11':
         Lnu_NT = compute_Lnu(flux, z, alpha)  # 0.0014270422727500343
-        SFR = 6.64 * (1e-29) * ((frequency) ** (-alpha_NT)) * Lnu_NT
+        SFR = 6.64 * (1e-29) * ((frequency) ** (-alpha)) * Lnu_NT
         if flux_error is not None:
             Lnu_NT_error = compute_Lnu(flux_error, z, alpha)
-            SFR_error = 6.64 * (1e-29) * ((frequency) ** (-alpha_NT)) * Lnu_NT_error
+            SFR_error = 6.64 * (1e-29) * ((frequency) ** (-alpha)) * Lnu_NT_error
         else:
             SFR_error = 0.0
 
@@ -1176,66 +1314,222 @@ def compute_SFR_general(flux, frequency, z, alpha, alpha_NT=-0.85,
     
     if calibration_kind == 'Murphy12':
         Te = 1e4
-        Lnu = compute_Lnu(flux, z, alpha_NT)
+        Lnu = compute_Lnu(flux, z, alpha)
         SFR = 1*1e-27 * ( \
-                    (2.18 * ((Te / (1e4)) ** (0.45)) * (frequency ** (-0.1)) + \
-                     15.1 * (frequency ** (alpha_NT))) ** (-1.00) \
+                    (2.18 * ((Te / (1e4)) ** (0.45)) * (frequency ** (alpha_T)) + \
+                     15.1 * ((frequency/nu0) ** (alpha))) ** (-1.00) \
             ) * Lnu
 
         if flux_error is not None:
-            Lnu_error = compute_Lnu(flux_error, z, alpha_NT)
+            Lnu_error = compute_Lnu(flux_error, z, alpha)
             SFR_error = 1*1e-27 * ( \
-                        (2.18 * ((Te / (1e4)) ** (0.45)) * (frequency ** (-0.1)) + \
-                         15.1 * (frequency ** (alpha_NT))) ** (-1.00) \
+                        (2.18 * ((Te / (1e4)) ** (0.45)) * (frequency ** (alpha_T)) + \
+                         15.1 * ((frequency/nu0) ** (alpha))) ** (-1.00) \
                 ) * Lnu_error
+        else:
+            SFR_error = 0.0
+
+    if calibration_kind == 'Murphy12_fth':
+        Te = 1e4
+        Lnu = compute_Lnu(flux, z, alpha)
+        # SFR = 1*1e-27 * ( \
+        #             (2.18 * (0.1/fth) * ((Te / (1e4)) ** (0.45)) * (frequency ** (alpha_T)) + \
+        #              15.1 * (0.9/(1-fth)) * ((frequency/nu0) ** (alpha))) ** (-1.00) \
+        #     ) * Lnu
+        SFR = 1*1e-27 * ( \
+                    (2.18 * (fth/0.1) * ((Te / (1e4)) ** (0.45)) * (frequency ** (alpha_T)) + \
+                     15.1 * ((1-fth)/0.9) * ((frequency/nu0) ** (alpha))) ** (-1.00) \
+            ) * Lnu
+
+
+        
+        if flux_error is not None:
+            Lnu_error = compute_Lnu(flux_error, z, alpha)
+            SFR_error = SFR * Lnu_error / Lnu
         else:
             SFR_error = 0.0
 
     if calibration_kind == 'Tabatabaei2017':
         Te = 1e4
-        Lnu = compute_Lnu(flux, z, alpha_NT)
+        Lnu = compute_Lnu(flux, z, alpha)
         SFR = 1*1e-27 * ( \
-                    (2.18 * ((Te / (1e4)) ** (0.45)) * (frequency ** (-0.1)) + \
-                     15.1 * (frequency ** (alpha_NT))) ** (-1.00) \
+                    (2.18 * ((Te / (1e4)) ** (0.45)) * (frequency ** (alpha_T)) + \
+                     15.1 * ((frequency/nu0) ** (alpha))) ** (-1.00) \
             ) * Lnu
 
         if flux_error is not None:
-            Lnu_error = compute_Lnu(flux_error, z, alpha_NT)
+            Lnu_error = compute_Lnu(flux_error, z, alpha)
             SFR_error = 1*1e-27 * ( \
-                        (2.18 * ((Te / (1e4)) ** (0.45)) * (frequency ** (-0.1)) + \
-                         15.1 * (frequency ** (alpha_NT))) ** (-1.00) \
+                        (2.18 * ((Te / (1e4)) ** (0.45)) * (frequency ** (alpha_T)) + \
+                         15.1 * ((frequency/nu0) ** (alpha))) ** (-1.00) \
                 ) * Lnu_error
         else:
             SFR_error = 0.0
     
     if calibration_kind == 'Murphy12_NT':
-        Lnu = compute_Lnu(flux, z, alpha_NT)
-        SFR = 6.64*(1e-29) * ((frequency/nu0)**(-alpha_NT)) * Lnu
+        Lnu = compute_Lnu(flux, z, alpha)
+        SFR = 6.64*(1e-29) * ((frequency/nu0)**(-alpha)) * Lnu
         
         if flux_error is not None:
-            Lnu_error = compute_Lnu(flux_error, z, alpha_NT)
-            SFR_error = 6.64*1e-29 * ((frequency/nu0)**(-alpha_NT)) * Lnu_error
+            Lnu_error = compute_Lnu(flux_error, z, alpha)
+            SFR_error = 6.64*1e-29 * ((frequency/nu0)**(-alpha)) * Lnu_error
         else:
             SFR_error = 0.0
             
     if calibration_kind == 'Murphy12_T':
-        Te = 1e4
-        Lnu = compute_Lnu(flux, z, alpha)
-        SFR = 4.59*1e-28 * ((frequency/nu0)**(-alpha)) * ((Te / (1e4)) ** (-0.45)) * Lnu
+        Lnu = compute_Lnu(flux, z, alpha_T)
+        SFR = 4.59*1e-28 * ((frequency/nu0)**(-alpha_T)) * ((Te / (1e4)) ** (-0.45)) * Lnu
         
         if flux_error is not None:
-            Lnu_error = compute_Lnu(flux_error, z, alpha)
-            SFR_error = 4.59*1e-28 * ((frequency/nu0)**(-alpha)) * ((Te / (1e4)) ** (-0.45)) * Lnu_error
+            Lnu_error = compute_Lnu(flux_error, z, alpha_T)
+            SFR_error = 4.59*1e-28 * ((frequency/nu0)**(-alpha_T)) * ((Te / (1e4)) ** (-0.45)) * Lnu_error
         else:
             SFR_error = 0.0
     # print(f'nu =', frequency)
     # print(f'alpha =', alpha)
     # print(f'SFR =', SFR, '+/-', SFR_error, 'Mo/yr')
-    print(f'Lnu =', Lnu, '+/-', Lnu_error, 'erg/s/Hz')
+    # print(f'Lnu =', Lnu, '+/-', Lnu_error, 'erg/s/Hz')
     # print('SFR =', SFR, '+/-', SFR_error, 'Mo/yr')
     return (SFR, SFR_error)
 
 
+import numpy as np
+
+def compute_SFR_general(flux, 
+                        frequency, 
+                        z, 
+                        alpha, 
+                        alpha_NT=-0.85,
+                        nu0 = 1.0,
+                        flux_error=None,
+                        calibration_kind='Murphy12',
+                        fth = 0.1,
+                       ):
+    '''
+    Compute the Star Formation Rate (SFR) using a general approach.
+    
+    Parameters:
+    -----------
+    flux : scalar or array
+        Observed flux density
+    frequency : scalar or array
+        Observation frequency
+    z : scalar or array
+        Redshift
+    alpha : scalar or array
+        Spectral index
+    flux_error : None, scalar, array, or list/tuple
+        If None: no error calculation
+        If scalar/array: symmetric error (±flux_error)
+        If list/tuple of length 2: [lower_error, upper_error] for asymmetric errors
+        Each element can be scalar or array
+    
+    Returns:
+    --------
+    tuple: (SFR, SFR_error)
+        SFR_error format depends on input:
+        - 0.0 if flux_error is None
+        - single value/array if flux_error is symmetric
+        - [lower_error, upper_error] if flux_error is asymmetric
+    '''
+
+    def _calculate_errors(base_value, flux_val, flux_err, z, alpha_used, calibration_factor):
+        """Helper function to calculate SFR errors for both symmetric and asymmetric cases."""
+        if flux_err is None:
+            return 0.0
+        
+        # Check if asymmetric errors (list/tuple with 2 elements)
+        if isinstance(flux_err, (list, tuple)) and len(flux_err) == 2:
+            flux_error_lower, flux_error_upper = flux_err
+            
+            # Calculate lower error (flux - lower_error)
+            Lnu_lower = compute_Lnu(flux_error_lower, z, alpha_used)
+            SFR_error_lower = calibration_factor * Lnu_lower
+            
+            # Calculate upper error (flux + upper_error)  
+            Lnu_upper = compute_Lnu(flux_error_upper, z, alpha_used)
+            SFR_error_upper = calibration_factor * Lnu_upper
+            
+            return [SFR_error_lower, SFR_error_upper]
+        else:
+            # Symmetric error case
+            Lnu_error = compute_Lnu(flux_err, z, alpha_used)
+            SFR_error = calibration_factor * Lnu_error
+            return SFR_error
+
+    def _calculate_fractional_errors(base_sfr, base_lnu, flux_val, flux_err, z, alpha_used):
+        """Helper function for Murphy12_fth case using fractional error propagation."""
+        if flux_err is None:
+            return 0.0
+            
+        if isinstance(flux_err, (list, tuple)) and len(flux_err) == 2:
+            flux_error_lower, flux_error_upper = flux_err
+            
+            Lnu_error_lower = compute_Lnu(flux_error_lower, z, alpha_used)
+            SFR_error_lower = base_sfr * Lnu_error_lower / base_lnu
+            
+            Lnu_error_upper = compute_Lnu(flux_error_upper, z, alpha_used)
+            SFR_error_upper = base_sfr * Lnu_error_upper / base_lnu
+            
+            return [SFR_error_lower, SFR_error_upper]
+        else:
+            Lnu_error = compute_Lnu(flux_err, z, alpha_used)
+            SFR_error = base_sfr * Lnu_error / base_lnu
+            return SFR_error
+
+    # Initialize variables
+    Lnu, Lnu_error, SFR, SFR_error = None, None, None, None
+    alpha_T = -0.1
+    Te = 1e4
+    
+    if calibration_kind == 'Murphy11':
+        Lnu_NT = compute_Lnu(flux, z, alpha)
+        calibration_factor = 6.64 * (1e-29) * ((frequency) ** (-alpha))
+        SFR = calibration_factor * Lnu_NT
+        SFR_error = _calculate_errors(SFR, flux, flux_error, z, alpha, calibration_factor)
+
+    elif calibration_kind == 'Murphy12':
+        Te = 1e4
+        Lnu = compute_Lnu(flux, z, alpha)
+        calibration_factor = 1*1e-27 * ( \
+                    (2.18 * ((Te / (1e4)) ** (0.45)) * (frequency ** (alpha_T)) + \
+                     15.1 * ((frequency/nu0) ** (alpha))) ** (-1.00) \
+            )
+        SFR = calibration_factor * Lnu
+        SFR_error = _calculate_errors(SFR, flux, flux_error, z, alpha, calibration_factor)
+
+    elif calibration_kind == 'Murphy12_fth':
+        Te = 1e4
+        Lnu = compute_Lnu(flux, z, alpha)
+        SFR = 1*1e-27 * ( \
+                    (2.18 * (fth/0.1) * ((Te / (1e4)) ** (0.45)) * (frequency ** (alpha_T)) + \
+                     15.1 * ((1-fth)/0.9) * ((frequency/nu0) ** (alpha))) ** (-1.00) \
+            ) * Lnu
+        SFR_error = _calculate_fractional_errors(SFR, Lnu, flux, flux_error, z, alpha)
+
+    elif calibration_kind == 'Tabatabaei2017':
+        Te = 1e4
+        Lnu = compute_Lnu(flux, z, alpha)
+        calibration_factor = 1*1e-27 * ( \
+                    (2.18 * ((Te / (1e4)) ** (0.45)) * (frequency ** (alpha_T)) + \
+                     15.1 * ((frequency/nu0) ** (alpha))) ** (-1.00) \
+            )
+        SFR = calibration_factor * Lnu
+        SFR_error = _calculate_errors(SFR, flux, flux_error, z, alpha, calibration_factor)
+    
+    elif calibration_kind == 'Murphy12_NT':
+        Lnu = compute_Lnu(flux, z, alpha)
+        calibration_factor = 6.64*(1e-29) * ((frequency/nu0)**(-alpha))
+        SFR = calibration_factor * Lnu
+        SFR_error = _calculate_errors(SFR, flux, flux_error, z, alpha, calibration_factor)
+            
+    elif calibration_kind == 'Murphy12_T':
+        Lnu = compute_Lnu(flux, z, alpha_T)
+        calibration_factor = 4.59*1e-28 * ((frequency/nu0)**(-alpha_T)) * ((Te / (1e4)) ** (-0.45))
+        SFR = calibration_factor * Lnu
+        SFR_error = _calculate_errors(SFR, flux, flux_error, z, alpha_T, calibration_factor)
+            
+    return (SFR, SFR_error)
 
 def compute_SFR_general_v2(flux, frequency, z, alpha, alpha_NT=-0.85, 
                         nu0 = 1.0,
@@ -2499,9 +2793,9 @@ def plot_uv_wavelength(vis, color='black', label=None,
         kk = kk+1
     
     # if label is not None:
-        """
-        Plot the last set of points to create a label.
-        """
+        # """
+        # Plot the last set of points to create a label.
+        # """
         # ax.plot(uwave_points[0, 0], 
         #         vwave_points[0, 0],
         #         '.', markersize=0.1, color=color, 
