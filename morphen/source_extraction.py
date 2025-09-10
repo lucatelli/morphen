@@ -82,7 +82,7 @@ def sep_background(imagename,mask=None,apply_mask=False,show_map=False,
     bkg_image = bkg.back()
     if show_map == True:
         plt.imshow(bkg_image,origin='lower')
-        plt.title(f"max(bkg)/max(data)={(bkg_image.max()/data_2D.max()):.6f}")
+        plt.title(f"bkg/data=({(np.nanmax(bkg_image)/np.nanmax(data_2D-bkg_image)):.3f},{(np.nansum(bkg_image)/np.nansum(data_2D-bkg_image)):.3f})")
         plt.colorbar()
         # plt.clf()
         # plt.close()
@@ -261,16 +261,20 @@ def sep_source_ext(imagename, residualname=None,
 
     # m, s = np.mean(data_sub), np.std(data_sub)
     if show_detection == True:
-        fig, ax = plt.subplots(figsize=(10, 10))
+        fig, ax = plt.subplots(figsize=(4, 4))
+        norm = simple_norm(data_sub, stretch='asinh', asinh_a=0.02, min_cut=s,
+                    max_cut=0.25*np.nanmax(data_sub))
         im = ax.imshow(data_sub, interpolation='nearest', cmap='gray',
-                       vmin=s, vmax=0.2*np.nanmax(data_sub), origin='lower')
+                       norm=norm,
+                    #    vmin=s, vmax=0.2*np.nanmax(data_sub), 
+                       origin='lower')
 
     masks_regions = []
 
     if ell_size_factor is None:
         if mask is not None:
             # ell_size_factor = np.sqrt(np.sum(mask) / (np.pi))/cat[0].equivalent_radius.value
-            ell_size_factor = 0.1*np.sqrt(np.sum(mask) / (np.pi))
+            ell_size_factor = 0.1*np.sqrt(np.nansum(mask) / (np.pi))
         else:
             ell_size_factor = 0.5
     
@@ -347,11 +351,11 @@ def sep_source_ext(imagename, residualname=None,
             xc = objects['x'][sorted_indices_desc[i]]
             yc = objects['y'][sorted_indices_desc[i]]
             label = str('ID' + str(i + 1))
-            label_x = xc + 3 * ell_size_factor
-            label_y = yc + 20 * ell_size_factor
+            label_x = xc + 3 * ell_size_factor / 2
+            label_y = yc + 20 * ell_size_factor / 2
             line_end_y = label_y - 5 
             
-            text = Text(label_x, label_y, label, ha='center', va='center', color='red')
+            text = Text(label_x, label_y, label, ha='center', va='center', color='red',fontsize=10)
             ax.add_artist(text)
             ax.plot([xc, label_x], [yc, line_end_y], color='red', alpha=0.4)
 
@@ -551,7 +555,7 @@ def phot_source_ext(imagename, residual=None, sigma=1.0, iterations=2, dilation_
     else:
         m, s = np.mean(data_2D), mad_std(data_2D)
     # bkg = 0.0
-    if apply_mask:
+    if apply_mask and mask is None:
         _, mask = mask_dilation(data_2D, sigma=sigma_mask, iterations=iterations,
                                 rms=s,
                                 PLOT=True,show_figure=True,
@@ -694,7 +698,7 @@ def phot_source_ext(imagename, residual=None, sigma=1.0, iterations=2, dilation_
     if ell_size_factor is None:
         if mask is not None:
             # ell_size_factor = np.sqrt(np.sum(mask) / (np.pi))/cat[0].equivalent_radius.value
-            ell_size_factor = 0.05*np.sqrt(np.sum(mask) / (np.pi))
+            ell_size_factor = 0.05*np.sqrt(np.nansum(mask) / (np.pi))
         else:
             ell_size_factor = 0.5
     
@@ -708,7 +712,7 @@ def phot_source_ext(imagename, residual=None, sigma=1.0, iterations=2, dilation_
                     width=1 * ell_size_factor * source.equivalent_radius.value,
                     height=1 * ell_size_factor * (
                                 1 - source.ellipticity.value) * source.equivalent_radius.value,
-                    # angle=source.orientation.value * 180. / np.pi
+                    # angle=source.orientation.value * 180 / np.pi
                     angle=source.orientation.value
                     )
 
@@ -809,3 +813,4 @@ def phot_source_ext(imagename, residual=None, sigma=1.0, iterations=2, dilation_
     else:
         return (masks_deblended, sorted_indices_desc, bkg,
                 objects_sorted)
+        
