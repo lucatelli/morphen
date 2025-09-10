@@ -187,7 +187,7 @@ def calculate_radial_profiles(fits,
     
     return profiles, r_maj, r_min
 
-def plot_radial_profiles(profiles, 
+def plot_ellipse_profiles(profiles, 
                         region_split= None,
                         save_name= None):
     """
@@ -227,7 +227,7 @@ def plot_radial_profiles(profiles,
     axs[1, 0].plot(profiles['r_maj'], profiles['pa'], 'r.', ms=3)
     axs[1, 0].set_xlabel('Semi-major axis (pixels)')
     axs[1, 0].set_ylabel('Position Angle (degrees)')
-    axs[1, 0].set_ylim(0, 180)
+    axs[1, 0].set_ylim(0, 360)
     axs[1, 0].grid(True, alpha=0.3)
     
     # Plot intensity profile
@@ -320,7 +320,7 @@ def fit_isophotes(image,
     # Plot if requested
     if plot_results:
         plt.figure(figsize=(5, 5))
-        plt.imshow(np.log(image), origin='lower', cmap='magma_r')
+        plt.imshow(np.log(image), origin='lower', cmap='magma')
         
         t = np.linspace(0, 2*np.pi, 100)
         for i, fit in enumerate(fits):
@@ -339,7 +339,7 @@ def fit_isophotes(image,
     
     # Plot profiles if requested
     if plot_profiles:
-        plot_radial_profiles(profiles, region_split, save_profiles)
+        plot_ellipse_profiles(profiles, region_split, save_profiles)
 
 
     # Calculate statistics
