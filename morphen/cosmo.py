@@ -108,7 +108,29 @@ def cosmo_stats(imagename,z,results=None):
     results['BA_pc'] = BA_pc.value
     return(results)
 
-def find_z_NED(source_name):
+# def find_z_NED(source_name):
+#     """
+#     Find the redshift of a source (by name) from NED.
+
+#     Parameters
+#     ----------
+#     source_name : str
+#         Source name.
+#             Example: 'VV705'
+
+#     Returns
+#     -------
+#     redshift_NED : float, None
+#     """
+#     from astroquery.ipac.ned import Ned
+#     result_table = Ned.query_object(source_name)
+#     redshift_NED = result_table['Redshift'].data.data
+#     if redshift_NED.shape[0] == 0:
+#         return None
+#     else:
+#         return redshift_NED[0]
+
+def find_z_NED(source_name, return_luminosity_distance=False):
     """
     Find the redshift of a source (by name) from NED.
 
@@ -117,15 +139,36 @@ def find_z_NED(source_name):
     source_name : str
         Source name.
             Example: 'VV705'
+    return_luminosity_distance : bool, optional
+        If True, also calculate and return the luminosity distance.
+        Default: False
 
     Returns
     -------
     redshift_NED : float, None
+        The redshift value from NED
+    luminosity_distance : astropy.units.Quantity, optional
+        The luminosity distance (only returned if return_luminosity_distance=True)
     """
     from astroquery.ipac.ned import Ned
+    
     result_table = Ned.query_object(source_name)
     redshift_NED = result_table['Redshift'].data.data
+    
     if redshift_NED.shape[0] == 0:
         return None
     else:
-        return redshift_NED[0]
+        z = redshift_NED[0]
+        
+        if return_luminosity_distance:
+            from astropy.cosmology import Planck18
+            
+            # Calculate luminosity distance
+            lum_dist = Planck18.luminosity_distance(z)
+            
+            # Print the luminosity distance
+            print(f"Luminosity distance for {source_name} (z={z:.4f}): {lum_dist:.2f}")
+            
+            return z, lum_dist
+        else:
+            return z
