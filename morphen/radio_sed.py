@@ -730,8 +730,8 @@ def power_law_phys_fit(freqs,
         Reff = params['Reff']
         alpha = params['alpha']
         model = power_law_phys_model(x, Reff, S0peak, alpha, nu0)
-        res = (y - model) / (np.log(yerr))
-        return res.copy()
+        log_weights = 1.0 / (1.0 + np.log1p(yerr / np.median(yerr)))
+        return (y - model) * log_weights
 
 
     fit_params = lmfit.Parameters()
@@ -1000,7 +1000,9 @@ def do_fit_spec_RC_linear(freqs,
                           nsteps = 5000,
                           thin = 2,
                           title_text = None,
+                          ext_save = '.jpg',
                           add_fit_legend = True,
+                          figsize=(6, 3),
                           verbose=0):
     """
     Peform a fit to the radio spectrum using a linear model.
@@ -1051,6 +1053,8 @@ def do_fit_spec_RC_linear(freqs,
         A1 = params['A1']
         alpha = params['alpha']
         model = RC_function_linear(x, A1, alpha,nu0)
+        # weights = 1 / yerr
+        # return (y - model) * np.sqrt(weights)
         log_weights = 1.0 / (1.0 + np.log1p(yerr / np.median(yerr)))
         return (y - model) * log_weights
 
@@ -1093,16 +1097,8 @@ def do_fit_spec_RC_linear(freqs,
     #                                 'return_all': True,'adaptive': True,
     #                                 'disp': True}
     #                  )
-    fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(6, 3),
-                                   gridspec_kw={'height_ratios': [3, 1]})
 
-    # fig, ax = plt.subplots()
     x_resample = np.linspace(np.min(x)*0.9, np.max(x)*1.1, 500)
-    ax1.errorbar(x, y, yerr=yerr, 
-                 fmt='o',label='Data', color='k', ecolor='gray',alpha=0.5)
-
-    # nwalkers = int(len(y) * 2 * 20)
-    
     
     if do_mcmc_fit == True:
         nwalkers = int(2 * 25)
@@ -1176,11 +1172,22 @@ def do_fit_spec_RC_linear(freqs,
                                     result.params['alpha'].value,
                                     nu0)
 
+    fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, 
+                                #    figsize=figsize,
+                                   figsize=(figsize[0], figsize[1]*1.5),
+                                   gridspec_kw={'height_ratios': [3, 1]})
+
+    # fig, ax = plt.subplots()
+    
+
+
+    # nwalkers = int(len(y) * 2 * 20)
+
     ax1.plot(x_resample,model_resample,
-             color='red', ls='-.', label='Best-fit model')
+             color='blue', ls='-', label='Fit')
     ax2.plot(x, (y-model_best)/model_best,
-             color='green', ls='dotted', label='Residual')
-    ax2.set_ylim(-1.0,1.0)
+             color='green', ls='',marker='.', lw=1.5, markersize=7, label='Residual')
+    ax2.set_ylim(-2.0,2.0)
 
     if do_mcmc_fit == True:
         ax1.plot(x_resample, model_mean,
@@ -1211,41 +1218,50 @@ def do_fit_spec_RC_linear(freqs,
                 model_predictions[i] = RC_function_linear(x_resample, A1_samples[i],
                                                           alpha_samples[i],nu0)
 
-            median_prediction = np.median(model_predictions, axis=0)
-            std_prediction = np.std(model_predictions, axis=0)
+            median_prediction = np.nanmedian(model_predictions, axis=0)
+            std_prediction = np.nanstd(model_predictions, axis=0)
 
             ax1.fill_between(x_resample, median_prediction - sigma_shade*std_prediction,
                              median_prediction + sigma_shade*std_prediction,
-                             color='lightgray', alpha=0.5,
-                             # label='Uncertainty (1-sigma)'
+                             color='grey', alpha=0.3,
+                             label=r'Uncertainty ($1\sigma$)'
                              )
+    ax1.errorbar(x, y, yerr=yerr, 
+                 fmt='o',label='Data', color='k', ecolor='gray',alpha=0.5)
     # plt.ylim(1e-3,1.2*np.max(y))
     if add_fit_legend == True:
-        ax1.legend(loc=(0.05, 0.05),frameon=True,prop={'size': 11})
+        ax1.legend(loc=(0.01, 0.01),
+                handlelength=1,
+                handletextpad=0.5,
+                columnspacing=0.5,
+                borderaxespad=0.1,
+                frameon=True,
+                prop={'size': 13}
+                )
     if np.nanmax(y) < 5:
         ax1.set_ylim(0.1*np.nanmin(y),10.0*np.nanmax(y))
     else:
         ax1.set_ylim(0.1*np.nanmin(y),3.0*np.nanmax(y))
-    ax2.set_xlabel(r'$\nu$ [GHz]')
+    ax2.set_xlabel(r'Frequency $\nu_{\mathrm{obs}}$ [GHz]')
     # plt.ylabel('Integrated Flux Density [mJy]')
-    ax1.set_ylabel(r'$S_{\nu}$ [mJy]')
-    text_x, text_y = 0.65, 0.37
-    text = (r"$\alpha"+f"= {(result.params['alpha'].value):.2f}\pm "
+    ax1.set_ylabel(r'$S_{\nu}(\nu_{\mathrm{obs}})$ [mJy]')
+    text_x, text_y = 0.60, 0.37
+    text = (r"$\overline{\alpha}"+f"= {(result.params['alpha'].value):.2f}\pm "
             rf"{(result.params['alpha'].stderr):.2f}$")
     
     text_bbox_props = dict(boxstyle='round,pad=0.5', facecolor='lightgray', alpha=0.5)
     text_bbox = plt.text(text_x, text_y, text,
                         # ha='center', va='center',
-                        fontsize=12, color='black',
+                        fontsize=13, color='black',
                         bbox=text_bbox_props, transform=fig.transFigure)
     if do_mcmc_fit == True:
         if mcmc_version == 'general':
-            text_x, text_y = 0.65, 0.77
-            text = (r"$\alpha^{\rm MCMC}"+f"= {(param_dict['alpha']['best']):.2f}"
+            text_x, text_y = 0.60, 0.77
+            text = (r"$\overline{\alpha}^{\rm MCMC}"+f"= {(param_dict['alpha']['best']):.2f}"
                     rf"_{{-{param_dict['alpha']['lower']:.2f}}}^{{+{param_dict['alpha']['upper']:.2f}}}$")
             text_bbox = plt.text(text_x, text_y, text,
                                 # ha='center', va='center',
-                                fontsize=12, color='black',
+                                fontsize=13, color='black',
                                 # bbox=text_bbox_props, 
                                 transform=fig.transFigure)
     
@@ -1257,7 +1273,13 @@ def do_fit_spec_RC_linear(freqs,
         ax1.semilogy()
 
     plt.subplots_adjust(hspace=0.05)
-    ax2.legend(loc=(0.7, 0.55),prop={'size': 14},frameon=False)
+    ax2.legend(
+        # loc=(0.01, 0.55),
+        handlelength=1,
+        handletextpad=0.5,
+        columnspacing=0.5,
+        borderaxespad=0.1,
+        prop={'size': 13},frameon=True)
     # legend()
 
     if basename_save is not None:
@@ -1265,11 +1287,15 @@ def do_fit_spec_RC_linear(freqs,
             save_name_append = '_RC_alpha_fit_linear'
         else:
             save_name_append = save_name_append + '_RC_alpha_fit_linear'
-        plt.savefig(basename_save.replace('.fits','_')+save_name_append+'.jpg', dpi=600,
+        fig.savefig(basename_save.replace('.fits','_')+save_name_append+ext_save, dpi=600,
                     bbox_inches='tight')
-    plt.show()
-    plt.clf()
-    plt.close()
+    if verbose > 0:
+        plt.show()
+        plt.clf()
+        plt.close(fig)
+    else:
+        plt.clf()
+        plt.close(fig)
     # plt.show()
     corner_kwargs = {
         'bins': 30,
@@ -1295,7 +1321,7 @@ def do_fit_spec_RC_linear(freqs,
         try:
             from scipy.stats import gaussian_kde
             # fig_c = plt.figure(figsize=(2,2))
-            fig_c = plt.figure()
+            plt.figure()
             _ = corner.corner(samples_emcee,
                                     labels=[r'$S_{\rm \nu_0}$',r'$\alpha$'],
                                     truths=[result.params['A1'].value,
@@ -1308,12 +1334,16 @@ def do_fit_spec_RC_linear(freqs,
             print(samples_emcee.shape)
             if basename_save is not None:
                 save_name_append_corner = save_name_append + '_corner'
-                plt.savefig(basename_save.replace('.fits','_')+save_name_append_corner+'.jpg', 
+                plt.savefig(basename_save.replace('.fits','_')+save_name_append_corner+'.jpg',
                             dpi=600,bbox_inches='tight')
             
-            plt.show()
-            plt.clf()
-            plt.close()
+            if verbose > 0:
+                plt.show()
+                plt.clf()
+                plt.close()
+            else:
+                plt.clf()
+                plt.close()
                 
             print('++==>> Parameter Results (MCMC sampling).')
             print(lmfit.fit_report(results_emcee.params))
@@ -1365,8 +1395,10 @@ def do_fit_spec_RC_curv(freqs,
         q = params['q']
         model = RC_function_Sq(x, S0, alpha, q)
         # res = (y - model) / (y + np.sqrt((yerr) ** 2.0 + 0.001))  # okay
-        res = (y - model) / (y*(np.log(yerr)))  # okay
-        return res.copy()
+        # res = (y - model) / (y*(np.log(yerr)))  # okay
+        # return res.copy()
+        log_weights = 1.0 / (1.0 + np.log1p(yerr / np.median(yerr)))
+        return (y - model) * log_weights
 
     fit_params = lmfit.Parameters()
     fit_params.add("S0", value=10.0, min=-5, max=5000)
@@ -1804,8 +1836,8 @@ def fit_spec_SY_FF(freqs,
                    quantiles = [0.16, 0.5, 0.84],
                    do_mcmc_fit = False,
                    mcmc_version = 'general',
-                   burn_in = 3000,
-                   nsteps = 10000,
+                   burn_in = 2000,
+                   nsteps = 5000,
                    thin = 5,
                    sigma_errors = 1.0,
                    prior_sigma = 15.0,
@@ -1875,6 +1907,8 @@ def fit_spec_SY_FF(freqs,
         alpha_nt = params['alpha_nt']
         model = RC_function_SY_FF(x, A_sy, A_ff, alpha_nt, nu0)
         # res = (y - model) / (np.log(yerr))
+        # weights = 1 / yerr
+        # return (y - model) * np.sqrt(weights)
         log_weights = 1.0 / (1.0 + np.log1p(yerr / np.median(yerr)))
         return (y - model) * log_weights
 
@@ -1909,7 +1943,7 @@ def fit_spec_SY_FF(freqs,
         fit_params.add("alpha_nt", value=fix_alpha_nt_value, 
                        min=-2.0, max=0.0, vary=False)
     else:
-        fit_params.add("alpha_nt", value=-0.9, min=-2.5, max=2.5)
+        fit_params.add("alpha_nt", value=-0.7, min=-2.5, max=2.5)
 
     mini = lmfit.Minimizer(min_func, fit_params, max_nfev=15000,
                            nan_policy='omit', reduce_fcn='neglogcauchy')
@@ -2189,7 +2223,9 @@ def fit_spec_SY_FF(freqs,
                 
         # plt.ylim(1e-3,1.2*np.max(y))
         if add_fit_legend == True:
-            ax1.legend(loc=(0.05, 0.05),frameon=True,prop={'size': 11},ncol=2)
+            ax1.legend(loc=(0.05, 0.05),frameon=True,
+                    #    prop={'size': 11},
+                       ncol=2)
         if np.nanmax(y) < 5:
             ax1.set_ylim(0.1*np.nanmin(y),10.0*np.nanmax(y))
         else:
@@ -2207,7 +2243,8 @@ def fit_spec_SY_FF(freqs,
         text_bbox_props = dict(boxstyle='round,pad=0.5', facecolor='lightgray', alpha=0.5)
         text_bbox = plt.text(text_x, text_y, text,
                             # ha='center', va='center',
-                            fontsize=12, color='black',
+                            # fontsize=12, 
+                            color='black',
                             bbox=text_bbox_props, transform=fig.transFigure)
         
         text_x, text_y = 0.40, 0.84
@@ -2215,7 +2252,8 @@ def fit_spec_SY_FF(freqs,
         text_bbox_props = dict(boxstyle='round,pad=0.5', facecolor='lightgray', alpha=0.5)
         text_bbox = plt.text(text_x, text_y, text,
                             # ha='center', va='center',
-                            fontsize=12, color='black',
+                            # fontsize=12, 
+                            color='black',
                             # bbox=text_bbox_props, 
                             transform=fig.transFigure)
         
@@ -2227,7 +2265,8 @@ def fit_spec_SY_FF(freqs,
                         rf"_{{-{param_dict['alpha_nt']['lower']:.2f}}}^{{+{param_dict['alpha_nt']['upper']:.2f}}}$")
                 text_bbox = plt.text(text_x, text_y, text,
                                     # ha='center', va='center',
-                                    fontsize=12, color='black',
+                                    # fontsize=12, 
+                                    color='black',
                                     # bbox=text_bbox_props, 
                                     transform=fig.transFigure)
         
@@ -2239,7 +2278,9 @@ def fit_spec_SY_FF(freqs,
             ax1.semilogy()
 
         plt.subplots_adjust(hspace=0.05)
-        ax2.legend(loc=(0.7, 0.55),prop={'size': 14},frameon=False,ncol=2)
+        ax2.legend(loc=(0.7, 0.55),
+                #    prop={'size': 14},
+                   frameon=False,ncol=2)
         # legend()
 
         if basename_save is not None:
@@ -2414,7 +2455,14 @@ def fit_spec_SY_FF_FFA(freqs,
     fit_params = lmfit.Parameters()
     
     Snu0_init = np.log10(np.nanmean(y*1.0))
-    fth0_init = 0.1
+    if nu0 < 2.0:
+        fth0_init = 0.10
+    elif 2.0 <=nu0 < 10.0:
+        fth0_init = 0.20
+    elif 10.0 <= nu0 < 20.0:
+        fth0_init = 0.30
+    elif nu0 > 20.0:
+        fth0_init = 0.5
     a_nth_init = np.polyfit(np.log10(x), 
                                     np.log10(y), 1)[0]
     
@@ -3208,10 +3256,12 @@ def do_fit_spec_RC_S2(freqs,fluxes,fluxes_err,nu0=None,
         # res = (y - RC_function_S2(x, A1, A2, alpha_nt,nu0))/yerr
         model = RC_function_S2(x, A1, A2, alpha_nt,nu0)
         # res = (y - model)/(y+yerr)
-        res = (y - model) / np.log(y+yerr)
+        # res = (y - model) / np.log(y+yerr)
         # res = (y - model) / (np.log(abs(yerr)+1.0)) # okay 9
         # res = data - RC_function_S2(nu, A1l, alpha_nt)
-        return res.copy()
+        # return res.copy()
+        log_weights = 1.0 / (1.0 + np.log1p(yerr / np.median(yerr)))
+        return (y - model) * log_weights
 
     fit_params = lmfit.Parameters()
     fit_params.add("A1", value=0.5, min=0, max=5000)
@@ -3492,10 +3542,12 @@ def do_fit_spec_RC_sy_ff_dust(freqs,fluxes,fluxes_err,nu0=None,
         # res = (y - RC_function_S2(x, A1, A2, alpha_nt,nu0))/yerr
         model = RC_function_sy_ff_dust(x, Asy, Aff, Adu, alpha_nt, alpha_du, nu0)
         # res = (y - model)/(y+yerr)
-        res = (y - model) / np.log(y+yerr)
+        # res = (y - model) / np.log(y+yerr)
         # res = (y - model) / (np.log(abs(yerr)+1.0)) # okay 9
         # res = data - RC_function_S2(nu, A1l, alpha_nt)
-        return res.copy()
+        # return res.copy()
+        log_weights = 1.0 / (1.0 + np.log1p(yerr / np.median(yerr)))
+        return (y - model) * log_weights
 
     fit_params = lmfit.Parameters()
     fit_params.add("Asy", value=0.5, min=0, max=5000)
@@ -3913,7 +3965,7 @@ def do_fit_spec_map(freqs,fluxes,fluxes_err,nu0=1.0,verbose=0):
     #                     1.0,
     #                     np.sqrt(c / relative_error))
         
-    #     return (y - model) * weights    
+    #     return (y - model) * weights
     
     def min_func(params):
         """
@@ -3923,9 +3975,21 @@ def do_fit_spec_map(freqs,fluxes,fluxes_err,nu0=1.0,verbose=0):
         b = params['b']
         model = linear_function(x, alpha, b, nu0)
         
+        # # Log-based weighting
+        # log_weights = y / (1.0 + np.log1p(yerr / np.median(yerr)))
+        # return (y - model) * np.sqrt(log_weights)
+        
         # Log-based weighting
+        # log_weights = 1 / yerr
+        # return (y - model) * np.sqrt(log_weights)
+        # Log-based weighting
+        # l_penalty = 0.1
+        # pen_weights = yerr * (alpha**2.0 + b**2.0 - 1.0) / len(x)
+        # return (y - model) / pen_weights
         log_weights = 1.0 / (1.0 + np.log1p(yerr / np.median(yerr)))
         return (y - model) * log_weights
+        # return ((y - model)/y) * (yerr / model)
+
     
     # def min_func(params):
     #     """
@@ -4046,19 +4110,35 @@ def do_fit_spec_SY_FF_map(freqs,fluxes,fluxes_err,nu0=None,
         A_ff = params['A_ff']
         alpha_nt = params['alpha_nt']
         model = RC_function_SY_FF(x, A_sy, A_ff, alpha_nt,nu0)
+        # Huber-like weighting
+        # relative_error = yerr / (np.abs(y) + epsilon)
+        # c = np.median(relative_error)  # adaptive threshold
+        # weights = np.where(relative_error <= c,
+        #                 1.0,
+        #                 np.sqrt(c / relative_error))
+        
+        # return (y - model) * weights
+        # Log-based weighting
+        # log_weights = 1 / (1.0 + np.log1p(yerr / np.median(yerr)))
+        # return (y - model) * log_weights
+        # weights = 1 / yerr
+        # return (y - model) * np.sqrt(weights)
         # Log-based weighting
         log_weights = 1.0 / (1.0 + np.log1p(yerr / np.median(yerr)))
         return (y - model) * log_weights
-
+        # return ((y - model)/y) * (yerr / model)
+    
+    a_sy_init = abs(np.nanmax(y) - np.nanmin(y))/ (2.0 * 1000)
+    a_ff_init = a_sy_init * 0.5
     fit_params = lmfit.Parameters()
-    fit_params.add("A_sy", value=1.0, min=1.0e-6, max=1000)
-    fit_params.add("A_ff", value=0.1, min=1.0e-6, max=100)
+    fit_params.add("A_sy", value=a_sy_init, min=1.0e-6, max=1000)
+    fit_params.add("A_ff", value=a_ff_init, min=1.0e-6, max=100)
     # fit_params.add("A1", value=0.5, min=-10, max=500)
     # fit_params.add("A2", value=0.5, min=-10, max=5000)
-    if fix_alpha_nt == True:
-        fit_params.add("alpha_nt", value=-0.85, min=-2.0, max=0.0, vary=False)
+    if fix_alpha_nt:
+        fit_params.add("alpha_nt", value=-0.85, min=-0.855, max=-0.845, vary=False)
     else:
-        fit_params.add("alpha_nt", value=-0.85, min=-3.0, max=3.0)
+        fit_params.add("alpha_nt", value=-0.7, min=-2.0, max=0.5)
     # fit_params.add("alpha_nt", value=-0.85, min=-0.9, max=-0.8)
 
     mini = lmfit.Minimizer(min_func, fit_params, max_nfev=15000,
@@ -4090,7 +4170,7 @@ def specidx_map(imagelist,residuallist,
                 ref_image_conv=None,
                 freqs=None,
                 ref_image_mask = None,
-                flux_sys_error_frac = 0.05,
+                flux_sys_error_frac = 0.1,
                 nu0=10.0,
                 mask=None,sigma_global_mask=6,
                 iterations=1,
@@ -4277,7 +4357,7 @@ def specidx_map(imagelist,residuallist,
         
         def compute_pixel_spectral_index(i, j, x, masked_cube, masked_cube_res, nu0):
             y = masked_cube[i, j, :] * 1000
-            yerr = np.sqrt((masked_cube_res[i, j, :])**2.0 + (flux_sys_error_frac * masked_cube[i, j, :])**2.0) * 1000
+            yerr = np.sqrt((1*masked_cube_res[i, j, :])**2.0 + (flux_sys_error_frac * masked_cube[i, j, :])**2.0) * 1000
             results_fit = do_fit_spec_map(x, y, yerr, nu0)
             return (i, j, 
                     results_fit.params['alpha'].value, 
@@ -4292,22 +4372,7 @@ def specidx_map(imagelist,residuallist,
         for i, j in tqdm(pixel_indices, total=len(pixel_indices))
         )
         
-        
-        
-        # for i, j in tqdm(idx):
-        # # for i, j in idx:
-        #     # if count == 0:
-        #     #     print(str(pcount) + '%...')
-            
-            
-            
-        #     # yerr = (masked_cube_res[i,j,:]*1000)/(masked_cube[i,j,:]*1000 * np.log(10))
-        #     # y = np.log10(masked_cube[i,j,:]*1000)
-        #     y = masked_cube[i,j,:]*1000
-        #     yerr = np.sqrt((masked_cube_res[i,j,:])**2.0 + (flux_sys_error_frac*masked_cube[i,j,:])**2.0)*1000
-            
-        
-        #     results_fit = do_fit_spec_map(x,y,yerr,nu0)
+
         for (i, j, 
             alpha_value, alpha_err,
             b_value,y,yerr,results_fit) in results:
@@ -4325,7 +4390,7 @@ def specidx_map(imagelist,residuallist,
                                                 alpha_value, 
                                                 b_value,
                                                 nu0)
-                    plt.figure()
+                    plt.figure(figsize=(4, 5))
 
                     plt.errorbar(x, 
                                 y, 
@@ -4336,11 +4401,12 @@ def specidx_map(imagelist,residuallist,
 
                     plt.plot(x, model_best,
                             color='red', ls='-.', label='Best-fit model')
-                    
-                    plt.ylim(abs(np.nanmin(y)*0.1),np.nanmax(y)*5)
+
+                    plt.ylim(abs(np.nanmin(y)*0.1),np.nanmax(y)*100)
                     plt.semilogy()
                     plt.semilogx()
-                    
+                    plt.xlabel('Frequency [GHz]')
+                    plt.ylabel('Pixel Flux Density [mJy/Beam]')
                     plt.legend()
                     plt.show()
                     print(lmfit.fit_report(results_fit.params))
@@ -4374,104 +4440,107 @@ def specidx_map(imagelist,residuallist,
             copy_header(ref_image_conv,alphaimage_error_name,alphaimage_error_name)
         
         return(alphaimage, alphaimage_error,conv_cube,masked_cube_res,masked_cube)
-
-
-def specidx_map_SY_FF(imagelist, residuallist,
+        
+        
+    
+    
+def specidx_map_SY_FF(imagelist,residuallist,
                       ref_image_conv=None,
                       freqs=None,
-                      ref_image_mask=None,
-                      flux_sys_error_frac=0.1,
+                      ref_image_mask = None,
+                      flux_sys_error_frac = 0.1,
                       nu0=10.0,
-                      mask=None, sigma_global_mask=6,
+                      mask=None,sigma_global_mask=6,
                       iterations=1,
                       dilation_size=2,
                       sed_model='S2',
                       fix_alpha_nt=False,
-                      needs_convolution=False, conv_task='fft',
-                      do_average_cube=False, bin_size=int(2),
+                      needs_convolution=False,conv_task='fft',
+                      do_average_cube = False,bin_size=int(2),
                       n_jobs=1,
                       verbose=0):
+    
     if isinstance(imagelist[0], str):
         cube_image = makecube(imagelist)
         cube_residuals = makecube(residuallist)
     else:
         cube_image = imagelist
         cube_residuals = residuallist
-
+    
     if mask is None:
         if ref_image_mask is not None:
             ref_image_mask = ref_image_mask
         else:
             ref_image_mask = imagelist[-1]
-        _, mask = mask_dilation(ref_image_mask,
-                                rms=mad_std(load_fits_data(residuallist[-1])),
-                                show_figure=True,
-                                PLOT=True,
-                                iterations=iterations,
-                                dilation_size=dilation_size,
-                                sigma=sigma_global_mask)
+        _,mask = mask_dilation(ref_image_mask,
+                               rms=mad_std(load_fits_data(residuallist[-1])),
+                                     show_figure=True,
+                                     PLOT=True,
+                                     iterations=iterations,
+                                     dilation_size=dilation_size,
+                                     sigma=sigma_global_mask)
     mask_3d = mask[:, :, np.newaxis]
     inv_mask = ~mask
     inv_mask_3d = inv_mask[:, :, np.newaxis]
-
+    
     if needs_convolution == False:
         if ref_image_conv is None:
             ref_image_conv = sort_list_by_beam_size(imagelist=imagelist,
-                                                    return_df=False)[0][::-1][0]
+                                                return_df = False)[0][::-1][0]
         else:
             ref_image_conv = imagelist[0]
 
+    
     if isinstance(ref_image_conv, str):
         psf_zise = int(get_beam_size_px(ref_image_conv)[0])
         psf_image_size = int(load_fits_data(ref_image_conv).shape[0])
         print(f"PSF BEAM SIZE is --> {psf_zise} px")
         print(f"PSF IMAGE SIZE is --> {psf_image_size} px")
         larger_beam_image_data = load_fits_data(ref_image_conv)
+        
 
         psf_name = tcreate_beam_psf(ref_image_conv,
-                                    size=(psf_image_size, psf_image_size),
-                                    aspect='elliptical')
+                                        size=(psf_image_size, psf_image_size),
+                                        aspect = 'elliptical')
         PSF_DATA = load_fits_data(psf_name)
-
+        
     num_images = cube_image.shape[2]
     if needs_convolution:
         conv_cube = np.empty_like(cube_image)
         conv_cube_res = np.empty_like(cube_residuals)
         if conv_task == 'fft':
             for i in tqdm(range(num_images)):
-                conv_image_i_uncor = scipy.signal.fftconvolve(cube_image[:, :, i],
-                                                              PSF_DATA, 'same')
-                conv_residual_i_uncor = scipy.signal.fftconvolve(cube_residuals[:, :, i],
-                                                                 PSF_DATA, 'same')
-
+                conv_image_i_uncor = scipy.signal.fftconvolve(cube_image[:, :, i], 
+                                                            PSF_DATA, 'same')
+                conv_residual_i_uncor = scipy.signal.fftconvolve(cube_residuals[:, :, i], 
+                                                            PSF_DATA, 'same')
+                
                 larger_beam_area = beam_area2(ref_image_conv)
                 beam_area_i = beam_area2(imagelist[i])
-
+                
                 # factor_conv = np.max(larger_beam_image_data)/np.max(conv_image_i_uncor)
-                factor_conv_i = larger_beam_area / beam_area_i
-
+                factor_conv_i = larger_beam_area/beam_area_i
+                
                 print(f"Factor Convolution is --> {factor_conv_i}")
                 # factor_conv = 1.0
 
                 conv_cube[:, :, i] = conv_image_i_uncor * factor_conv_i
                 conv_image_i = conv_cube[:, :, i]
-
+                
                 conv_cube_res[:, :, i] = conv_residual_i_uncor * factor_conv_i
                 conv_res_i = conv_cube_res[:, :, i]
-
-                conv_name = imagelist[i].replace('-image.', '-image-conv.').replace('-image.cutout',
-                                                                                    '-image-conv.cutout')
+                
+                conv_name = imagelist[i].replace('-image.','-image-conv.').replace('-image.cutout','-image-conv.cutout')
                 pf.writeto(conv_name,
-                           conv_image_i,
-                           overwrite=True)
-                copy_header(ref_image_conv, conv_name, conv_name)
-
-                conv_res_name = residuallist[i].replace('-residual.', '-residual-conv.').replace(
-                    '-residual.cutout', '-residual-conv.cutout')
+                                conv_image_i,
+                                overwrite=True)
+                copy_header(ref_image_conv,conv_name,conv_name)
+                
+                conv_res_name = residuallist[i].replace('-residual.','-residual-conv.').replace('-residual.cutout','-residual-conv.cutout')
                 pf.writeto(conv_res_name,
-                           conv_res_i,
-                           overwrite=True)
-                copy_header(ref_image_conv, conv_res_name, conv_res_name)
+                                conv_res_i,
+                                overwrite=True)
+                copy_header(ref_image_conv,conv_res_name,conv_res_name)
         # if conv_task == 'imsmooth':
         #     if isinstance(imagelist[0], str):
         #         for i in tqdm(range(num_images)):
@@ -4480,14 +4549,14 @@ def specidx_map_SY_FF(imagelist, residuallist,
         #                             cube_image[:, :, i],
         #                             overwrite=True)
         #             copy_header(imagelist[0],conv_name,conv_name)
-
+                    
         #             convolve_2D_smooth(imagelist[0],conv_name,mode='transfer',add_prefix='')
         #             conv_cube[:,:,i] = load_fits_data(conv_name)
-
+            
     else:
         conv_cube = cube_image.copy()
         conv_cube_res = cube_residuals.copy()
-
+    
     # conv_cube_res = cube_residuals.copy()
     masked_cube = np.where(inv_mask_3d, np.nan, conv_cube)
     masked_cube_res = np.where(inv_mask_3d, np.nan, conv_cube_res)
@@ -4495,15 +4564,16 @@ def specidx_map_SY_FF(imagelist, residuallist,
     if do_average_cube:
         # bin_size = 2
         # assert masked_cube.shape[2] % bin_size == 0, "Frequency axis size must be divisible by bin size."
-        reshaped_cube = masked_cube.reshape(masked_cube.shape[0],
-                                            masked_cube.shape[1], -1,
+        reshaped_cube = masked_cube.reshape(masked_cube.shape[0], 
+                                            masked_cube.shape[1], -1, 
                                             bin_size)
         averaged_cube = reshaped_cube.mean(axis=3)
 
-        reshaped_residual = masked_cube_res.reshape(masked_cube_res.shape[0],
-                                                    masked_cube_res.shape[1], -1,
+        reshaped_residual = masked_cube_res.reshape(masked_cube_res.shape[0], 
+                                                    masked_cube_res.shape[1], -1, 
                                                     bin_size)
-        averaged_cube_res = np.sqrt(np.sum(reshaped_residual ** 2, axis=3)) / bin_size
+        averaged_cube_res = np.sqrt(np.sum(reshaped_residual**2, axis=3)) / bin_size
+
 
         print("Original cube shape:", masked_cube.shape)
         print("Averaged cube shape:", averaged_cube.shape)
@@ -4512,32 +4582,34 @@ def specidx_map_SY_FF(imagelist, residuallist,
         freqs = averaged_frequencies
         masked_cube = averaged_cube.astype(np.float32)
         masked_cube_res = averaged_cube_res.astype(np.float32)
-    else:
+    else:        
         masked_cube = masked_cube.astype(np.float32)
         masked_cube_res = masked_cube_res.astype(np.float32)
-
+    
+    
     # cube_image * mask_3d
-    idx = np.column_stack(np.where(mask == True))
+    idx = np.column_stack(np.where(mask==True))
     if freqs is None:
         freqs = getfreqs(imagelist)
-    alphaimage = np.empty_like(conv_cube[:, :, 0])
-    alphaimage_error = np.empty_like(conv_cube[:, :, 0])
-    A_sy_map = np.empty_like(conv_cube[:, :, 0])
-    A_sy_map_err = np.empty_like(conv_cube[:, :, 0])
-    A_ff_map = np.empty_like(conv_cube[:, :, 0])
-    A_ff_map_err = np.empty_like(conv_cube[:, :, 0])
-    Snu0 = np.empty_like(conv_cube[:, :, 0])
-    Snu0_err = np.empty_like(conv_cube[:, :, 0])
-    f_th_33 = np.empty_like(conv_cube[:, :, 0])
-    f_th_33_err = np.empty_like(conv_cube[:, :, 0])
-    S_tot_33 = np.empty_like(conv_cube[:, :, 0])
-    S_tot_33_err = np.empty_like(conv_cube[:, :, 0])
+    alphaimage = np.empty_like(conv_cube[:,:,0])
+    alphaimage_error = np.empty_like(conv_cube[:,:,0])
+    A_sy_map = np.empty_like(conv_cube[:,:,0])
+    A_sy_map_err = np.empty_like(conv_cube[:,:,0])
+    A_ff_map = np.empty_like(conv_cube[:,:,0])
+    A_ff_map_err = np.empty_like(conv_cube[:,:,0])
+    Snu0 = np.empty_like(conv_cube[:,:,0])
+    Snu0_err = np.empty_like(conv_cube[:,:,0])
+    f_th_33 = np.empty_like(conv_cube[:,:,0])
+    f_th_33_err = np.empty_like(conv_cube[:,:,0])
+    S_tot_33 = np.empty_like(conv_cube[:,:,0])
+    S_tot_33_err = np.empty_like(conv_cube[:,:,0])
+    
+    sy_map_33 = np.empty_like(conv_cube[:,:,0])
+    sy_map_33_err = np.empty_like(conv_cube[:,:,0])
+    ff_map_33 = np.empty_like(conv_cube[:,:,0])
+    ff_map_33_err = np.empty_like(conv_cube[:,:,0])
 
-    sy_map_33 = np.empty_like(conv_cube[:, :, 0])
-    sy_map_33_err = np.empty_like(conv_cube[:, :, 0])
-    ff_map_33 = np.empty_like(conv_cube[:, :, 0])
-    ff_map_33_err = np.empty_like(conv_cube[:, :, 0])
-
+    
     alphaimage[:] = np.nan
     alphaimage_error[:] = np.nan
     sy_map_33[:] = np.nan
@@ -4555,38 +4627,40 @@ def specidx_map_SY_FF(imagelist, residuallist,
     S_tot_33[:] = np.nan
     S_tot_33_err[:] = np.nan
 
-    #     x = np.log10(freqs)
-    x = freqs.copy() / 1e9
-
+    
+#     x = np.log10(freqs)
+    x = freqs.copy()/1e9
+    
     nspec = len(idx)
     tenpc = int(nspec / 10.0)
     count = 0
     pcount = 0
-
+    
     masked_cube = masked_cube.astype(np.float32)
     masked_cube_res = masked_cube_res.astype(np.float32)
-
+    
+    
     def compute_pixel_nth_spectral_index(i, j, x, masked_cube, masked_cube_res, nu0):
         y = masked_cube[i, j, :] * 1000
-        yerr = np.sqrt((1 * masked_cube_res[i, j, :]) ** 2.0 + (
-                    flux_sys_error_frac * masked_cube[i, j, :]) ** 2.0) * 1000
-        results_fit = do_fit_spec_SY_FF_map(x, y, yerr, nu0, fix_alpha_nt)
-        return (i, j,
-                results_fit.params['alpha_nt'].value,
+        yerr = np.sqrt((1*masked_cube_res[i, j, :])**2.0 + (flux_sys_error_frac * masked_cube[i, j, :])**2.0) * 1000
+        results_fit = do_fit_spec_SY_FF_map(x, y, yerr, nu0,fix_alpha_nt)
+        return (i, j, 
+                results_fit.params['alpha_nt'].value, 
                 results_fit.params['alpha_nt'].stderr,
                 results_fit.params['A_sy'].value,
                 results_fit.params['A_sy'].stderr,
                 results_fit.params['A_ff'].value,
                 results_fit.params['A_ff'].stderr,
-                y, yerr, results_fit
+                y,yerr,results_fit
                 )
-
+    
+    
     # pixel_indices = [(i, j) for i, j in idx]
     # results = Parallel(n_jobs=n_jobs)(
-    # delayed(compute_pixel_nth_spectral_index)(i, j, x, masked_cube, masked_cube_res, nu0)
+    # delayed(compute_pixel_nth_spectral_index)(i, j, x, masked_cube, masked_cube_res, nu0) 
     # for i, j in tqdm(pixel_indices, total=len(pixel_indices))
     # )
-
+    
     pixel_indices = [(i, j) for i, j in idx]
     with Parallel(n_jobs=n_jobs) as parallel:
         results = parallel(
@@ -4594,141 +4668,141 @@ def specidx_map_SY_FF(imagelist, residuallist,
                 i, j, x, masked_cube, masked_cube_res, nu0
             ) for i, j in tqdm(pixel_indices, total=len(pixel_indices))
         )
-
+    
     if sed_model == 'S2':
         # for i, j in tqdm(idx):
         # for i, j in idx:
         for (i, j, alpha_nt_value, alpha_nt_err,
-             A_sy_value, A_sy_err,
-             A_ff_value, A_ff_err,
-             y, yerr, results_fit) in results:
+             A_sy_value,A_sy_err,
+             A_ff_value,A_ff_err,
+             y,yerr,results_fit) in results:
             # if count == 0:
             #     print(str(pcount) + '%...')
-
-            #         y = np.log10(masked_cube[i,j,:])
+            
+            
+    #         y = np.log10(masked_cube[i,j,:])
             # y = masked_cube[i,j,:]*1000
             # yerr = masked_cube_res[i,j,:]*1000
-
+        
             # results_fit = do_fit_spec_SY_FF_map(x,y,yerr,nu0)
-
+            
             alphaimage[i, j] = alpha_nt_value
             alphaimage_error[i, j] = alpha_nt_err
             A_sy_map[i, j] = A_sy_value
             A_sy_map_err[i, j] = A_sy_err
             A_ff_map[i, j] = A_ff_value
             A_ff_map_err[i, j] = A_ff_err
-
-            sy_map_33[i, j] = A_sy_value * (33 / nu0) ** alpha_nt_value
-            ff_map_33[i, j] = A_ff_value * (33 / nu0) ** (-0.1)
-            sy_map_33_err[i, j] = sy_map_33[i, j] * np.sqrt(
-                (A_sy_err / A_sy_value) ** 2.0 + (alpha_nt_err * np.log(33 / nu0)) ** 2.0)
-            ff_map_33_err[i, j] = ff_map_33[i, j] * np.sqrt(
-                (A_ff_err / A_ff_value) ** 2.0 + (0.1 * np.log(33 / nu0)) ** 2)
-
-            Snu0[i, j] = RC_function_SY_FF(nu0,
-                                           A_sy_value,
-                                           A_ff_value,
-                                           alpha_nt_value,
-                                           nu0)
-            S_tot_33[i, j] = RC_function_SY_FF(33,
-                                               A_sy_value,
-                                               A_ff_value,
-                                               alpha_nt_value,
-                                               nu0)
-
-            S_tot_33_err = RC_function_SY_FF(33,
-                                             A_sy_err,
-                                             A_ff_err,
-                                             alpha_nt_value,
-                                             nu0)
-
-            S_sy_33 = RC_function_SY_FF(33,
-                                        A_sy_value,
-                                        0.0,
+            
+            sy_map_33[i,j] = A_sy_value * (33/nu0)**alpha_nt_value
+            ff_map_33[i,j] = A_ff_value * (33/nu0)**(-0.1)
+            sy_map_33_err[i,j] = sy_map_33[i,j] * np.sqrt((A_sy_err/A_sy_value)**2.0 + (alpha_nt_err * np.log(33/nu0))**2.0)
+            ff_map_33_err[i,j] = ff_map_33[i,j] * np.sqrt((A_ff_err/A_ff_value)**2.0 + (0.1 * np.log(33/nu0))**2)
+            
+            Snu0[i,j] = RC_function_SY_FF(nu0, 
+                                    A_sy_value, 
+                                    A_ff_value, 
+                                    alpha_nt_value,
+                                    nu0)
+            S_tot_33[i,j] = RC_function_SY_FF(33, 
+                                    A_sy_value, 
+                                    A_ff_value, 
+                                    alpha_nt_value,
+                                    nu0)
+            
+            S_tot_33_err = RC_function_SY_FF(33, 
+                                    A_sy_err, 
+                                    A_ff_err, 
+                                    alpha_nt_value,
+                                    nu0)
+            
+            S_sy_33 = RC_function_SY_FF(33, 
+                                    A_sy_value,
+                                    0.0, 
+                                    alpha_nt_value,
+                                    nu0)
+            S_sy_33_err = RC_function_SY_FF(33, 
+                                    A_sy_err, 
+                                    0.0, 
+                                    alpha_nt_value,
+                                    nu0)
+            
+            S_ff_33 = RC_function_SY_FF(33, 
+                                    0.0, 
+                                    A_ff_value, 
+                                    0.0,
+                                    nu0)
+            S_ff_33_err = RC_function_SY_FF(33, 
+                                    0.0, 
+                                    A_ff_err, 
+                                    0.0,
+                                    nu0)
+            
+            sed_sy_ff = {'S_sy_33':S_sy_33,
+                         'S_sy_33_err':S_sy_33_err,
+                        'S_ff_33':S_ff_33,
+                        'S_ff_33_err':S_ff_33_err,
+                        'sy_map_33':sy_map_33,
+                        'sy_map_33_err':sy_map_33_err,
+                        'ff_map_33':ff_map_33,
+                        'ff_map_33_err':ff_map_33_err,
+                        'S_tot_33':S_tot_33}
+            
+            f_th_33[i,j] = S_ff_33 / S_tot_33[i,j]
+            
+            f_th_33_err[i,j] = f_th_33[i,j] * np.sqrt((S_ff_33_err/S_ff_33)**2.0 + (S_tot_33_err/(S_ff_33+S_sy_33))**2.0)
+            
+            try:
+                Snu0_err[i,j] = RC_function_SY_FF(nu0, 
+                                        A_sy_err, 
+                                        A_ff_err, 
                                         alpha_nt_value,
                                         nu0)
-            S_sy_33_err = RC_function_SY_FF(33,
-                                            A_sy_err,
-                                            0.0,
-                                            alpha_nt_value,
-                                            nu0)
-
-            S_ff_33 = RC_function_SY_FF(33,
-                                        0.0,
-                                        A_ff_value,
-                                        0.0,
-                                        nu0)
-            S_ff_33_err = RC_function_SY_FF(33,
-                                            0.0,
-                                            A_ff_err,
-                                            0.0,
-                                            nu0)
-
-            sed_sy_ff = {'S_sy_33': S_sy_33,
-                         'S_sy_33_err': S_sy_33_err,
-                         'S_ff_33': S_ff_33,
-                         'S_ff_33_err': S_ff_33_err,
-                         'sy_map_33': sy_map_33,
-                         'sy_map_33_err': sy_map_33_err,
-                         'ff_map_33': ff_map_33,
-                         'ff_map_33_err': ff_map_33_err,
-                         'S_tot_33': S_tot_33}
-
-            f_th_33[i, j] = S_ff_33 / S_tot_33[i, j]
-
-            f_th_33_err[i, j] = f_th_33[i, j] * np.sqrt(
-                (S_ff_33_err / S_ff_33) ** 2.0 + (S_tot_33_err / (S_ff_33 + S_sy_33)) ** 2.0)
-
-            try:
-                Snu0_err[i, j] = RC_function_SY_FF(nu0,
-                                                   A_sy_err,
-                                                   A_ff_err,
-                                                   alpha_nt_value,
-                                                   nu0)
             except:
-                Snu0_err[i, j] = np.nan
-
+                Snu0_err[i,j] = np.nan                 
+                
             count += 1
             if count == tenpc:
                 count = 0
                 pcount += 10
-                if verbose > 0:
-                    model_best = RC_function_SY_FF(x,
-                                                   A_sy_value,
-                                                   A_ff_value,
-                                                   alpha_nt_value,
-                                                   nu0
-                                                   )
-
-                    model_best_sy = RC_function_SY_FF(x,
-                                                      A_sy_value,
-                                                      0.0,
-                                                      alpha_nt_value,
-                                                      nu0
-                                                      )
-                    model_best_ff = RC_function_SY_FF(x,
-                                                      0.0,
-                                                      A_ff_value,
-                                                      alpha_nt_value,
-                                                      nu0
-                                                      )
-
+                if verbose>0:
+                    model_best = RC_function_SY_FF(x, 
+                                                A_sy_value, 
+                                                A_ff_value,
+                                                alpha_nt_value,
+                                                nu0
+                                                )
+                    
+                    model_best_sy = RC_function_SY_FF(x, 
+                                                A_sy_value, 
+                                                0.0,
+                                                alpha_nt_value,
+                                                nu0
+                                                )
+                    model_best_ff = RC_function_SY_FF(x, 
+                                                0.0, 
+                                                A_ff_value,
+                                                alpha_nt_value,
+                                                nu0
+                                                )
+                    
+                    
                     plt.figure(figsize=(4, 5))
 
-                    plt.errorbar(x,
-                                 y,
-                                 yerr=abs(yerr),
-                                 fmt='o',
-                                 label='Data', color='k', ecolor='gray',
-                                 alpha=0.5)
+                    plt.errorbar(x, 
+                                y, 
+                                yerr=abs(yerr), 
+                                fmt='o',
+                                label='Data', color='k', ecolor='gray',
+                                alpha=0.5)
                     plt.plot(x, model_best,
-                             color='red', ls='-.', label='Best-fit model')
+                            color='red', ls='-.', label='Best-fit model')
                     plt.plot(x, model_best_sy,
-                             color='blue', ls='-.', label='SY term')
+                            color='blue', ls='-.', label='SY term')
                     plt.plot(x, model_best_ff,
-                             color='orange', ls='-.', label='FF term')
-
-                    plt.ylim(abs(np.nanmin(y) * 0.1), np.nanmax(y) * 100)
+                            color='orange', ls='-.', label='FF term')
+                    
+                    
+                    plt.ylim(abs(np.nanmin(y)*0.1),np.nanmax(y)*100)
                     plt.semilogy()
                     plt.semilogx()
                     plt.xlabel('Frequency [GHz]')
@@ -4736,34 +4810,641 @@ def specidx_map_SY_FF(imagelist, residuallist,
                     plt.legend()
                     plt.show()
                     print(lmfit.fit_report(results_fit.params))
-
+        
+    
     if isinstance(imagelist[0], str):
         """
         Only save the alpha image if the input is a list of strings.
         """
         # alphaimage_name = imagelist[0].replace('-0000-image.fits','-alpha.fits')
         # alphaimage_error_name = imagelist[0].replace('-0000-image.fits','-alphaerror.fits')
-        _alphaimage_name = (ref_image_conv.replace('-image.', '-alpha_nt.').
-                            replace('-image.cutout', '-alpha_nt.cutout').
-                            replace('-image-pb', '-alpha_nt-pb'))
+        _alphaimage_name = (ref_image_conv.replace('-image.','-alpha_nt.').
+                        replace('-image.cutout','-alpha_nt.cutout').
+                        replace('-image-pb','-alpha_nt-pb'))
+        
+        _alphaimage_error_name = (ref_image_conv.replace('-image.','-alpha_nt_error.').
+                                replace('-image.cutout','-alpha_nt_error.cutout').
+                                replace('-image-pb','-alpha_nt_error-pb'))
+        
+        alphaimage_name = os.path.dirname(os.path.dirname(_alphaimage_name))+'/'+os.path.basename(_alphaimage_name)
+        alphaimage_error_name = os.path.dirname(os.path.dirname(_alphaimage_error_name))+'/'+os.path.basename(_alphaimage_error_name)
 
-        _alphaimage_error_name = (ref_image_conv.replace('-image.', '-alpha_nt_error.').
-                                  replace('-image.cutout', '-alpha_nt_error.cutout').
-                                  replace('-image-pb', '-alpha_nt_error-pb'))
+        pf.writeto(alphaimage_name,alphaimage,overwrite=True)
+        pf.writeto(alphaimage_error_name,alphaimage_error,overwrite=True)
+        copy_header(ref_image_conv,alphaimage_name,alphaimage_name)
+        copy_header(ref_image_conv,alphaimage_error_name,alphaimage_error_name)
+    
+    return(alphaimage, alphaimage_error,Snu0,Snu0_err,
+           A_ff_map, A_ff_map_err, 
+           A_sy_map, A_sy_map_err, 
+           f_th_33,f_th_33_err,
+           conv_cube,masked_cube_res,masked_cube,sed_sy_ff)
+    
 
-        alphaimage_name = os.path.dirname(
-            os.path.dirname(_alphaimage_name)) + '/' + os.path.basename(_alphaimage_name)
-        alphaimage_error_name = os.path.dirname(
-            os.path.dirname(_alphaimage_error_name)) + '/' + os.path.basename(
-            _alphaimage_error_name)
 
-        pf.writeto(alphaimage_name, alphaimage, overwrite=True)
-        pf.writeto(alphaimage_error_name, alphaimage_error, overwrite=True)
-        copy_header(ref_image_conv, alphaimage_name, alphaimage_name)
-        copy_header(ref_image_conv, alphaimage_error_name, alphaimage_error_name)
 
-    return (alphaimage, alphaimage_error, Snu0, Snu0_err,
-            A_ff_map, A_ff_map_err,
-            A_sy_map, A_sy_map_err,
-            f_th_33, f_th_33_err,
-            conv_cube, masked_cube_res, masked_cube, sed_sy_ff)
+
+
+
+
+# import numpy as np
+# import os
+# from tqdm import tqdm
+# from joblib import Parallel, delayed
+# import astropy.io.fits as pf
+# import scipy.signal
+# import matplotlib.pyplot as plt
+# import lmfit
+
+def create_frequency_maps(A_sy, A_sy_err, A_ff, A_ff_err, alpha_nt, alpha_nt_err, 
+                         frequencies, nu0=10.0):
+    """
+    Calculate synchrotron and free-free maps at specified frequencies.
+    
+    Parameters:
+    -----------
+    A_sy, A_sy_err : array_like
+        Synchrotron amplitude and error maps
+    A_ff, A_ff_err : array_like  
+        Free-free amplitude and error maps
+    alpha_nt, alpha_nt_err : array_like
+        Non-thermal spectral index and error maps
+    frequencies : array_like
+        Target frequencies in GHz
+    nu0 : float
+        Reference frequency in GHz
+        
+    Returns:
+    --------
+    dict : Dictionary containing maps for each frequency
+    """
+    results = {}
+    
+    for freq in frequencies:
+        freq_key = f'{freq:.1f}GHz'
+        
+        # Synchrotron component
+        sy_map = A_sy * (freq/nu0)**alpha_nt
+        sy_map_err = sy_map * np.sqrt((A_sy_err/A_sy)**2 + (alpha_nt_err * np.log(freq/nu0))**2)
+        
+        
+        # Free-free component (spectral index = -0.1)
+        ff_map = A_ff * (freq/nu0)**(-0.1)
+        ff_map_err = ff_map * np.sqrt((A_ff_err/A_ff)**2 + (0.1 * np.log(freq/nu0))**2)
+        
+        # Total emission
+        total_map = sy_map + ff_map
+        total_map_err = np.sqrt(sy_map_err**2 + ff_map_err**2)
+        
+        # Thermal fraction
+        thermal_fraction = ff_map / total_map
+        thermal_fraction_err = thermal_fraction * np.sqrt(
+            (ff_map_err/ff_map)**2 + (total_map_err/total_map)**2
+        )
+        
+        results[freq_key] = {
+            'synchrotron': sy_map,
+            'synchrotron_err': sy_map_err,
+            'free_free': ff_map,
+            'free_free_err': ff_map_err,
+            'total': total_map,
+            'total_err': total_map_err,
+            'thermal_fraction': thermal_fraction,
+            'thermal_fraction_err': thermal_fraction_err
+        }
+    
+    return results
+
+def prepare_input_data(imagelist, residuallist, freqs=None):
+    """
+    Prepare input cubes from image and residual lists.
+    
+    Parameters:
+    -----------
+    imagelist : list or array
+        List of image filenames or pre-loaded cube
+    residuallist : list or array  
+        List of residual filenames or pre-loaded cube
+    freqs : array_like, optional
+        Frequency array
+        
+    Returns:
+    --------
+    tuple : (cube_image, cube_residuals, frequencies)
+    """
+    if isinstance(imagelist[0], str):
+        cube_image = makecube(imagelist)
+        cube_residuals = makecube(residuallist)
+        if freqs is None:
+            freqs = getfreqs(imagelist)
+    else:
+        cube_image = imagelist
+        cube_residuals = residuallist
+        if freqs is None:
+            raise ValueError("Frequencies must be provided when using pre-loaded cubes")
+    
+    return cube_image, cube_residuals, freqs
+
+def create_processing_mask(ref_image_mask, residuallist, mask=None, 
+                          sigma_global_mask=6, iterations=1, dilation_size=2):
+    """
+    Create or validate processing mask.
+    
+    Parameters:
+    -----------
+    ref_image_mask : str or None
+        Reference image for mask creation
+    residuallist : list
+        List of residual images
+    mask : array_like, optional
+        Pre-existing mask
+    sigma_global_mask : float
+        Sigma threshold for mask creation
+    iterations : int
+        Dilation iterations
+    dilation_size : int
+        Dilation kernel size
+        
+    Returns:
+    --------
+    tuple : (mask, inverse_mask_3d)
+    """
+    if mask is None:
+        if ref_image_mask is None:
+            ref_image_mask = residuallist[-1]
+        
+        _, mask = mask_dilation(
+            ref_image_mask,
+            rms=mad_std(load_fits_data(residuallist[-1])),
+            show_figure=True,
+            PLOT=True,
+            iterations=iterations,
+            dilation_size=dilation_size,
+            sigma=sigma_global_mask
+        )
+    
+    mask_3d = mask[:, :, np.newaxis]
+    inv_mask = ~mask
+    inv_mask_3d = inv_mask[:, :, np.newaxis]
+    
+    return mask, inv_mask_3d
+
+def convolve_images_to_common_resolution(cube_image, cube_residuals, imagelist, 
+                                       residuallist, ref_image_conv, conv_task='fft'):
+    """
+    Convolve all images to common resolution.
+    
+    Parameters:
+    -----------
+    cube_image, cube_residuals : array_like
+        Input image and residual cubes
+    imagelist, residuallist : list
+        File paths for saving convolved images
+    ref_image_conv : str
+        Reference image for target resolution
+    conv_task : str
+        Convolution method ('fft')
+        
+    Returns:
+    --------
+    tuple : (convolved_cube, convolved_residuals_cube)
+    """
+    # Get PSF information
+    psf_size = int(get_beam_size_px(ref_image_conv)[0])
+    psf_image_size = int(load_fits_data(ref_image_conv).shape[0])
+    larger_beam_image_data = load_fits_data(ref_image_conv)
+    
+    print(f"PSF BEAM SIZE is --> {psf_size} px")
+    print(f"PSF IMAGE SIZE is --> {psf_image_size} px")
+    
+    # Create PSF
+    psf_name = tcreate_beam_psf(
+        ref_image_conv,
+        size=(psf_image_size, psf_image_size),
+        aspect='elliptical'
+    )
+    PSF_DATA = load_fits_data(psf_name)
+    
+    # Initialize output cubes
+    num_images = cube_image.shape[2]
+    conv_cube = np.empty_like(cube_image)
+    conv_cube_res = np.empty_like(cube_residuals)
+    
+    if conv_task == 'fft':
+        larger_beam_area = beam_area2(ref_image_conv)
+        
+        for i in tqdm(range(num_images)):
+            # Convolve images
+            conv_image_i_uncor = scipy.signal.fftconvolve(
+                cube_image[:, :, i], PSF_DATA, 'same'
+            )
+            conv_residual_i_uncor = scipy.signal.fftconvolve(
+                cube_residuals[:, :, i], PSF_DATA, 'same'
+            )
+            
+            # Apply beam area correction
+            beam_area_i = beam_area2(imagelist[i])
+            factor_conv_i = larger_beam_area / beam_area_i
+            print(f"Factor Convolution is --> {factor_conv_i}")
+            
+            conv_cube[:, :, i] = conv_image_i_uncor * factor_conv_i
+            conv_cube_res[:, :, i] = conv_residual_i_uncor * factor_conv_i
+            
+            # Save convolved images if input was file paths
+            if isinstance(imagelist[0], str):
+                save_convolved_image(imagelist[i], conv_cube[:, :, i], ref_image_conv)
+                save_convolved_residual(residuallist[i], conv_cube_res[:, :, i], ref_image_conv)
+    
+    return conv_cube, conv_cube_res
+
+def save_convolved_image(original_path, convolved_data, ref_image):
+    """Save convolved image with proper naming and header."""
+    conv_name = original_path.replace('-image.', '-image-conv.').replace('-image.cutout', '-image-conv.cutout')
+    pf.writeto(conv_name, convolved_data, overwrite=True)
+    copy_header(ref_image, conv_name, conv_name)
+
+def save_convolved_residual(original_path, convolved_data, ref_image):
+    """Save convolved residual with proper naming and header."""
+    conv_res_name = original_path.replace('-residual.', '-residual-conv.').replace('-residual.cutout', '-residual-conv.cutout')
+    pf.writeto(conv_res_name, convolved_data, overwrite=True)
+    copy_header(ref_image, conv_res_name, conv_res_name)
+
+def apply_frequency_averaging(masked_cube, masked_cube_res, freqs, bin_size=2):
+    """
+    Apply frequency averaging to reduce noise.
+    
+    Parameters:
+    -----------
+    masked_cube, masked_cube_res : array_like
+        Masked image and residual cubes
+    freqs : array_like
+        Frequency array
+    bin_size : int
+        Number of channels to average
+        
+    Returns:
+    --------
+    tuple : (averaged_cube, averaged_residuals, averaged_frequencies)
+    """
+    reshaped_cube = masked_cube.reshape(
+        masked_cube.shape[0], masked_cube.shape[1], -1, bin_size
+    )
+    averaged_cube = reshaped_cube.mean(axis=3)
+    
+    reshaped_residual = masked_cube_res.reshape(
+        masked_cube_res.shape[0], masked_cube_res.shape[1], -1, bin_size
+    )
+    averaged_cube_res = np.sqrt(np.sum(reshaped_residual**2, axis=3)) / bin_size
+    
+    reshaped_frequencies = freqs.reshape(-1, bin_size)
+    averaged_frequencies = reshaped_frequencies.mean(axis=1)
+    
+    print("Original cube shape:", masked_cube.shape)
+    print("Averaged cube shape:", averaged_cube.shape)
+    
+    return averaged_cube.astype(np.float32), averaged_cube_res.astype(np.float32), averaged_frequencies
+
+def initialize_output_maps(image_shape):
+    """
+    Initialize all output parameter maps with NaN values.
+    
+    Parameters:
+    -----------
+    image_shape : tuple
+        Shape of output maps (ny, nx)
+        
+    Returns:
+    --------
+    dict : Dictionary of initialized maps
+    """
+    maps = {}
+    
+    # Primary fit parameters
+    parameter_names = [
+        'alpha_nt', 'alpha_nt_err',
+        'A_sy', 'A_sy_err', 
+        'A_ff', 'A_ff_err',
+        'S_nu0', 'S_nu0_err'
+    ]
+    
+    for name in parameter_names:
+        maps[name] = np.full(image_shape, np.nan, dtype=np.float32)
+    
+    return maps
+
+def fit_single_pixel_spectrum(i, j, frequencies, masked_cube, masked_cube_res, 
+                             nu0, flux_sys_error_frac, fix_alpha_nt):
+    """
+    Fit SED model to single pixel spectrum.
+    
+    Parameters:
+    -----------
+    i, j : int
+        Pixel coordinates
+    frequencies : array_like
+        Frequency array in GHz
+    masked_cube, masked_cube_res : array_like
+        Data and residual cubes
+    nu0 : float
+        Reference frequency
+    flux_sys_error_frac : float
+        Systematic flux error fraction
+    fix_alpha_nt : bool
+        Whether to fix non-thermal spectral index
+        
+    Returns:
+    --------
+    tuple : Pixel coordinates and fit results
+    """
+    y = masked_cube[i, j, :] * 1000  # Convert to mJy
+    yerr = np.sqrt(
+        (1 * masked_cube_res[i, j, :])**2 + 
+        (flux_sys_error_frac * masked_cube[i, j, :])**2
+    ) * 1000
+    
+    results_fit = do_fit_spec_SY_FF_map(frequencies, y, yerr, nu0, fix_alpha_nt)
+    
+    return (i, j, results_fit, y, yerr)
+
+def extract_fit_parameters(results_fit):
+    """
+    Extract fit parameters from lmfit results.
+    
+    Parameters:
+    -----------
+    results_fit : lmfit.ModelResult
+        Fit results object
+        
+    Returns:
+    --------
+    dict : Dictionary of parameter values and errors
+    """
+    params = {}
+    
+    for param_name in ['alpha_nt', 'A_sy', 'A_ff']:
+        param = results_fit.params[param_name]
+        params[param_name] = param.value
+        params[f'{param_name}_err'] = param.stderr if param.stderr is not None else np.nan
+    
+    return params
+
+def save_parameter_maps(output_maps, ref_image_conv, imagelist):
+    """
+    Save parameter maps to FITS files.
+    
+    Parameters:
+    -----------
+    output_maps : dict
+        Dictionary of parameter maps
+    ref_image_conv : str
+        Reference image for header copying
+    imagelist : list
+        List of input images
+    """
+    if not isinstance(imagelist[0], str):
+        return
+    
+    # Define save parameters
+    save_params = {
+        'alpha_nt': 'alpha_nt',
+        'alpha_nt_err': 'alpha_nt_error', 
+        'A_sy': 'A_sy',
+        'A_sy_err': 'A_sy_error',
+        'A_ff': 'A_ff', 
+        'A_ff_err': 'A_ff_error'
+    }
+    
+    base_dir = os.path.dirname(os.path.dirname(ref_image_conv))
+    
+    for map_key, file_suffix in save_params.items():
+        if map_key in output_maps:
+            filename = (ref_image_conv
+                       .replace('-image.', f'-{file_suffix}.')
+                       .replace('-image.cutout', f'-{file_suffix}.cutout')
+                       .replace('-image-pb', f'-{file_suffix}-pb'))
+            
+            output_path = os.path.join(base_dir, os.path.basename(filename))
+            
+            pf.writeto(output_path, output_maps[map_key], overwrite=True)
+            copy_header(ref_image_conv, output_path, output_path)
+
+def t_specidx_map_SY_FF(imagelist, residuallist,
+                      ref_image_conv=None,
+                      freqs=None,
+                      ref_image_mask=None,
+                      flux_sys_error_frac=0.1,
+                      nu0=10.0,
+                      mask=None,
+                      sigma_global_mask=6,
+                      iterations=1,
+                      dilation_size=2,
+                      sed_model='S2',
+                      fix_alpha_nt=False,
+                      needs_convolution=False,
+                      conv_task='fft',
+                      do_average_cube=False,
+                      bin_size=2,
+                      n_jobs=1,
+                      verbose=0,
+                      output_frequencies=[1.4, 6.0, 33.0]):
+    """
+    Perform pixel-by-pixel SED modelling to decompose radio emission.
+    
+    Parameters:
+    -----------
+    imagelist : list or array
+        Input images or image cube
+    residuallist : list or array
+        Residual images or residual cube
+    ref_image_conv : str, optional
+        Reference image for convolution
+    freqs : array_like, optional
+        Frequency array in Hz
+    ref_image_mask : str, optional
+        Reference image for mask creation
+    flux_sys_error_frac : float
+        Systematic flux error fraction
+    nu0 : float
+        Reference frequency in GHz
+    mask : array_like, optional
+        Processing mask
+    sigma_global_mask : float
+        Sigma threshold for mask creation
+    iterations : int
+        Mask dilation iterations
+    dilation_size : int
+        Mask dilation size
+    sed_model : str
+        SED model type
+    fix_alpha_nt : bool
+        Fix non-thermal spectral index
+    needs_convolution : bool
+        Whether convolution is needed
+    conv_task : str
+        Convolution method
+    do_average_cube : bool
+        Apply frequency averaging
+    bin_size : int
+        Frequency averaging bin size
+    n_jobs : int
+        Number of parallel jobs
+    verbose : int
+        Verbosity level
+    output_frequencies : list
+        Frequencies for derived quantity maps (GHz)
+        
+    Returns:
+    --------
+    dict : Comprehensive results dictionary containing:
+        - parameter_maps: Primary fit parameter maps
+        - frequency_maps: Derived quantities at specified frequencies  
+        - data_products: Processed cubes and masks
+        - metadata: Processing information
+    """
+    
+    # 1. Prepare input data
+    cube_image, cube_residuals, frequencies_hz = prepare_input_data(
+        imagelist, residuallist, freqs
+    )
+    
+    # Convert frequencies to GHz for processing
+    frequencies_ghz = frequencies_hz / 1e9
+    
+    # 2. Create processing mask
+    mask, inv_mask_3d = create_processing_mask(
+        ref_image_mask, residuallist if isinstance(residuallist[0], str) else None,
+        mask, sigma_global_mask, iterations, dilation_size
+    )
+    
+    # 3. Handle convolution if needed
+    if needs_convolution:
+        if ref_image_conv is None:
+            ref_image_conv = sort_list_by_beam_size(
+                imagelist=imagelist, return_df=False
+            )[0][::-1][0]
+        
+        conv_cube, conv_cube_res = convolve_images_to_common_resolution(
+            cube_image, cube_residuals, imagelist, residuallist, 
+            ref_image_conv, conv_task
+        )
+    else:
+        conv_cube = cube_image.copy()
+        conv_cube_res = cube_residuals.copy()
+        if ref_image_conv is None:
+            ref_image_conv = imagelist[0] if isinstance(imagelist[0], str) else "ref_image"
+    
+    # 4. Apply mask and averaging
+    masked_cube = np.where(inv_mask_3d, np.nan, conv_cube)
+    masked_cube_res = np.where(inv_mask_3d, np.nan, conv_cube_res)
+    
+    if do_average_cube:
+        masked_cube, masked_cube_res, frequencies_ghz = apply_frequency_averaging(
+            masked_cube, masked_cube_res, frequencies_ghz, bin_size
+        )
+    
+    # Convert to float32 for memory efficiency
+    masked_cube = masked_cube.astype(np.float32)
+    masked_cube_res = masked_cube_res.astype(np.float32)
+    
+    # 5. Initialize output maps
+    output_maps = initialize_output_maps(conv_cube.shape[:2])
+    
+    # 6. Perform pixel-by-pixel fitting
+    pixel_indices = [(i, j) for i, j in np.column_stack(np.where(mask))]
+    
+    with Parallel(n_jobs=n_jobs) as parallel:
+        results = parallel(
+            delayed(fit_single_pixel_spectrum)(
+                i, j, frequencies_ghz, masked_cube, masked_cube_res, 
+                nu0, flux_sys_error_frac, fix_alpha_nt
+            ) for i, j in tqdm(pixel_indices, total=len(pixel_indices))
+        )
+    
+    # 7. Process fitting results
+    count = 0
+    tenpc = max(1, len(results) // 10)
+    
+    for i, j, results_fit, y, yerr in results:
+        # Extract parameters
+        params = extract_fit_parameters(results_fit)
+        
+        # Store primary parameters
+        output_maps['alpha_nt'][i, j] = params['alpha_nt']
+        output_maps['alpha_nt_err'][i, j] = params['alpha_nt_err']
+        output_maps['A_sy'][i, j] = params['A_sy']
+        output_maps['A_sy_err'][i, j] = params['A_sy_err']
+        output_maps['A_ff'][i, j] = params['A_ff']
+        output_maps['A_ff_err'][i, j] = params['A_ff_err']
+        
+        # Calculate flux at reference frequency
+        output_maps['S_nu0'][i, j] = RC_function_SY_FF(
+            nu0, params['A_sy'], params['A_ff'], params['alpha_nt'], nu0
+        )
+        
+        # Progress reporting with optional plotting
+        count += 1
+        if verbose > 0 and count % tenpc == 0:
+            print(f"Progress: {100 * count // len(results)}%")
+            
+            # Plot example fit
+            model_best = RC_function_SY_FF(
+                frequencies_ghz, params['A_sy'], params['A_ff'], params['alpha_nt'], nu0
+            )
+            model_sy = RC_function_SY_FF(
+                frequencies_ghz, params['A_sy'], 0.0, params['alpha_nt'], nu0
+            )
+            model_ff = RC_function_SY_FF(
+                frequencies_ghz, 0.0, params['A_ff'], 0.0, nu0
+            )
+            
+            plt.figure(figsize=(4, 5))
+            plt.errorbar(frequencies_ghz, y, yerr=abs(yerr), fmt='o', 
+                        label='Data', color='k', ecolor='gray', alpha=0.5)
+            plt.plot(frequencies_ghz, model_best, 'r-.', label='Best-fit model')
+            plt.plot(frequencies_ghz, model_sy, 'b-.', label='Synchrotron')
+            plt.plot(frequencies_ghz, model_ff, 'orange', linestyle='-.', label='Free-free')
+            
+            plt.ylim(abs(np.nanmin(y) * 0.1), np.nanmax(y) * 100)
+            plt.semilogy()
+            plt.semilogx()
+            plt.xlabel('Frequency [GHz]')
+            plt.ylabel('Pixel Flux Density [mJy/Beam]')
+            plt.legend()
+            plt.title(f'Fit at pixel ({i}, {j})')
+            plt.show()
+            print(lmfit.fit_report(results_fit.params))
+    
+    # 8. Create frequency-dependent maps
+    frequency_maps = create_frequency_maps(
+        output_maps['A_sy'], output_maps['A_sy_err'],
+        output_maps['A_ff'], output_maps['A_ff_err'],
+        output_maps['alpha_nt'], output_maps['alpha_nt_err'],
+        output_frequencies, nu0
+    )
+    
+    # 9. Save maps if input was file paths
+    save_parameter_maps(output_maps, ref_image_conv, imagelist)
+    
+    # 10. Compile comprehensive results
+    results_dict = {
+        'parameter_maps': output_maps,
+        'frequency_maps': frequency_maps,
+        'data_products': {
+            'conv_cube': conv_cube,
+            'masked_cube': masked_cube,
+            'masked_cube_res': masked_cube_res,
+            'mask': mask
+        },
+        'metadata': {
+            'frequencies_ghz': frequencies_ghz,
+            'output_frequencies': output_frequencies,
+            'nu0': nu0,
+            'processing_stats': {
+                'total_pixels_fitted': len(results),
+                'cube_shape': conv_cube.shape,
+                'averaging_applied': do_average_cube
+            }
+        }
+    }
+    
+    return results_dict
