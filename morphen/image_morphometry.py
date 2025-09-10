@@ -154,28 +154,19 @@ def estimate_area2(image,data_mask,cellsize):
     # print(npix)
     return(nbeams,circ_radii,npix)
 
-def get_cell_size(imagename):
-    """
-    Get the cell size/pixel size in arcsec from an image header wcs.
-    """
-    hdu = pf.open(imagename)
-    ww = WCS(hdu[0].header)
-    pixel_scale = (ww.pixel_scale_matrix[1,1]*3600)
-    cell_size =  pixel_scale.copy()
-    return(cell_size)
-
 def get_dilation_size(image):
     omaj, omin, _, _, _ = beam_shape(image)
     dilation_size = int(
         np.sqrt(omaj * omin) / (2 * get_cell_size(image)))
     return(dilation_size)
 
-
 def mask_dilation(image, cell_size=None, sigma=6,rms=None,
                   dilation_size=None,iterations=2, dilation_type='disk',
                   PLOT=False,show_figure=False,logger=None,
                   fig_size_factor = 1,
-                  special_name='',verbose=0):
+                  special_name='',verbose=0,
+                  save_fig_name = None
+                  ):
     """
     Mask dilation function.
 
@@ -262,25 +253,206 @@ def mask_dilation(image, cell_size=None, sigma=6,rms=None,
                                             iterations=iterations).astype(mask.dtype)
 
     if PLOT == True:
-        fig = plt.figure(figsize=(int(15*fig_size_factor), int(4*fig_size_factor)))
+        fig = plt.figure(figsize=(int(16*fig_size_factor), int(4*fig_size_factor)))
         ax0 = fig.add_subplot(1, 4, 1)
         ax0.imshow((mask3), origin='lower',cmap='magma')
-        ax0.set_title(r'mask $>$ ' + str(3) + '$\sigma_{\mathrm{mad}}$')
+        ax0.set_title(r'mask $>$ ' + str(3) + r'$\times\sigma_{\mathrm{rms}}$')
         ax0.axis('off')
         ax1 = fig.add_subplot(1, 4, 2)
         #         ax1.legend(loc='lower left')
         ax1.imshow((mask), origin='lower',cmap='magma')
-        ax1.set_title(r'mask $>$ ' + str(sigma) + '$\sigma_{\mathrm{mad}}$')
+        ax1.set_title(r'mask $>$ ' + str(sigma) + r'$\times\sigma_{\mathrm{rms}}$')
+        ax1.axis('off')
+        ax2 = fig.add_subplot(1, 4, 3)
+        ax2.imshow(data_mask_d, origin='lower',cmap='magma')
+        ax2.set_title(r'D(mask)'f'[{dilation_size}$|${iterations}]'f'{special_name}')
+        ax2.axis('off')
+        ax3 = fig.add_subplot(1, 4, 4)
+        ax3 = eimshow(data * data_mask_d, ax=ax3, CM='magma',
+                      rms=std,add_contours=True,
+                      vmin_factor=0.01,vmax_factor=0.1)
+        ax3.set_title(r'D(mask) $\times$ data')
+        #         ax3.imshow(np.log(data*data_mask_d))
+        fig.subplots_adjust(wspace=0.01, hspace=0.01)
+        #         fig.tight_layout()
+        ax3.axis('off')
+        if show_figure == True:
+            if save_fig_name is not None:
+                fig.savefig(save_fig_name, dpi=300, bbox_inches='tight')
+            plt.show()
+        else:
+            plt.close(fig)
+    #         plt.savefig(image.replace('.fits','_masks.jpg'),dpi=300, bbox_inches='tight')
+
+    # if cell_size is not None:
+    #     if isinstance(image, str) == True:
+    #         try:
+    #             print((data * data_mask_d).sum() / beam_area2(image, cell_size))
+    #             print((data * data_mask).sum() / beam_area2(image, cell_size))
+    #             print((data).sum() / beam_area2(image, cell_size))
+    #         except:
+    #             print('Provide a cell size of the image.')
+    return (mask, data_mask_d)
+
+
+def mask_dilation_v2(image, cell_size=None, sigma=6,rms=None,
+                  dilation_size=None,iterations=2, dilation_type='disk',
+                  PLOT=False,show_figure=False,logger=None,
+                  fig_size_factor = 1,
+                  special_name='',verbose=0):
+    """
+    Mask dilation function.
+
+    Apply a binary dilation to a mask originated from the emission of a source.
+    This was originally designed for radio images, where the dilation factor is
+    proportional to the beam size. The dilation factor is computed as the geometric
+    mean of the major and minor axis of the beam. The dilation factor is then
+    converted to pixels using the cell size of the image. Note that the expansion
+    occurs in two opposite directions, so the dilation size should be half of the
+    size of the beam for one iteration, so that the final dilation will be a unit of
+    the beam size. However, the exact size of the dilation will also be determinet by
+    the number of iterations.
+
+
+    Parameters
+    ----------
+    image : str
+        Image name.
+    cell_size : float
+        Cell size of the image in arcsec.
+    sigma : float
+        Sigma level for the mask.
+    rms : float
+        RMS level for the mask.
+    dilation_size : int
+        Size of the dilation.
+    iterations : int
+        Number of iterations for the dilation.
+    dilation_type : str
+        Type of dilation. Options are 'disk' or 'square'.
+    PLOT : bool
+        Plot the mask dilation.
+    show_figure : bool
+        Show the figure.
+    logger : logger
+        Logger object.
+    fig_size_factor : float
+        Figure size factor.
+    special_name : str
+        Special name for the mask dilation.
+    """
+    from photutils.segmentation import detect_sources
+    from astropy.stats import sigma_clipped_stats
+    
+    if isinstance(image, str) == True:
+        data = load_fits_data(image)
+    else:
+        data = image
+    if rms is None:
+        std = mad_std(data)
+    else:
+        std = rms
+
+    if (dilation_size is None) or (dilation_size == '2x'):
+        try:
+            omaj, omin, _, _, _ = beam_shape(image)
+            if dilation_size == '2x':
+                dilation_size = int(
+                    2*np.sqrt(omaj * omin) / (2 * get_cell_size(image)))
+            else:
+                dilation_size = int(
+                    np.sqrt(omaj * omin) / (2 * get_cell_size(image)))
+            if verbose >= 1:
+                if logger is not None:
+                    logger.debug(f" ==>  Mask dilation size is "
+                                f"{dilation_size} [px]")
+                else:
+                    print(f" ==>  Mask dilation size is "
+                        f"{dilation_size} [px]")
+        except:
+            if dilation_size is None:
+                dilation_size = 5
+    try:
+        beam_size_px = get_beam_size_px(image)[0]
+    except:
+        beam_size_px = dilation_size
+    
+
+    mask_o = (data >= sigma * std)
+    mask3 = (data >= 3 * std)
+    data_mask = mask_o * data
+    
+    mean, median, std = sigma_clipped_stats(data, sigma=sigma)
+    # threshold = median - (sigma * std)
+    threshold = sigma * mad_std(data,ignore_nan=True) 
+    segm = detect_sources(data, threshold, npixels=int(2*beam_size_px))
+    if segm is None:
+        segm_mask = mask_o
+        # return (mask,np.zeros(data.shape, dtype=bool))
+        # return (mask_o,mask_o)
+    else:
+        segm_mask = segm.data
+    
+
+    
+    mask = mask_o * segm_mask
+
+    if dilation_type == 'disk':
+        data_mask_d = ndimage.binary_dilation(mask,
+                                            structure=disk(dilation_size),
+                                            iterations=iterations).astype(mask.dtype)
+
+    if dilation_type == 'square':
+        data_mask_d = ndimage.binary_dilation(mask,
+                                            structure=square(dilation_size),
+                                            iterations=iterations).astype(mask.dtype)
+
+    # # Plot the original image, segmentation map, and final mask
+    # fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+
+    # # Original image with mask overlay
+    # axes[0].imshow(data, origin='lower', cmap='gray')
+    # axes[0].imshow(mask_o, origin='lower', cmap='Reds', alpha=0.5)
+    # axes[0].set_title('Original Image with Mask')
+    # axes[0].axis('off')
+
+    # # Segmentation map
+    # axes[1].imshow(segm_mask, origin='lower', cmap='viridis')
+    # axes[1].set_title('Segmentation Map')
+    # axes[1].axis('off')
+
+    # # Final dilated mask
+    # axes[2].imshow(data_mask_d, origin='lower', cmap='gray',alpha=0.5)
+    # axes[2].imshow(mask, origin='lower', cmap='Reds', alpha=0.5)
+    # axes[2].imshow(data*data_mask_d, origin='lower', cmap='gray',alpha=0.9)
+    # axes[2].set_title('Final Dilated Mask')
+    # axes[2].axis('off')
+
+    # plt.tight_layout()
+    # plt.show()
+
+    if PLOT == True:
+        fig = plt.figure(figsize=(int(16*fig_size_factor), int(4*fig_size_factor)))
+        ax0 = fig.add_subplot(1, 4, 1)
+        ax0.imshow((mask3), origin='lower',cmap='magma')
+        ax0.set_title(r'mask $>$ ' + str(3) + r'$\times\sigma_{\mathrm{rms}}$')
+        ax0.axis('off')
+        ax1 = fig.add_subplot(1, 4, 2)
+        #         ax1.legend(loc='lower left')
+        ax1.imshow((mask_o), origin='lower',cmap='magma')
+        ax1.set_title(r'mask $>$ ' + str(sigma) + r'$\times\sigma_{\mathrm{rms}}$')
         ax1.axis('off')
         ax2 = fig.add_subplot(1, 4, 3)
         ax2.imshow(data_mask_d, origin='lower',cmap='magma')
         ax2.set_title(r'D(mask)'f'[{dilation_size}|{iterations}]'f'{special_name}')
         ax2.axis('off')
         ax3 = fig.add_subplot(1, 4, 4)
-        ax3 = eimshow(data * data_mask_d, ax=ax3, vmin_factor=0.01,CM='magma')
+        ax3 = eimshow(data * data_mask_d, ax=ax3, CM='magma',
+                      rms=std,add_contours=True,
+                      vmin_factor=0.01,vmax_factor=0.1)
         ax3.set_title(r'D(mask) $\times$ data')
         #         ax3.imshow(np.log(data*data_mask_d))
-        plt.subplots_adjust(wspace=0.1, hspace=0.1)
+        fig.subplots_adjust(wspace=0.01, hspace=0.01)
         #         fig.tight_layout()
         ax3.axis('off')
         if show_figure == True:
@@ -297,8 +469,7 @@ def mask_dilation(image, cell_size=None, sigma=6,rms=None,
     #             print((data).sum() / beam_area2(image, cell_size))
     #         except:
     #             print('Provide a cell size of the image.')
-    return (mask, data_mask_d)
-
+    return (mask.astype('int32'), data_mask_d.astype('int32'))
 
 
 def t_mask_dilation(image, cell_size=None, sigma=6, rms=None,
@@ -387,23 +558,28 @@ def t_mask_dilation(image, cell_size=None, sigma=6, rms=None,
             mask3 = labeled_mask3 == largest_label
 
     if PLOT == True:
-        fig = plt.figure(figsize=(int(15*fig_size_factor), int(4*fig_size_factor)))
+        fig = plt.figure(figsize=(int(16*fig_size_factor), int(4*fig_size_factor)))
         ax0 = fig.add_subplot(1, 4, 1)
         ax0.imshow((mask3), origin='lower',cmap='magma')
-        ax0.set_title(r'mask $>$ ' + str(3) + '$\sigma_{\mathrm{mad}}$')
+        ax0.set_title(r'mask $>$ ' + str(3) + r'$\times\sigma_{\mathrm{rms}}$')
         ax0.axis('off')
         ax1 = fig.add_subplot(1, 4, 2)
+        #         ax1.legend(loc='lower left')
         ax1.imshow((mask), origin='lower',cmap='magma')
-        ax1.set_title(r'mask $>$ ' + str(sigma) + '$\sigma_{\mathrm{mad}}$')
+        ax1.set_title(r'mask $>$ ' + str(sigma) + r'$\times\sigma_{\mathrm{rms}}$')
         ax1.axis('off')
         ax2 = fig.add_subplot(1, 4, 3)
         ax2.imshow(data_mask_d, origin='lower',cmap='magma')
-        ax2.set_title(r'D(mask)'f'[{dilation_size}|{iterations}]'f'{special_name}')
+        ax2.set_title(r'D(mask)'f'[{dilation_size}$|${iterations}]'f'{special_name}')
         ax2.axis('off')
         ax3 = fig.add_subplot(1, 4, 4)
-        ax3 = eimshow(data * data_mask_d, ax=ax3, vmin_factor=0.01,CM='magma')
+        ax3 = eimshow(data * data_mask_d, ax=ax3, CM='magma',
+                      rms=std,add_contours=True,
+                      vmin_factor=0.01,vmax_factor=0.1)
         ax3.set_title(r'D(mask) $\times$ data')
-        plt.subplots_adjust(wspace=0.1, hspace=0.1)
+        #         ax3.imshow(np.log(data*data_mask_d))
+        fig.subplots_adjust(wspace=0.01, hspace=0.01)
+        #         fig.tight_layout()
         ax3.axis('off')
         if show_figure == True:
             plt.show()
@@ -1580,9 +1756,9 @@ def measures(imagename, residualname, z, mask_component=None, sigma_mask=6,
         try:
             if verbose >= 1:
                 if logger is not None:
-                    logger.info(f"  CALC >> Computing Petrosian properties.")
+                    logger.info(f"  ++>> Computing Petrosian properties.")
                 else:
-                    print('     >> CALC: Computing Petrosian properties.')
+                    print(' ++>> Computing Petrosian properties.')
             r_list, area_arr, area_beam, p, flux_arr, error_arr, results_final, cat, \
                 segm, segm_deblend, sorted_idx_list = \
                 compute_petrosian_properties(data_2D, imagename,
@@ -1771,7 +1947,16 @@ def find_fractional_radius(cumulative_flux, radii,
 
     area_at_fraction = radii_to_area(radius_at_fraction)[0]
 
-    if fraction >=0.95:
+    # if fraction >=0.95:
+    #     dr_err_up = 0.025
+    # else:
+    #     dr_err_up = 0.05
+    # if fraction <= 0.1:
+    #     dr_err_lo = 0.025
+    # else:
+    #     dr_err_lo = 0.05
+
+    if fraction > 0.95:
         dr_err_up = 0.025
     else:
         dr_err_up = 0.05
@@ -1779,6 +1964,7 @@ def find_fractional_radius(cumulative_flux, radii,
         dr_err_lo = 0.025
     else:
         dr_err_lo = 0.05
+
     
     # Calculate the lower and upper fractions for the error range
     lower_fraction = max(fraction - dr_err_lo, 0)
@@ -1908,15 +2094,20 @@ def compute_image_properties(img, residual,
                              aspect=1, last_level=1.5, mask=None, 
                              bins = 64,
                              data_2D=None,data_res=None,
+                             do_petro=False,
                              dilation_size=None, iterations=2,
                              dilation_type='disk',do_fit_ellipse=True,
                              sigma_mask=6, rms=None, 
                              systematic_error_fraction = 0.05,
                              results=None, bkg_to_sub=None,
-                             apply_mask=True, vmin_factor=3, vmax_factor=0.5,
+                             apply_mask=True, 
+                             vmax = None, vmin_factor=3, vmax_factor=0.5,
                              crop=False, box_size=256,
-                             SAVE=True, add_save_name='', show_figure=True,
+                             SAVE=True, add_save_name='', plot_savemane=None,
+                             show_figure=True,
+                             figsize=(6, 5), image_title = None,
                              save_csv = False,
+                             flux_units = 'Jy/beam',
                              ext='.jpg',logger=None,verbose=0):
     """
     Params
@@ -1999,14 +2190,25 @@ def compute_image_properties(img, residual,
         g_ = data_2D
     else:
         g_ = load_fits_data(img)
-    # res_ = load_fits_data(residual)
+    if residual is not None:
+        if isinstance(residual, str) == True:
+            # res_ = load_fits_data(residual)
+            res_ = load_fits_data(residual)
+        else:
+            res_ = residual
+        res = np.nan_to_num(res_.copy(),nan=0)
     
     g = np.nan_to_num(g_.copy(),nan=0)
-    # res = res_.copy()
+    g_original = g.copy()
+    
 
     if bkg_to_sub is not None:
         g = g - bkg_to_sub
 
+    if flux_units == 'Jy/beam':
+        flux_conversion = 1e3
+    if flux_units == 'nanomaggies':
+        flux_conversion = 3.631e-3 # nanomaggies to mJy
 
     scale_units = 'arcsec'
     if cell_size is None:
@@ -2016,19 +2218,36 @@ def compute_image_properties(img, residual,
             scale_units = 'px'
             cell_size = 1.0
 
-    g_hd = imhead(img)
-    freq = g_hd['refval'][2] / 1e9
-    # print(freq)
-    omaj = g_hd['restoringbeam']['major']['value']
-    omin = g_hd['restoringbeam']['minor']['value']
-    # beam_area_ = beam_area(omaj, omin, cellsize=cell_size)
-    beam_area_ = beam_area2(img)
+    try:
+        flag_freq = False
+        g_hd = imhead(img)
+        freq = g_hd['refval'][2] / 1e9
+        # print(freq)
+        omaj = g_hd['restoringbeam']['major']['value']
+        omin = g_hd['restoringbeam']['minor']['value']
+        # beam_area_ = beam_area(omaj, omin, cellsize=cell_size)
+        beam_area_ = beam_area2(img)
+    except Exception as e:
+        if logger is not None:
+            logger.warning(f"  -->> ERROR: {e}")
+            logger.warning(f"  -->> Not a radio image?")
+        else:
+            print(f"     -->> ERROR: {e}")
+            print(f"     -->> Not a radio image?")
+        flag_freq = True
+        freq = 1e15 / 1e9
+        omaj = 1
+        omin = 1
+        beam_area_ = 1
 
     if rms is not None:
         std = rms
     else:
         if residual is not None:
-            std = mad_std(np.nan_to_num(load_fits_data(residual), nan=0))
+            if isinstance(residual, str) == True:
+                std = mad_std(np.nan_to_num(load_fits_data(residual), nan=0))
+            else:
+                std = mad_std(np.nan_to_num(residual, nan=0))
         else:
             std = mad_std(np.nan_to_num(g_.copy(),nan=0))
     if mask is not None:
@@ -2105,7 +2324,12 @@ def compute_image_properties(img, residual,
     results['bmajor'] = omaj
     results['bminor'] = omin
     results['freq'] = freq*1e9
+    results['flag_freq'] = flag_freq
+    results['cell_size'] = cell_size
+    results['flux_units'] = flux_units
+    results['flux_conversion'] = flux_conversion
     
+
     
     # flux_mc, flux_error_m = mc_flux_error(img, g,
     #               res,
@@ -2114,12 +2338,16 @@ def compute_image_properties(img, residual,
     # results['flux_mc'] = flux_mc
     # results['flux_error_mc'] = flux_error_m
 
+    systematic_error = systematic_error_fraction * results['total_flux_mask']
+
     if residual is not None:
-        if data_res is None: 
-            data_res = load_fits_data(residual)
+        if data_res is None:
+            if isinstance(residual, str) == True:
+                data_res = load_fits_data(residual)
+            else:
+                data_res = residual
         else:
             data_res = data_res
-        
         data_res = np.nan_to_num(data_res,nan=0)
         flux_res_error = 3 * np.sum(data_res * mask) / beam_area_
         # rms_res =imstat(residual_name)['flux'][0]
@@ -2134,11 +2362,15 @@ def compute_image_properties(img, residual,
         # ) / beam_area_
 
         # Calculate systematic error as a fraction of the total flux density of the image
-        systematic_error = systematic_error_fraction * results['total_flux_mask']
+        
 
         # Calculate total flux density error in quadrature
         total_flux_density_error = np.sqrt(
             systematic_error ** 2 + (std) ** 2 + total_flux_density_residual ** 2)
+        
+        mask_area = np.nansum(mask)
+        total_flux_density_error_4 = np.sqrt(
+            systematic_error ** 2 + (std*mask_area/beam_area_) ** 2 + total_flux_density_residual ** 2)
         
         # bootstrap_fluxes = \
         #     calculate_robust_flux_error(g_,data_res,mask,results['total_flux_mask'],
@@ -2147,38 +2379,61 @@ def compute_image_properties(img, residual,
         #                                 np.nansum(mask),std
         #                                 )
             
-        
-        # print('total_flux_density_residual = ',total_flux_density_residual)
-        # print('systematic_error = ', systematic_error)
-        # print('(std / beam_area_) = ', (std / beam_area_))
-        if verbose >= 1:
-            print('-----------------------------------------------------------------')
-            print('Flux Density and error (based on rms of residual x area): ')
-            print(f"Flux Density = {results['total_flux_mask'] * 1000:.2f} "
-                  f"+/- {res_error_rms * 1000:.2f} mJy")
-            print(f"Fractional error = {(res_error_rms / results['total_flux_mask']):.2f}")
-            print('Flux Density and error (quadrature |fract_err + res_err + rms|): ')
-            print(f"Flux Density = {results['total_flux_mask'] * 1000:.2f} "
-                  f"+/- {total_flux_density_error * 1000:.2f} mJy")
-            print(f"Fractional error = {(total_flux_density_error / results['total_flux_mask']):.2f}")
-            print('-----------------------------------------------------------------')
-            # print('Flux Density and error (bootstrap): ')
-            # print(f"Flux Density = {results['total_flux_mask'] * 1000:.2f} "
-            #       f"+/- {bootstrap_fluxes['total_error'] * 1000:.2f} mJy")
-            # print(f"Fractional error = {(bootstrap_fluxes['total_error'] / results['total_flux_mask']):.2f}")
-            # print(f"SNR = {bootstrap_fluxes['snr']:.2f}")
-            # print(f"Conf Level = {bootstrap_fluxes['confidence_level']:.2f}")
-            # print('-----------------------------------------------------------------')
-
-
+    
         results['max_residual'] = np.nanmax(data_res * mask)
         results['min_residual'] = np.nanmin(data_res * mask)
         results['flux_residual'] = total_flux_density_residual
         results['flux_error_res'] = abs(flux_res_error)
         results['flux_error_res_2'] = abs(res_error_rms)
         results['flux_error_res_3'] = abs(total_flux_density_error)
+        results['flux_error_res_4'] = abs(total_flux_density_error_4)
         results['mad_std_residual'] = mad_std(data_res)
         results['rms_residual'] = rms_estimate(data_res)
+    else:
+        if verbose > 0:
+            if logger is not None:
+                logger.warning(f" !!>  No residual image provided."
+                               f" Make sure to set the systematic_error_fraction to"
+                               f" at least 10% (0.1) to account for flux calibration errors.")
+            else:
+                print(f" !!>  No residual image provided."
+                      f" Make sure to set the systematic_error_fraction to"
+                      f" at least 10% (0.1) to account for flux calibration errors.")
+        total_flux_density_error = np.sqrt(systematic_error ** 2)
+        results['max_residual'] = np.nan
+        results['min_residual'] = np.nan
+        results['flux_residual'] = np.nan
+        results['flux_error_res'] = np.nan
+        results['flux_error_res_2'] = np.nan
+        results['flux_error_res_3'] = total_flux_density_error
+        results['flux_error_res_4'] = np.nan
+        results['mad_std_residual'] = np.nan
+        results['rms_residual'] = np.nan
+
+    # print('total_flux_density_residual = ',total_flux_density_residual)
+    # print('systematic_error = ', systematic_error)
+    # print('(std / beam_area_) = ', (std / beam_area_))
+    if verbose >= 1:
+        print('-----------------------------------------------------------------')
+        print('Flux Density and error (based on rms of residual x area): ')
+        print(f"Flux Density = {results['total_flux_mask'] * flux_conversion:.2f} "
+                f"+/- {results['flux_error_res_2'] * flux_conversion:.2f} mJy")
+        print(f"Fractional error = {(results['flux_error_res_2'] / results['total_flux_mask']):.2f}")
+        print('Flux Density and error (quadrature |fract_err + res_err + rms|): ')
+        print(f"Flux Density = {results['total_flux_mask'] * flux_conversion:.2f} "
+                f"+/- {total_flux_density_error * flux_conversion:.2f} mJy")
+        print(f"Fractional error = {(total_flux_density_error / results['total_flux_mask']):.2f}")
+        print(f"Flux Density = {results['total_flux_mask'] * flux_conversion:.2f} "
+                f"+/- {results['flux_error_res_4'] * flux_conversion:.2f} mJy")
+        print(f"Fractional error 4 = {(results['flux_error_res_4'] / results['total_flux_mask']):.2f}")
+        print('-----------------------------------------------------------------')
+        # print('Flux Density and error (bootstrap): ')
+        # print(f"Flux Density = {results['total_flux_mask'] * 1000:.2f} "
+        #       f"+/- {bootstrap_fluxes['total_error'] * 1000:.2f} mJy")
+        # print(f"Fractional error = {(bootstrap_fluxes['total_error'] / results['total_flux_mask']):.2f}")
+        # print(f"SNR = {bootstrap_fluxes['snr']:.2f}")
+        # print(f"Conf Level = {bootstrap_fluxes['confidence_level']:.2f}")
+        # print('-----------------------------------------------------------------')
 
     try:
         # this should not be linspace, should be spaced in a logarithmic sense!!
@@ -2213,6 +2468,15 @@ def compute_image_properties(img, residual,
             # levels_ellipse = np.geomspace(abs(np.nanmax(g)), last_level * np.nanstd(g)+1e-6,32)
 
 
+    peak_position = np.unravel_index(np.nanargmax(g), g.shape)
+    if residual is not None:
+        results['peak_at_residual'] = res[peak_position]
+    
+    peak_error = np.nanstd(g[peak_position[0]-5:peak_position[0]+5,
+                            peak_position[1]-5:peak_position[1]+5])
+    results['peak_error'] = peak_error
+
+
     fluxes = []
     areas = []
     for i in range(len(levels)):
@@ -2238,10 +2502,9 @@ def compute_image_properties(img, residual,
     areas = np.asarray(areas)
     #     print()
     #     plt.scatter(levels[:],fluxes[:])#/np.sum(fluxes))
+    
+    
 
-    """
-    Growth curve.
-    """
     
     agrow = areas.copy()
     results['total_flux_levels'] = np.nansum(fluxes)
@@ -2260,6 +2523,33 @@ def compute_image_properties(img, residual,
     # print(Lgrow_norm)
     Lgrow,radii = check_flux_duplicates(Lgrow,radii)
     Lgrow_norm = Lgrow / np.nansum(fluxes)
+    
+    """testing
+    fluxes, flux_errors, Lgrow, Lgrow_errors, areas = compute_flux_with_uncertainties(
+        g, levels, beam_area_, noise_rms=std, method='noise_based'
+    )
+    
+    agrow = areas.copy()
+    _radii = []
+    for i in range(0, len(levels)):
+        mask_at_level_i = g >= levels[i]
+        circular_radii = np.sqrt(np.nansum(mask_at_level_i) / np.pi)
+        # print(circular_radii)
+        _radii.append(circular_radii)
+    radii = np.asarray(_radii)
+    # print(Lgrow_norm)
+    
+    # Lgrow_errors,_ = check_flux_duplicates(Lgrow_errors,radii)
+    Lgrow,radii = check_flux_duplicates(Lgrow,radii)
+    Lgrow_norm = Lgrow / np.nansum(fluxes)
+    results['total_flux_levels'] = np.nansum(fluxes)
+    # results['fluxes'] = fluxes
+    # results['Lgrow'] = Lgrow
+    # results['radii'] = radii
+    # results['flux_errors'] = flux_errors
+    # results['Lgrow_errors'] = Lgrow_errors
+    # results['total_flux_error'] = np.sqrt(np.nansum(flux_errors**2))
+    """
 
     ####################################################################
     ## THIS NEEDS A BETTER IMPLEMENTATION USING SPLINE!!!!  ############
@@ -2326,7 +2616,7 @@ def compute_image_properties(img, residual,
     
     try:
         results['convex_error_flag'] = False
-        convex_properties = convex_morpho(g, mask, do_plot=False)        
+        convex_properties = convex_morpho(g, mask, do_plot=True)
         results['PA_convex'] = convex_properties['PA_convex']
         results['q_convex'] = convex_properties['q_convex']
         results['centroid_convex'] = convex_properties['centroid_convex']
@@ -2442,15 +2732,22 @@ def compute_image_properties(img, residual,
             L95 = fluxes.sum()
 
 
-    try:
-        TB20 = T_B(omaj, omin, freq, L20)
-    except:
-        TB20 = 0.0
-    TB50 = T_B(omaj, omin, freq, L50)
-    TB80 = T_B(omaj, omin, freq, L80)
-    TB90 = T_B(omaj, omin, freq, L90)
+    if flag_freq == False:
+        try:
+            TB20 = T_B(omaj, omin, freq, L20)
+        except:
+            TB20 = 0.0
+        TB50 = T_B(omaj, omin, freq, L50)
+        TB80 = T_B(omaj, omin, freq, L80)
+        TB90 = T_B(omaj, omin, freq, L90)
 
-    TB = T_B(omaj, omin, freq, total_flux)
+        TB = T_B(omaj, omin, freq, total_flux)
+    else:
+        TB20 = 0.0
+        TB50 = 0.0
+        TB80 = 0.0
+        TB90 = 0.0
+        TB = 0.0
 
     levels_20 = np.asarray([sigma_20])
     levels_50 = np.asarray([sigma_50])
@@ -2494,14 +2791,39 @@ def compute_image_properties(img, residual,
         npix50 = radii_to_area(C50radii)[0]
         C50radii_err, npix50_err = C50radii/2, npix50/2
     
-    C80radii, L80, npix80, C80radii_err, npix80_err = \
-        find_fractional_radius(Lgrow, radii, fraction = 0.80)
-    C90radii, L90, npix90, C90radii_err, npix90_err = \
-        find_fractional_radius(Lgrow, radii, fraction = 0.90)
-    C95radii, L95, npix95, C95radii_err, npix95_err = \
-        find_fractional_radius(Lgrow, radii, fraction = 0.95)
-    C99radii, L99, npix99, C99radii_err, npix99_err = \
-        find_fractional_radius(Lgrow, radii, fraction = 0.99)
+    try:
+        C80radii, L80, npix80, C80radii_err, npix80_err = \
+            find_fractional_radius(Lgrow, radii, fraction = 0.80)
+        C90radii, L90, npix90, C90radii_err, npix90_err = \
+            find_fractional_radius(Lgrow, radii, fraction = 0.90)
+        C95radii, L95, npix95, C95radii_err, npix95_err = \
+            find_fractional_radius(Lgrow, radii, fraction = 0.95)
+        C99radii, L99, npix99, C99radii_err, npix99_err = \
+            find_fractional_radius(Lgrow, radii, fraction = 0.99)
+    except:
+        if logger is not None:
+            logger.warning(f" !!==> Not enough pixels to calculate L80-R80, L90-R90, L95-R95."
+                        f"       Using flux/size of first pixel.")
+        C80radii = radii[-1]
+        C90radii = radii[-1]
+        C95radii = radii[-1]
+        C99radii = radii[-1]
+        L80 = Lgrow[-1]
+        L90 = Lgrow[-1]
+        L95 = Lgrow[-1]
+        L99 = Lgrow[-1]
+        npix80 = radii_to_area(C80radii)[0]
+        npix90 = radii_to_area(C90radii)[0]
+        npix95 = radii_to_area(C95radii)[0]
+        npix99 = radii_to_area(C99radii)[0]
+        C80radii_err, npix80_err = C80radii/2, npix80/2
+        C90radii_err, npix90_err = C90radii/2, npix90/2
+        C95radii_err, npix95_err = C95radii/2, npix95/2
+        C99radii_err, npix99_err = C99radii/2, npix99/2
+        L80_norm = 0.80
+        L90_norm = 0.90
+        L95_norm = 0.95
+        L99_norm = 0.99
 
     # _frac_fluxes = np.asarray([0.05, 0.1 , 0.15, 0.2 , 0.25, 0.3 , 0.35, 0.4 , 0.45, 0.5 ,
     #                            0.55, 0.6 , 0.65, 0.7 , 0.75, 0.8 , 0.85, 0.9 , 0.95, 0.99])
@@ -2524,9 +2846,9 @@ def compute_image_properties(img, residual,
     # plt.show()
     # np.mean(frac_radii)
 
-    L80_norm = 0.80
-    L90_norm = 0.90
-    L95_norm = 0.95
+    # L80_norm = 0.80
+    # L90_norm = 0.90
+    # L95_norm = 0.95
 
     
     A20 = npix20 / beam_area_
@@ -2793,11 +3115,11 @@ def compute_image_properties(img, residual,
             print_logger_header(title="Basic Source Properties",
                                 logger=logger)
             logger.debug(f" ==>  Peak of Flux="
-                        f"{results['peak_of_flux']*1000:.2f} [mJy/beam]")
+                        f"{results['peak_of_flux']*flux_conversion:.2f} [mJy/beam]")
             logger.debug(f" ==>  Total Flux Inside Mask="
-                        f"{results['total_flux_mask']*1000:.2f} [mJy]")
+                        f"{results['total_flux_mask']*flux_conversion:.2f} [mJy]")
             logger.debug(f" ==>  Total Flux Image="
-                        f"{results['total_flux_nomask'] * 1000:.2f} [mJy]")
+                        f"{results['total_flux_nomask'] * flux_conversion:.2f} [mJy]")
             logger.debug(f" ==>  Half-Light Radii="
                         f"{results['C50radii']:.2f} [px]")
             logger.debug(f" ==>  Total Source Size="
@@ -2817,11 +3139,11 @@ def compute_image_properties(img, residual,
                             f"{results['PAmo']:.2f} [degrees]")
         else:
             print(f" ==>  Peak of Flux      = "
-                  f"{results['peak_of_flux']*1000:.2f} +/- {results['std_image']*1000:.2f} [mJy/beam]")
+                  f"{results['peak_of_flux']*flux_conversion:.2f} +/- {results['std_image']*flux_conversion:.2f} [mJy/beam]")
             print(f" ==>  Snu (within mask) = "
-                  f"{results['total_flux_mask']*1000:.2f} +/- {results['flux_error_res_2'] * 1000:.2f} [mJy]")
+                  f"{results['total_flux_mask']*flux_conversion:.2f} +/- {results['flux_error_res_3'] * flux_conversion:.2f} [mJy]")
             print(f" ==>  Snu (image)       = "
-                  f"{results['total_flux_nomask'] * 1000:.2f} +/- {results['flux_error_res_2'] * 1000:.2f} [mJy]")
+                  f"{results['total_flux_nomask'] * flux_conversion:.2f} +/- {results['flux_error_res_3'] * flux_conversion:.2f} [mJy]")
             print(f" ==>  R50               = "
                   f"{cell_size * results['C50radii']:.4f} +/- {cell_size * results['C50radii_err']:.4f} [{scale_units}]")
             print(f" ==>  R95               = "
@@ -2856,155 +3178,355 @@ def compute_image_properties(img, residual,
             #     print(f" ==>  Outer PA="
             #           f"{results['PAmo']:.2f} [degrees]")
 
+    # omask = omask2.copy()
+    error_petro = False
+    if do_petro == True:
+        try:
+            if verbose >= 1:
+                if logger is not None:
+                    logger.info(f"  ++>> Computing Petrosian properties.")
+                else:
+                    print(' ++>> Computing Petrosian properties.')
+            r_list, area_arr, area_beam, p, flux_arr, error_arr, results, cat, \
+                segm, segm_deblend, sorted_idx_list = \
+                compute_petrosian_properties(g, img,
+                                                mask_component=mask_component,
+                                                global_mask=mask,
+                                                source_props=results,
+                                                apply_mask=False,
+                                                # error = ,
+                                                sigma_level=sigma_mask,
+                                                bkg_to_sub=bkg_to_sub,
+                                                vmin=vmin_factor, 
+                                                # plot=show_figure,
+                                                # deblend=deblend,
+                                                # fwhm=fwhm, kernel_size=kernel_size,
+                                                show_figure=show_figure,
+                                                verbose = verbose,
+                                                add_save_name=add_save_name,
+                                                # npixels=npixels,
+                                                logger=logger)
+            error_petro = False
+        except Exception as e:
+            if logger is not None:
+                logger.warning(f"  -->> ERROR when computing Petrosian properties. "
+                                f"Will flag error_petro as True.")
+            else:
+                print("     -->> ERROR when computing Petrosian properties. Will "
+                        "flag error_petro as True.")
+            error_petro = True
+    else:
+        error_petro = True
 
+    results['error_petro'] = error_petro
 
-    fig = plt.figure(figsize=(10, 4))
-    ax1 = fig.add_subplot(1, 2, 1)
-    ax1.scatter(radii*cell_size, Lgrow / results['total_flux_mask'],
-                label='Norm Masked Flux')
-    ax1.axhline(0, ls='-.', color='black')
-    # ax1.axvline(g.max()*0.5,label=r'$0.5\times \max$',color='purple')
-    # ax1.axvline(g.max()*0.1,label=r'$0.1\times \max$',color='#E69F00')
-    ax1.axvline(C50radii*cell_size,
-                label=r"$R_{50}\sim $"f"{C50radii*cell_size:0.3f}+/-"f"{C50radii_err*cell_size:0.3f}''",
-                ls='-.', color='lime')
-    ax1.axhline(L50_norm, ls='-.', color='lime')
-    # ax1.plot(C50radii, 
-    #            0.5, 'rx', markersize=10, 
-    #         label=r"$R_{50}\sim $"f"{C50radii*cell_size:0.3f}''",
-    #         ls='-.', color='lime')
-    # ax1.axhline(L50_norm, ls='-.', color='lime')
-    ax1.axvline(C95radii*cell_size,
-                label=r"$R_{95}\sim $"f"{C95radii*cell_size:0.3f}+/-"f"{C95radii_err*cell_size:0.3f}''",
-                # ls='--',
-                color='#56B4E9')
-    # ax1.axhline(0.95, ls='-.', color='#56B4E9')
-    # ax1.axvline(std * 6, label=r"6.0$\times \sigma_{\mathrm{mad}}$", color='black')
-    # if last_level<3:
-    #     ax1.axvline(std * 3, label=r"3.0$\times \sigma_{\mathrm{mad}}$", color='brown')
+    if crop == True:
+        try:
+            xin, xen, yin, yen = do_cutout_2D(img, 
+                                              box_size=box_size, 
+                                              center=None,
+                                              centre_mode = 'image_centre',
+                                              return_='box')
+            g = g[xin:xen, yin:yen]
+            g_original = g_original[xin:xen, yin:yen]
+        except:
+            try:
+                max_x, max_y = np.where(g == np.nanmax(g))
+                xin = max_x[0] - box_size
+                xen = max_x[0] + box_size
+                yin = max_y[0] - box_size
+                yen = max_y[0] + box_size
+                g = g[xin:xen, yin:yen]
+                g_original = g_original[xin:xen, yin:yen]
+            except:
+                pass
 
-    ax1.set_title("Total Integrated Flux Density \n "
-                  r"($\sigma_{\mathrm{mad}}$ levels) = "
-                  f"{1000*np.sum(fluxes):.2f} $\pm$ {1000*total_flux_density_error:.2f} mJy")
-    #     ax1.axvline(mad_std(g)*1,label=r'$1.0\times$ std',color='gray')
-    # ax1.axvline(levels[-1], label=r"Mask Dilation",
-    #             color='cyan')
-
-    ax1.set_xlabel(fr'Aperture Circular Radius $R$ [{scale_units}]')
-    ax1.set_ylabel(fr"$S(\leq R)$")
-    # ax1.semilogx()
-    ax1.grid(alpha=0.5)
-    # plt.xlim(1e-6,)
-    ax1.legend(loc='lower right',prop={'size': 12})
-
-
-    # fig = plt.figure(figsize=(10, 4))
+    # fig = plt.figure(figsize=figsize)
     # ax1 = fig.add_subplot(1, 2, 1)
-    # ax1.scatter(levels[:], np.cumsum(fluxes) / results['total_flux_mask'],
-    #             label='Mask Norm Flux')
+    # ax2 = fig.add_subplot(1, 2, 2)
+    # # fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize, 
+    # #                             gridspec_kw={'width_ratios': [2, 1], 'wspace': 0})
+    # # from matplotlib.gridspec import GridSpec
+    # # fig = plt.figure(figsize=figsize)
 
-    # ax1.axhline(0, ls='-.', color='black')
+    # # # Option 1: Use GridSpec with aspect ratio consideration
+    # # gs = GridSpec(1, 2, figure=fig, 
+    # #             width_ratios=[2, 1],  # Still 2:1 ratio
+    # #             wspace=0.02)  # Small space to prevent overlap
+
+    # # ax1 = fig.add_subplot(gs[0, 0])
+    # # ax2 = fig.add_subplot(gs[0, 1])
+    
+    # ax1.scatter(radii*cell_size, Lgrow / results['total_flux_mask'],
+    #             label='Norm Masked Flux')
+    # # ax1.axhline(0, ls='-.', color='black')
     # # ax1.axvline(g.max()*0.5,label=r'$0.5\times \max$',color='purple')
     # # ax1.axvline(g.max()*0.1,label=r'$0.1\times \max$',color='#E69F00')
-    # ax1.axvline(sigma_50,
-    #             label=r"$R_{50}\sim $"f"{C50radii*cell_size:0.3f}''",
+    # ax1.axvline(C50radii*cell_size,
+    #             label=r"$R_{50}\sim $"f"{C50radii*cell_size:0.3f}+/-"f"{C50radii_err*cell_size:0.3f}''",
     #             ls='-.', color='lime')
     # ax1.axhline(L50_norm, ls='-.', color='lime')
-    # ax1.axvline(sigma_95,
-    #             label=r"$R_{95}\sim $"f"{C95radii*cell_size:0.3f}''",
+    # # ax1.plot(C50radii, 
+    # #            0.5, 'rx', markersize=10, 
+    # #         label=r"$R_{50}\sim $"f"{C50radii*cell_size:0.3f}''",
+    # #         ls='-.', color='lime')
+    # # ax1.axhline(L50_norm, ls='-.', color='lime')
+    # ax1.axvline(C95radii*cell_size,
+    #             label=r"$R_{95}\sim $"f"{C95radii*cell_size:0.3f}+/-"f"{C95radii_err*cell_size:0.3f}''",
     #             # ls='--',
-    #             color='#56B4E9')
-    # ax1.axvline(std * 6, label=r"6.0$\times \sigma_{\mathrm{mad}}$", color='black')
-    # if last_level<3:
-    #     ax1.axvline(std * 3, label=r"3.0$\times \sigma_{\mathrm{mad}}$", color='brown')
+    #             color='#4daf4a')
+    # # ax1.axhline(0.95, ls='-.', color='#56B4E9')
+    # # ax1.axvline(std * 6, label=r"6.0$\times \sigma_{\mathrm{mad}}$", color='black')
+    # # if last_level<3:
+    # #     ax1.axvline(std * 3, label=r"3.0$\times \sigma_{\mathrm{mad}}$", color='brown')
 
-    # ax1.set_title("Total Integrated Flux Density \n "
-    #               r"($\sigma_{\mathrm{mad}}$ levels) = "
-    #               f"{1000*np.sum(fluxes):.2f} mJy")
+    # # ax1.set_title("Total Integrated Flux Density \n "
+    # #               r"($\sigma_{\mathrm{mad}}$ levels) = "
+    # #               f"{1000*np.sum(fluxes):.2f} $\pm$ {1000*total_flux_density_error:.2f} mJy")
+    # ax1.set_title("Integrated Flux Density \n "
+    #               r"$S_{\nu} =$ "
+    #               f"{flux_conversion*total_flux:.2f} $\pm {flux_conversion*total_flux_density_error:.2f}$ [mJy]")
+    
     # #     ax1.axvline(mad_std(g)*1,label=r'$1.0\times$ std',color='gray')
-    # ax1.axvline(levels[-1], label=r"Mask Dilation",
-    #             color='cyan')
-
-    # ax1.set_xlabel('Levels [Jy/Beam]')
-    # ax1.set_ylabel("Fraction of Integrated Flux per level")
-    # ax1.semilogx()
+    # # ax1.axvline(levels[-1], label=r"Mask Dilation",
+    # #             color='cyan')
+    
+    # ax1.set_xlabel(fr'Projected Circular Radius $R$ [{scale_units}]',
+    #             #    fontsize=12
+    #                )
+    # ax1.set_ylabel(fr"Normalised FGC $S(\leq R)$")
+    # # ax1.semilogx()
+    # # ax1.set_xscale('log')
+    # # formatter = ScalarFormatter()
+    # # formatter.set_scientific(False)
+    # # ax1.xaxis.set_major_formatter(formatter)
+    
     # ax1.grid(alpha=0.5)
     # # plt.xlim(1e-6,)
-    # ax1.legend(loc='lower left')
+    # ax1.legend(loc='lower right',prop={'size': 12})
 
-    ax2 = fig.add_subplot(1, 2, 2)
 
+    # # fig = plt.figure(figsize=(10, 4))
+    # # ax1 = fig.add_subplot(1, 2, 1)
+    # # ax1.scatter(levels[:], np.cumsum(fluxes) / results['total_flux_mask'],
+    # #             label='Mask Norm Flux')
+
+    # # ax1.axhline(0, ls='-.', color='black')
+    # # # ax1.axvline(g.max()*0.5,label=r'$0.5\times \max$',color='purple')
+    # # # ax1.axvline(g.max()*0.1,label=r'$0.1\times \max$',color='#E69F00')
+    # # ax1.axvline(sigma_50,
+    # #             label=r"$R_{50}\sim $"f"{C50radii*cell_size:0.3f}''",
+    # #             ls='-.', color='lime')
+    # # ax1.axhline(L50_norm, ls='-.', color='lime')
+    # # ax1.axvline(sigma_95,
+    # #             label=r"$R_{95}\sim $"f"{C95radii*cell_size:0.3f}''",
+    # #             # ls='--',
+    # #             color='#56B4E9')
+    # # ax1.axvline(std * 6, label=r"6.0$\times \sigma_{\mathrm{mad}}$", color='black')
+    # # if last_level<3:
+    # #     ax1.axvline(std * 3, label=r"3.0$\times \sigma_{\mathrm{mad}}$", color='brown')
+
+    # # ax1.set_title("Total Integrated Flux Density \n "
+    # #               r"($\sigma_{\mathrm{mad}}$ levels) = "
+    # #               f"{1000*np.sum(fluxes):.2f} mJy")
+    # # #     ax1.axvline(mad_std(g)*1,label=r'$1.0\times$ std',color='gray')
+    # # ax1.axvline(levels[-1], label=r"Mask Dilation",
+    # #             color='cyan')
+
+    # # ax1.set_xlabel('Levels [Jy/Beam]')
+    # # ax1.set_ylabel("Fraction of Integrated Flux per level")
+    # # ax1.semilogx()
+    # # ax1.grid(alpha=0.5)
+    # # # plt.xlim(1e-6,)
+    # # ax1.legend(loc='lower left')
+
+    # # ax2 = fig.add_subplot(1, 2, 2)
+
+    # vmin = vmin_factor * std
+    # #     print(g)
+    # if vmax is None:
+    #     vmax = vmax_factor * np.nanmax(g)
+    # norm = simple_norm(g_original, stretch='asinh', asinh_a=0.075, min_cut=vmin,
+    #                    max_cut=vmax)
+
+
+
+    # im_plot = ax2.imshow(g_original, cmap='magma_r', origin='lower', alpha=1.0,
+    #                      norm=norm,
+    #                      aspect=aspect)  # ,vmax=vmax, vmin=vmin)#norm=norm
+    # if image_title is not None:
+    #     ax2.set_title(image_title)
+
+    # # levels_50 = np.asarray([-3*sigma_50,sigma_50,3*sigma_50])
+
+    # try:
+    #     ax2.contour(g, levels=levels_50, colors='lime', linewidths=2.5,
+    #                 linestyles='-.',
+    #                 alpha=1.0)  # cmap='Reds', linewidths=0.75)
+    #     # ax2.contour(g, levels=levels_90, colors='white', linewidths=2.0,
+    #     #             # linestyles='--',
+    #     #             alpha=1.0)  # cmap='Reds', linewidths=0.75)
+    #     ax2.contour(g, levels=levels_95, colors='#4daf4a', linewidths=2.0,
+    #                 # linestyles='--',
+    #                 alpha=1.0)  # cmap='Reds', linewidths=0.75)
+    #     #         ax2.contour(g, levels=levels_3sigma,colors='#D55E00',
+    #     #         linewidths=1.5,alpha=1.0)#cmap='Reds', linewidths=0.75)
+    #     ax2.contour(g, levels=[last_level * std], colors='cyan', linewidths=0.6,
+    #                 alpha=1.0,
+    #                 # linestyles='--'
+    #                 )  # cmap='Reds', linewidths=0.75)
+    #     ax2.contour(g, levels=[6.0 * std], colors='black', linewidths=1.5,
+    #                 alpha=0.9,
+    #                 # linestyles='--'
+    #                 )  # cmap='Reds', linewidths=0.75)
+    #     ax2.contour(g, levels=[3.0 * std], colors='brown', linewidths=1.2,
+    #                 alpha=0.9,
+    #                 # linestyles='--'
+    #                 )  # cmap='Reds', linewidths=0.75)
+    #     # ax2.contour(g, levels=[5.0 * std], colors='brown', linewidths=0.6,
+    #     #             alpha=0.3,
+    #     #             # linestyles='--'
+    #     #             )  # cmap='Reds', linewidths=0.75)
+
+    # except:
+    #     print('Not plotting contours!')
+    # ax2.axis('off')
+    # plt.subplots_adjust(wspace=0, hspace=0)
+    # fig.tight_layout()
+    
+
+    # Calculate image aspect ratio to determine proper space allocation
+    img_height, img_width = g_original.shape
+    img_aspect = img_width / img_height
+
+    # Calculate optimal space allocation
+    # Give the image subplot just enough width to display properly
+    # Give the scatter plot the remaining space (but ensure it's reasonable)
+    plot_aspect = figsize[0]/figsize[1]  # Desired aspect ratio for scatter plot (width/height)
+    height_ref = figsize[1]  # Reference height
+
+    # Calculate widths needed for each subplot
+    img_width_needed = height_ref * img_aspect
+    plot_width_needed = height_ref * plot_aspect
+
+    # Create width ratios for gridspec
+    total_width = img_width_needed + plot_width_needed
+    width_ratios = [plot_width_needed/total_width, img_width_needed/total_width]
+
+    # Set figure size based on calculated needs
+    fig_width = total_width * 1.0  # Add some padding
+    fig_height = height_ref
+    figsize = (fig_width, fig_height)
+
+    # Create figure with calculated proportions
+    fig = plt.figure(figsize=figsize)
+    gs = gridspec.GridSpec(1, 2, figure=fig, width_ratios=width_ratios, wspace=0.1)
+
+    # Create subplots
+    ax1 = fig.add_subplot(gs[0, 0])  # Scatter plot
+    ax2 = fig.add_subplot(gs[0, 1])  # Image
+
+    # First subplot - scatter plot
+    ax1.scatter(radii*cell_size, Lgrow / results['total_flux_mask'],
+                # label='Norm Masked Flux'
+                )
+
+    ax1.axvspan(C50radii*cell_size - C50radii_err*cell_size,  # left bound
+                C50radii*cell_size + C50radii_err*cell_size,  # right bound
+                alpha=0.3, color='grey', 
+                # hatch='x.',
+                # hatch='////' ,
+                # label=f'$R_{{50}}$ uncertainty'
+                )
+
+    ax1.axvline(C50radii*cell_size,
+                label=r"$R_{50}\sim~$"f"{C50radii*cell_size:0.3f}$\pm"f"{C50radii_err*cell_size:0.3f}''$",
+                ls='-.', color='lime',lw=4)
+
+    ax1.axhline(L50_norm, ls='-.', color='lime',lw=4)
+    # ax1.plot(C50radii*cell_size,L50_norm,'rx',markersize=10)
+
+
+    ax1.axvspan(C95radii*cell_size - C95radii_err*cell_size,  # left bound
+                C95radii*cell_size + C95radii_err*cell_size,  # right bound
+                alpha=0.3, color='grey', 
+                # label=f'$R_{{50}}$ uncertainty'
+                )
+    ax1.axvline(C95radii*cell_size,
+                label=r"$R_{95}\sim~$"f"{C95radii*cell_size:0.3f}$\pm"f"{C95radii_err*cell_size:0.3f}''$",
+                color='#4daf4a',lw=3)
+    # ax1.plot(C95radii*cell_size,L95_norm,'rx',markersize=10)
+    ax1.set_title("Integrated Flux Density \n "
+                r"$S_{\nu} =$ "
+                f"{flux_conversion*total_flux:.2f} $\pm ~ {flux_conversion*total_flux_density_error:.2f}$ [mJy]")
+
+    ax1.set_xlabel(fr'Projected Circular Radius $R$ [{scale_units}]')
+    ax1.set_ylabel(r"Normalised  ~  FGC   $~S_{\nu}(\leq R)$")
+
+    ax1.grid(alpha=0.5)
+    # ax1.legend(loc='lower right', prop={'size': 10})
+    ax1.legend(
+        framealpha=0.9,
+        # ncol=ncol,
+        # loc=loc,
+        # fontsize=int(fontsize-1),
+        # fontsize=12,
+        handlelength=1,
+        handletextpad=0.5,
+        columnspacing=0.5,
+        borderaxespad=0.1
+        )
+    ax1.set_ylim(0, 1.00)
+    # ax1.set_xscale('log')
+    # Second subplot - image
     vmin = vmin_factor * std
-    #     print(g)
-    vmax = vmax_factor * g.max()
-    norm = simple_norm(g, stretch='asinh', asinh_a=0.05, min_cut=vmin,
-                       max_cut=vmax)
+    if vmax is None:
+        vmax = vmax_factor * np.nanmax(g)
+    norm = simple_norm(g_original, stretch='asinh', asinh_a=0.075, min_cut=vmin,
+                    max_cut=vmax)
 
-    # if crop == True:
-    #     try:
-    #         xin, xen, yin, yen = do_cutout_2D(img, 
-    #                                           box_size=box_size, 
-    #                                           center=None,
-    #                                           centre_mode = 'image_centre',
-    #                                           return_='box')
-    #         g = g[xin:xen, yin:yen]
-    #     except:
-    #         try:
-    #             max_x, max_y = np.where(g == g.max())
-    #             xin = max_x[0] - box_size
-    #             xen = max_x[0] + box_size
-    #             yin = max_y[0] - box_size
-    #             yen = max_y[0] + box_size
-    #             g = g[xin:xen, yin:yen]
-    #         except:
-    #             pass
+    im_plot = ax2.imshow(g_original, cmap='magma_r', origin='lower', alpha=1.0,
+                        norm=norm, aspect='equal')
 
-    im_plot = ax2.imshow(g, cmap='magma_r', origin='lower', alpha=1.0,
-                         norm=norm,
-                         aspect=aspect)  # ,vmax=vmax, vmin=vmin)#norm=norm
+    if image_title is not None:
+        ax2.set_title(image_title)
 
-    # levels_50 = np.asarray([-3*sigma_50,sigma_50,3*sigma_50])
-
+    # Add contours
     try:
         ax2.contour(g, levels=levels_50, colors='lime', linewidths=2.5,
-                    alpha=1.0)  # cmap='Reds', linewidths=0.75)
-        # ax2.contour(g, levels=levels_90, colors='white', linewidths=2.0,
-        #             # linestyles='--',
-        #             alpha=1.0)  # cmap='Reds', linewidths=0.75)
-        ax2.contour(g, levels=levels_95, colors='#56B4E9', linewidths=2.0,
-                    # linestyles='--',
-                    alpha=1.0)  # cmap='Reds', linewidths=0.75)
-        #         ax2.contour(g, levels=levels_3sigma,colors='#D55E00',
-        #         linewidths=1.5,alpha=1.0)#cmap='Reds', linewidths=0.75)
+                    linestyles='-.', alpha=1.0)
+        ax2.contour(g, levels=levels_95, colors='#4daf4a', linewidths=2.0,
+                    alpha=1.0)
         ax2.contour(g, levels=[last_level * std], colors='cyan', linewidths=0.6,
-                    alpha=1.0,
-                    # linestyles='--'
-                    )  # cmap='Reds', linewidths=0.75)
+                    alpha=1.0)
         ax2.contour(g, levels=[6.0 * std], colors='black', linewidths=1.5,
-                    alpha=0.9,
-                    # linestyles='--'
-                    )  # cmap='Reds', linewidths=0.75)
+                    alpha=0.9)
         ax2.contour(g, levels=[3.0 * std], colors='brown', linewidths=1.2,
-                    alpha=0.9,
-                    # linestyles='--'
-                    )  # cmap='Reds', linewidths=0.75)
-        # ax2.contour(g, levels=[5.0 * std], colors='brown', linewidths=0.6,
-        #             alpha=0.3,
-        #             # linestyles='--'
-        #             )  # cmap='Reds', linewidths=0.75)
-
+                    alpha=0.9)
     except:
         print('Not plotting contours!')
+    
     ax2.axis('off')
-    plt.subplots_adjust(wspace=0, hspace=0)
-    fig.tight_layout()
+
+    # Apply tight layout
+    # plt.tight_layout()
+
+    # plt.show()
+
+    
+    
+    
     if SAVE is not None:
-        plt.savefig(img.replace('.fits', '_Lgrow_levels')+add_save_name + ext,
-                    dpi=300,bbox_inches='tight')
+        if plot_savemane is None:
+            fig.savefig(img.replace('.fits', '_Lgrow_levels')+add_save_name + ext,
+                        dpi=300,bbox_inches='tight')
+        else:
+            fig.savefig(plot_savemane,
+                        dpi=300,bbox_inches='tight')
     if show_figure == True:
         plt.show()
     else:
-        plt.close()
+        plt.close(fig)
 
     if save_csv == True:
         import csv
@@ -3048,7 +3570,7 @@ def calculate_robust_flux_error(data, data_res, mask, total_flux, total_flux_den
     n_bootstrap : int
         Number of bootstrap iterations
     confidence_level : float
-        Confidence level for error estimation (0.68 = 1σ)
+        Confidence level for error estimation (0.68 = 1sigma)
         
     Returns:
     --------
@@ -4191,15 +4713,251 @@ def convex_morpho_old(image, mask, scale=1.0,do_plot=False):
     return report
 
 
-def compute_diameters_convex(hull,points):
+# def compute_diameters_convex(hull,points):
+#     """
+#     Compute the major and minor diameters of a structure using its ConvexHull.
+
+#     Parameters
+#     ----------
+#     hull : scipy.spatial.ConvexHull
+#         A ConvexHull object representing the structure, containing points
+#         that define the convex boundary of the structure.
+
+#     Returns
+#     -------
+#     dict
+#         A dictionary containing:
+#         - "major_diameter" : float
+#             The length of the major diameter (longest distance between any two 
+#             points on the convex hull).
+#         - "major_points" : tuple of ndarray
+#             The two points defining the major diameter.
+#         - "minor_diameter" : float
+#             The length of the minor diameter (shortest perpendicular distance 
+#             between parallel edges of the convex hull).
+#         - "minor_points" : tuple of ndarray
+#             The two points defining the minor diameter.
+
+#     Examples
+#     --------
+#     >>> import numpy as np
+#     >>> from scipy.spatial import ConvexHull
+#     >>> # Example points
+#     >>> points = np.array([[0, 0], [1, 1], [2, 2], [3, 0], [0, 3]])
+#     >>> # Compute the convex hull
+#     >>> hull = ConvexHull(points)
+#     >>> # Compute diameters
+#     >>> diameters = compute_diameters_convex(hull)
+#     >>> print(diameters)
+
+#     Notes
+#     -----
+#     - The major diameter is calculated as the maximum Euclidean distance
+#       between any two points on the convex hull.
+#     - The minor diameter is determined by finding the shortest perpendicular
+#       width across the convex hull.
+#     """
+#     from itertools import combinations
+
+#     # hull = ConvexHull(points)
+#     hull_points = points[hull.vertices]  # Extract points on the convex hull
+
+#     # Calculate Major Diameter (longest distance between hull points)
+#     major_diameter = 0
+#     major_points = None
+#     for p1, p2 in combinations(hull_points, 2):
+#         distance = np.linalg.norm(p1 - p2)
+#         if distance > major_diameter:
+#             major_diameter = distance
+#             major_points = (p1, p2)
+
+#     # Calculate Minor Diameter (shortest perpendicular distance between parallel edges)
+#     minor_diameter = float('inf')
+#     minor_points = None
+#     num_hull_points = len(hull_points)
+
+#     for i in range(num_hull_points):
+#         # Get two consecutive points forming an edge
+#         p1, p2 = hull_points[i], hull_points[(i + 1) % num_hull_points]
+#         edge_vector = p2 - p1
+#         edge_length = np.linalg.norm(edge_vector)
+        
+#         # Normalize the edge vector
+#         if edge_length == 0:
+#             continue
+#         edge_normal = np.array([-edge_vector[1], edge_vector[0]]) / edge_length
+        
+#         # Project all hull points onto the edge normal and find the width
+#         distances = np.abs(np.dot(hull_points - p1, edge_normal))
+#         max_distance = distances.max()
+#         if max_distance < minor_diameter:
+#             minor_diameter = max_distance
+#             # Points corresponding to the shortest perpendicular projection
+#             projections = hull_points[np.abs(distances - max_distance) < 1e-6]
+#             if len(projections) >= 2:
+#                 minor_points = (projections[0], projections[1])
+
+#     return {
+#         "major_diameter": major_diameter,
+#         "major_points": major_points,
+#         "minor_diameter": minor_diameter,
+#         "minor_points": minor_points
+#     }
+
+
+# def convex_morpho(image, mask, scale=1.0, do_plot=False):
+#     """
+#     Perform morphological analysis on a structure defined by a mask and overlay results on an image.
+
+#     This function computes morphological properties of a structure, including the position angle,
+#     axis ratio, centroid, major diameter, and minor diameter, based on the ConvexHull of the masked region.
+#     Optionally, it can overlay the semi-major and semi-minor axes, centroid, and convex hull on the image.
+
+#     Parameters
+#     ----------
+#     image : 2D ndarray
+#         The image data where the structure is located.
+#     mask : 2D ndarray
+#         A binary mask defining the structure to be analyzed. Non-zero pixels are treated as part of the structure.
+#     scale : float, optional
+#         Scaling factor for the visualization of the axes (default is 1.0).
+#     do_plot : bool, optional
+#         Whether to plot the results overlaying the axes and convex hull on the image (default is False).
+
+#     Returns
+#     -------
+#     dict
+#         A dictionary containing the following morphometric properties:
+#         - "PA_convex" : float
+#             Position angle of the structure in degrees, measured counter-clockwise from the positive x-axis.
+#         - "q_convex" : float
+#             Axis ratio (minor/major) of the structure.
+#         - "centroid_convex" : ndarray
+#             Centroid coordinates of the structure as a 2-element array [x, y].
+#         - "major_diameter" : float
+#             Length of the major diameter (longest distance between any two points on the convex hull).
+#         - "minor_diameter" : float
+#             Length of the minor diameter (shortest perpendicular distance between parallel edges of the convex hull).
+
+#     Examples
+#     --------
+#     >>> import numpy as np
+#     >>> import matplotlib.pyplot as plt
+#     >>> from scipy.spatial import ConvexHull
+
+#     >>> # Create a sample image and mask
+#     >>> image = np.random.rand(100, 100)
+#     >>> mask = np.zeros_like(image, dtype=bool)
+#     >>> mask[40:60, 45:65] = True  # Example structure
+
+#     >>> # Perform analysis
+#     >>> report = convex_morpho(image, mask, scale=2.0, do_plot=True)
+#     >>> print(report)
+
+#     Notes
+#     -----
+#     - The function uses the ConvexHull of the masked region to estimate morphological properties.
+#     - The position angle is computed from the eigenvector of the largest eigenvalue of the covariance matrix.
+#     - Axis ratio is calculated as the square root of the ratio of the smallest to largest eigenvalues.
+#     - Major and minor diameters are determined using the ConvexHull geometry.
+#     """
+#     # Extract y, x coordinates of the structure
+#     indices = np.transpose(np.nonzero(mask))
+#     y, x = indices[:, 0], indices[:, 1]
+#     points = np.column_stack((x, y))  # Convert to (x, y) coordinates
+    
+#     # Compute ConvexHull
+#     hull = ConvexHull(points)
+
+#     # Compute centroid of the points
+#     centroid = np.mean(points, axis=0)
+
+#     # Covariance matrix and eigenvalues/vectors
+#     cov_matrix = np.cov(points, rowvar=False)
+#     eigenvalues, eigenvectors = np.linalg.eig(cov_matrix)
+
+#     # Order eigenvectors by eigenvalues (largest is major axis)
+#     order = np.argsort(eigenvalues)[::-1]
+#     eigenvalues = eigenvalues[order]
+#     eigenvectors = eigenvectors[:, order]
+
+#     # Semi-major and minor axes
+#     major_axis_vector = eigenvectors[:, 0]
+#     minor_axis_vector = eigenvectors[:, 1]
+
+#     # Scale eigenvectors by eigenvalues for visualization
+#     major_axis = scale * np.sqrt(eigenvalues[0]) * major_axis_vector
+#     minor_axis = scale * np.sqrt(eigenvalues[1]) * minor_axis_vector
+
+#     # Calculate position angle (anti-clockwise from x-axis)
+#     position_angle = np.arctan2(major_axis_vector[1], major_axis_vector[0])
+#     position_angle_degrees = np.degrees(position_angle)
+#     if position_angle_degrees < 0:
+#         position_angle_degrees += 360
+
+#     # Calculate axis ratio (minor/major)
+#     axis_ratio = np.sqrt(eigenvalues[1] / eigenvalues[0])
+
+#     # Compute diameters
+#     diameters = compute_diameters_convex(hull,points)
+
+#     if do_plot:
+#         # Plot image
+
+#         plt.figure(figsize=(5, 5))
+#         norm = simple_norm(image, stretch='sqrt', asinh_a=0.02, min_cut= 3 * mad_std(image),
+#                            max_cut=0.2 * np.nanmax(image))
+#         plt.imshow(image, cmap='gray', origin='lower',norm=norm)
+        
+#         # Plot semi-major and minor axes
+#         plt.quiver(
+#             centroid[0], centroid[1], major_axis[0], major_axis[1],
+#             angles='xy', scale_units='xy', scale=1, color='limegreen'
+#         )
+#         plt.quiver(
+#             centroid[0], centroid[1], minor_axis[0], minor_axis[1],
+#             angles='xy', scale_units='xy', scale=1, color='red'
+#         )
+    
+#         # Plot centroid
+#         plt.scatter(centroid[0], centroid[1], color='limegreen', zorder=5)
+    
+        
+#         plt.xlabel("$x$ image coordinates")
+#         plt.ylabel("$y$ image coordinates")
+#         plt.axis('equal')
+#         # plt.legend()
+#         plt.show()
+
+#     # Return report
+#     report = {
+#         "PA_convex": position_angle_degrees,
+#         "q_convex": axis_ratio,
+#         "centroid_convex": centroid,
+#         "major_diameter": diameters["major_diameter"],
+#         "minor_diameter": diameters["minor_diameter"]
+#     }
+#     return report
+
+
+
+
+
+def compute_diameters_convex(hull, points, intensities=None):
     """
     Compute the major and minor diameters of a structure using its ConvexHull.
+    Now with optional intensity weighting for more robust measurements.
 
     Parameters
     ----------
     hull : scipy.spatial.ConvexHull
         A ConvexHull object representing the structure, containing points
         that define the convex boundary of the structure.
+    points : ndarray
+        Array of (x, y) coordinates.
+    intensities : ndarray, optional
+        Intensity values for each point. If provided, uses high-intensity
+        regions for more robust diameter estimation.
 
     Returns
     -------
@@ -4215,30 +4973,30 @@ def compute_diameters_convex(hull,points):
             between parallel edges of the convex hull).
         - "minor_points" : tuple of ndarray
             The two points defining the minor diameter.
-
-    Examples
-    --------
-    >>> import numpy as np
-    >>> from scipy.spatial import ConvexHull
-    >>> # Example points
-    >>> points = np.array([[0, 0], [1, 1], [2, 2], [3, 0], [0, 3]])
-    >>> # Compute the convex hull
-    >>> hull = ConvexHull(points)
-    >>> # Compute diameters
-    >>> diameters = compute_diameters_convex(hull)
-    >>> print(diameters)
-
-    Notes
-    -----
-    - The major diameter is calculated as the maximum Euclidean distance
-      between any two points on the convex hull.
-    - The minor diameter is determined by finding the shortest perpendicular
-      width across the convex hull.
     """
     from itertools import combinations
-
-    # hull = ConvexHull(points)
-    hull_points = points[hull.vertices]  # Extract points on the convex hull
+    # If intensities provided, focus on high-intensity regions
+    if intensities is not None:
+        # Use 90th percentile of intensity for effective boundary
+        percentile = 90
+        sorted_indices = np.argsort(intensities)[::-1]
+        n_select = max(int(len(points) * (percentile / 100.0)), 3)
+        high_intensity_indices = sorted_indices[:n_select]
+        high_intensity_points = points[high_intensity_indices]
+        
+        # Compute hull of high-intensity points for more robust diameter estimation
+        if len(high_intensity_points) >= 3:
+            try:
+                intensity_hull = ConvexHull(high_intensity_points)
+                hull_points = high_intensity_points[intensity_hull.vertices]
+            except:
+                # Fall back to original hull if high-intensity hull fails
+                hull_points = points[hull.vertices]
+        else:
+            hull_points = points[hull.vertices]
+    else:
+        # Original behavior when no intensities provided
+        hull_points = points[hull.vertices]
 
     # Calculate Major Diameter (longest distance between hull points)
     major_diameter = 0
@@ -4283,12 +5041,14 @@ def compute_diameters_convex(hull,points):
     }
 
 
-def convex_morpho(image, mask, scale=1.0, do_plot=False):
+def convex_morpho(image, mask, scale=1.0, do_plot=False, weight_power=1.0):
     """
     Perform morphological analysis on a structure defined by a mask and overlay results on an image.
+    Now incorporates intensity weighting for more accurate galaxy morphology measurements.
 
     This function computes morphological properties of a structure, including the position angle,
     axis ratio, centroid, major diameter, and minor diameter, based on the ConvexHull of the masked region.
+    The analysis now uses intensity-weighted moments for more accurate results.
     Optionally, it can overlay the semi-major and semi-minor axes, centroid, and convex hull on the image.
 
     Parameters
@@ -4301,6 +5061,9 @@ def convex_morpho(image, mask, scale=1.0, do_plot=False):
         Scaling factor for the visualization of the axes (default is 1.0).
     do_plot : bool, optional
         Whether to plot the results overlaying the axes and convex hull on the image (default is False).
+    weight_power : float, optional
+        Power to raise intensities to for weighting (default is 1.0).
+        Higher values give more weight to bright regions.
 
     Returns
     -------
@@ -4308,50 +5071,46 @@ def convex_morpho(image, mask, scale=1.0, do_plot=False):
         A dictionary containing the following morphometric properties:
         - "PA_convex" : float
             Position angle of the structure in degrees, measured counter-clockwise from the positive x-axis.
+            Now intensity-weighted for more accurate orientation.
         - "q_convex" : float
-            Axis ratio (minor/major) of the structure.
+            Axis ratio (minor/major) of the structure. Now intensity-weighted.
         - "centroid_convex" : ndarray
             Centroid coordinates of the structure as a 2-element array [x, y].
+            Now intensity-weighted (center of light).
         - "major_diameter" : float
-            Length of the major diameter (longest distance between any two points on the convex hull).
+            Length of the major diameter, focused on high-intensity regions.
         - "minor_diameter" : float
-            Length of the minor diameter (shortest perpendicular distance between parallel edges of the convex hull).
-
-    Examples
-    --------
-    >>> import numpy as np
-    >>> import matplotlib.pyplot as plt
-    >>> from scipy.spatial import ConvexHull
-
-    >>> # Create a sample image and mask
-    >>> image = np.random.rand(100, 100)
-    >>> mask = np.zeros_like(image, dtype=bool)
-    >>> mask[40:60, 45:65] = True  # Example structure
-
-    >>> # Perform analysis
-    >>> report = convex_morpho(image, mask, scale=2.0, do_plot=True)
-    >>> print(report)
-
-    Notes
-    -----
-    - The function uses the ConvexHull of the masked region to estimate morphological properties.
-    - The position angle is computed from the eigenvector of the largest eigenvalue of the covariance matrix.
-    - Axis ratio is calculated as the square root of the ratio of the smallest to largest eigenvalues.
-    - Major and minor diameters are determined using the ConvexHull geometry.
+            Length of the minor diameter, focused on high-intensity regions.
     """
     # Extract y, x coordinates of the structure
     indices = np.transpose(np.nonzero(mask))
     y, x = indices[:, 0], indices[:, 1]
     points = np.column_stack((x, y))  # Convert to (x, y) coordinates
     
+    # Get intensity values at masked positions
+    intensities = image[mask].flatten()
+    
+    # Apply weight power for emphasis on bright regions
+    weights = np.power(intensities, weight_power)
+    weights = weights / np.sum(weights)  # Normalize weights
+    
     # Compute ConvexHull
     hull = ConvexHull(points)
 
-    # Compute centroid of the points
-    centroid = np.mean(points, axis=0)
-
-    # Covariance matrix and eigenvalues/vectors
-    cov_matrix = np.cov(points, rowvar=False)
+    # Compute intensity-weighted centroid (center of light)
+    centroid = np.average(points, weights=weights, axis=0)
+    
+    # Center points around weighted centroid
+    centered_points = points - centroid
+    
+    # Compute intensity-weighted covariance matrix
+    # This gives us the intensity-weighted second moments
+    cov_matrix = np.zeros((2, 2))
+    for i in range(len(centered_points)):
+        p = centered_points[i].reshape(-1, 1)
+        cov_matrix += weights[i] * np.dot(p, p.T)
+    
+    # Eigenvalues and eigenvectors
     eigenvalues, eigenvectors = np.linalg.eig(cov_matrix)
 
     # Order eigenvectors by eigenvalues (largest is major axis)
@@ -4363,10 +5122,6 @@ def convex_morpho(image, mask, scale=1.0, do_plot=False):
     major_axis_vector = eigenvectors[:, 0]
     minor_axis_vector = eigenvectors[:, 1]
 
-    # Scale eigenvectors by eigenvalues for visualization
-    major_axis = scale * np.sqrt(eigenvalues[0]) * major_axis_vector
-    minor_axis = scale * np.sqrt(eigenvalues[1]) * minor_axis_vector
-
     # Calculate position angle (anti-clockwise from x-axis)
     position_angle = np.arctan2(major_axis_vector[1], major_axis_vector[0])
     position_angle_degrees = np.degrees(position_angle)
@@ -4376,16 +5131,30 @@ def convex_morpho(image, mask, scale=1.0, do_plot=False):
     # Calculate axis ratio (minor/major)
     axis_ratio = np.sqrt(eigenvalues[1] / eigenvalues[0])
 
-    # Compute diameters
-    diameters = compute_diameters_convex(hull,points)
+    # Compute diameters with intensity weighting
+    diameters = compute_diameters_convex(hull, points, intensities)
+    
+    # Use actual diameters for visualization vectors (radius = diameter/2)
+    # Normalize eigenvectors and scale by half the diameter
+    major_axis = (diameters["major_diameter"] / 2.0) * (major_axis_vector / np.linalg.norm(major_axis_vector))
+    minor_axis = (diameters["minor_diameter"] / 2.0) * (minor_axis_vector / np.linalg.norm(minor_axis_vector))
 
     if do_plot:
         # Plot image
-
         plt.figure(figsize=(5, 5))
-        norm = simple_norm(image, stretch='sqrt', asinh_a=0.02, min_cut= 3 * mad_std(image),
-                           max_cut=0.2 * np.nanmax(image))
-        plt.imshow(image, cmap='gray', origin='lower',norm=norm)
+        
+        # Try to use astropy normalization if available
+        try:
+            from astropy.visualization import simple_norm
+            from astropy.stats import mad_std
+            norm = simple_norm(image, stretch='sqrt', asinh_a=0.02, min_cut=3*mad_std(image),
+                             max_cut=0.2*np.nanmax(image))
+            plt.imshow(image, cmap='gray', origin='lower', norm=norm)
+        except ImportError:
+            # Fallback normalization if astropy not available
+            plt.imshow(image, cmap='gray', origin='lower',
+                      vmin=np.percentile(image[mask], 1),
+                      vmax=np.percentile(image[mask], 99.5))
         
         # Plot semi-major and minor axes
         plt.quiver(
@@ -4397,14 +5166,12 @@ def convex_morpho(image, mask, scale=1.0, do_plot=False):
             angles='xy', scale_units='xy', scale=1, color='red'
         )
     
-        # Plot centroid
+        # Plot centroid (now intensity-weighted)
         plt.scatter(centroid[0], centroid[1], color='limegreen', zorder=5)
     
-        
         plt.xlabel("$x$ image coordinates")
         plt.ylabel("$y$ image coordinates")
         plt.axis('equal')
-        # plt.legend()
         plt.show()
 
     # Return report
