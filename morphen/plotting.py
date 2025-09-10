@@ -8,17 +8,48 @@
 Plotting Functions
 """
 
+# class CustomFormatter(mticker.ScalarFormatter):
+#     def __init__(self, factor=1, **kwargs):
+#         self.factor = factor
+#         mticker.ScalarFormatter.__init__(self, **kwargs)
+
+#     def __call__(self, x, pos=None):
+#         x = x * self.factor
+#         if x == 0:
+#             return "0.00"
+#         return "{:.2f}".format(x)
+
+
+# class CustomFormatter(mticker.ScalarFormatter):
+#     def __init__(self, factor=1, **kwargs):
+#         self.factor = factor
+#         super().__init__(**kwargs)  # This passes useMathText correctly
+
+#     def __call__(self, x, pos=None):
+#         x = x * self.factor
+#         if abs(x) < 1e-10:  # Better check for zero (floating point comparison)
+#             return "0.00"
+#         # Use the parent class's formatting capabilities
+#         return super().__call__(x, pos)
+
 class CustomFormatter(mticker.ScalarFormatter):
     def __init__(self, factor=1, **kwargs):
         self.factor = factor
-        mticker.ScalarFormatter.__init__(self, **kwargs)
+        super().__init__(**kwargs)  # This passes useMathText correctly
 
     def __call__(self, x, pos=None):
         x = x * self.factor
-        if x == 0:
+        if abs(x) < 1e-10:  # Better check for zero (floating point comparison)
             return "0.00"
-        return "{:.2f}".format(x)
-
+        
+        # Format to 2 decimal places
+        if abs(x) < 1000 and abs(x) >= 0.01:
+            # Use fixed notation for reasonable numbers
+            return f"{x:.2f}"
+        else:
+            # Use scientific notation for very large or small numbers
+            # Let the parent formatter handle this
+            return super().__call__(x, pos)
 
 def make_scalebar(ax, left_side, length, color='w', linestyle='-', label='',
                   fontsize=12, text_offset=0.1*u.arcsec):
@@ -44,6 +75,8 @@ def make_scalebar(ax, left_side, length, color='w', linestyle='-', label='',
 def plot_radial_profile(imagedatas, refimage=None,
                         ax=None, centre=None, labels=None,
                         line_styles=None,
+                        cell_size = 1.0,
+                        xaxis_units = '[px]',
                         figsize=(5, 5)):
     if ax is None:
         fig = plt.figure(figsize=figsize)
@@ -59,9 +92,7 @@ def plot_radial_profile(imagedatas, refimage=None,
     if refimage != None:
         cell_size = get_cell_size(refimage)
         xaxis_units = '[arcsec]'
-    else:
-        cell_size = 1.0
-        xaxis_units = '[px]'
+
 
     for i in range(len(imagedatas)):
         radius, intensity = get_profile(imagedatas[i], center=centre)
@@ -73,7 +104,7 @@ def plot_radial_profile(imagedatas, refimage=None,
                     linewidth=line_styles['linewidth'][i],
                     )
         except:
-            ax.plot(radius * cell_size, abs(intensity), label=_labels[i])
+            ax.scatter(radius * cell_size, abs(intensity),marker='.',linestyle='', label=_labels[i])
         
 
 #     plt.semilogy()
@@ -82,7 +113,17 @@ def plot_radial_profile(imagedatas, refimage=None,
     # plt.xlim(0,cell_size*radius[int(len(radius)/2)])
     # plt.semilogx()
     if labels != None:
-        plt.legend()
+        plt.legend(
+            framealpha=0.9,
+            ncol=2,
+            loc='best',
+            # fontsize=int(fontsize-1),
+            # fontsize=12,
+            handlelength=2,
+            handletextpad=0.5,
+            columnspacing=0.5,
+            borderaxespad=0.1
+        )
     return (ax)
 
 
@@ -140,15 +181,16 @@ def azimuthal_average_profile_with_shaded_errors(image, rms_image, center, sigma
     
     
     # Plotting the results with shaded error regions
-    plt.figure(figsize=figsize)
+    fig = plt.figure(figsize=figsize)
+    ax = fig.add_subplot(1, 1, 1)
     
     # Plot the profile
-    plt.plot(bin_centers*cell_size, profile, 
+    ax.plot(bin_centers*cell_size, profile, 
             #  label='Profile', 
              color='black', linestyle='-', linewidth=2)
 
     # Plot shaded error regions
-    plt.fill_between(bin_centers*cell_size, profile - sigma * error_rms, profile + sigma * error_rms, 
+    ax.fill_between(bin_centers*cell_size, profile - sigma * error_rms, profile + sigma * error_rms, 
                      color='gray', alpha=0.3, 
                     #  label=f'RMS Errors ($\pm{sigma}\sigma$)'
                     )
@@ -159,28 +201,29 @@ def azimuthal_average_profile_with_shaded_errors(image, rms_image, center, sigma
 
     if log_scale:
         plt.yscale('log')
-    plt.xlabel(fr'{xlabel}', fontsize=14)
-    plt.ylabel(fr'{ylabel}', fontsize=14)
-    plt.title(title)
+    ax.set_xlabel(fr'{xlabel}', fontsize=14)
+    ax.set_ylabel(fr'{ylabel}', fontsize=14)
+    ax.set_title(title)
     # plt.legend(loc='upper right')
     # plt.grid(True, which='both', linestyle='--', alpha=0.6)
-    plt.tight_layout()
+    # ax.tight_layout()
     # plt.show()
 
-    return bin_centers, profile, error_rms, error_std
+    return bin_centers, profile, error_rms, error_std, ax
 
 
-def plot_azimuthal_profile(image, rms_image, center, sigma=1.5, bin_size=1.0,
+def plot_azimuthal_profile(image, rms_image, center, 
+                           sigma=1.0, sigma_std= 3.0,
+                           bin_size=1.0,
                            log_scale=False, cell_size=1.0,
                            figsize=(5, 5),
                            ylabel='Azimuthal Average Intensity $I(R)$ [Jy/Beam]',
                            xlabel='Projected Radius $R$ [pixels]',
                            title=None,
-                           which_error='both',
+                           which_error='both',which_statistics='mean',
                            min_points_per_bin=5,  # Minimum points required per bin
-                           weight_by_points=False, # Weight averages by number of points
+                           weight_by_points=True, # Weight averages by number of points
                            r_max = None,
-                           which_statistics = 'mean',
                            ):
     """
     Calculate the azimuthal average profile with improved handling of asymmetric masks.
@@ -214,62 +257,86 @@ def plot_azimuthal_profile(image, rms_image, center, sigma=1.5, bin_size=1.0,
     points_per_bin = np.zeros_like(bin_centers)
     
     if which_statistics == 'mean':
-        for i in range(len(bin_centers)):
-            mask = (r >= bin_edges[i]) & (r < bin_edges[i + 1])
-            # plt.figure()
-            # plt.imshow(mask[center[0]-int(r_max):center[0]+int(r_max),center[1]-int(r_max):center[1]+int(r_max)])
-            # plt.show()
-            valid_pixels = ~np.isnan(image[mask])
-            
-            if np.nansum(valid_pixels) >= min_points_per_bin:
-                points_per_bin[i] = np.nansum(valid_pixels)
-                values = image[mask][valid_pixels]
-                rms_values = rms_image[mask][valid_pixels]
+            for i in range(len(bin_centers)):
+                mask = (r >= bin_edges[i]) & (r < bin_edges[i + 1])
+                valid_pixels = ~np.isnan(image[mask])
                 
-                profile[i] = np.nanmean(values)
-                
-                # Weight errors by sqrt(N) if requested
-                if weight_by_points:
+                if np.nansum(valid_pixels) >= min_points_per_bin:
+                    points_per_bin[i] = np.nansum(valid_pixels)
+                    values = image[mask][valid_pixels]
+                    rms_values = rms_image[mask][valid_pixels]
                     n_points = len(values)
-                    error_rms[i] = np.sqrt(np.nanmean(rms_values**2)) / np.sqrt(n_points)
-                    error_std[i] = np.std(values) / np.sqrt(n_points)
+                    
+                    profile[i] = np.nanmean(values)
+                
+                    error_rms[i] = np.nanmean(rms_values)
+                    
+                    if weight_by_points:
+                        error_std[i] = np.nanstd(values, ddof=1) / np.sqrt(n_points)
+                    else:
+                        error_std[i] = np.nanstd(values, ddof=1)
+                        
                 else:
-                    error_rms[i] = np.sqrt(np.nanmean(rms_values**2))
-                    error_std[i] = np.nanstd(values)
-            else:
-                profile[i] = np.nan
-                error_rms[i] = np.nan
-                error_std[i] = np.nan
-            
+                    profile[i] = np.nan
+                    error_rms[i] = np.nan
+                    error_std[i] = np.nan
+                
     elif which_statistics == 'median':
         for i in range(len(bin_centers)):
             mask = (r >= bin_edges[i]) & (r < bin_edges[i + 1])
-            # plt.figure()
-            # plt.imshow(mask[center[0]-int(r_max):center[0]+int(r_max),center[1]-int(r_max):center[1]+int(r_max)])
-            # plt.show()
             valid_pixels = ~np.isnan(image[mask])
             
             if np.nansum(valid_pixels) >= min_points_per_bin:
                 points_per_bin[i] = np.nansum(valid_pixels)
                 values = image[mask][valid_pixels]
                 rms_values = rms_image[mask][valid_pixels]
+                n_points = len(values)
                 
                 profile[i] = np.nanmedian(values)
                 
-                # Weight errors by sqrt(N) if requested
+                measurement_error_mean = np.sqrt(np.nansum(rms_values**2)/n_points)
+                error_rms[i] = measurement_error_mean * np.sqrt(np.pi/2)
+                
                 if weight_by_points:
-                    n_points = len(values)
-                    error_rms[i] = np.sqrt(np.nanmedian(rms_values**2)) / np.sqrt(n_points)
-                    error_std[i] = np.std(values) / np.sqrt(n_points)
+                    error_std[i] = 1.253 * np.nanstd(values, ddof=1) / np.sqrt(n_points)
                 else:
-                    error_rms[i] = np.sqrt(np.nanmedian(rms_values**2))
-                    error_std[i] = np.nanstd(values)
+                    error_std[i] = 1.253 * np.nanstd(values, ddof=1)
+                    
             else:
                 profile[i] = np.nan
                 error_rms[i] = np.nan
                 error_std[i] = np.nan
+                
+    elif which_statistics == 'sum':
+        for i in range(len(bin_centers)):
+            mask = (r >= bin_edges[i]) & (r < bin_edges[i + 1])
+            valid_pixels = ~np.isnan(image[mask])
+            
+            if np.nansum(valid_pixels) >= min_points_per_bin:
+                points_per_bin[i] = np.nansum(valid_pixels)
+                values = image[mask][valid_pixels]
+                rms_values = rms_image[mask][valid_pixels]
+                n_points = len(values)
+                
+                # True sum (not divided by number of points)
+                profile[i] = np.nansum(values)
+                
+                # Measurement error: Root sum of squares for sum (no division by N)
+                error_rms[i] = np.sqrt(np.nansum(rms_values**2))
+                
+                # Statistical error: For sum, std scales with sqrt(N)
+                if weight_by_points:
+                    error_std[i] = np.nanstd(values, ddof=1) * np.sqrt(n_points)
+                else:
+                    error_std[i] = np.nanstd(values, ddof=1) * np.sqrt(n_points)
+                    
+            else:
+                profile[i] = np.nan
+                error_rms[i] = np.nan
+                error_std[i] = np.nan
+                
     else:
-        raise ValueError('Invalid value for which_statistics. Must be mean or median.')
+        raise ValueError('Invalid value for which_statistics. Must be "mean", "median", or "sum".')
     # Remove bins with insufficient points
     valid_bins = ~np.isnan(profile)
     bin_centers = bin_centers[valid_bins]
@@ -281,49 +348,119 @@ def plot_azimuthal_profile(image, rms_image, center, sigma=1.5, bin_size=1.0,
     # Plotting
     plt.figure(figsize=figsize)
     
-    # Plot the profile
-    plt.plot(bin_centers*cell_size, profile, color='black', 
-             marker='.',linestyle='-.',
-             linewidth=1)
-
-    if weight_by_points:
-        _sigma = sigma * np.sqrt(points_per_bin)
-        _sigma_std = 1 * np.sqrt(points_per_bin)
-    else:
-        _sigma = sigma
-        _sigma_std = 1
-    #     sigma = 3
-    # else:
-    #     sigma = 3
-    # Plot shaded error regions
+    # Convert to physical units
+    radius_physical = bin_centers * cell_size
     
+    # sigma should just be the number of standard deviations (e.g., 1, 2, 3)
+    # No scaling needed - errors already account for weighting and number of points
+    
+    # # Plot shaded error regions
+    # if which_error == 'std':
+    #     # STD represents morphological dispersion/asymmetry
+    #     plt.fill_between(radius_physical, 
+    #                     profile - sigma * error_std, 
+    #                     profile + sigma * error_std,
+    #                     color='orange', alpha=0.3, 
+    #                     label=fr'Morphological scatter ({sigma}$\sigma$)')
+                        
+    # elif which_error == 'rms':
+    #     # RMS represents measurement uncertainty
+    #     plt.fill_between(radius_physical, 
+    #                     profile - sigma * error_rms, 
+    #                     profile + sigma * error_rms,
+    #                     color='gray', alpha=0.3,
+    #                     label=fr'Measurement uncertainty ({sigma}$\sigma$)')
+                        
+    # elif which_error == 'both':
+    #     # Show both types of errors with different colors and transparency
+    #     # RMS (measurement uncertainty) - smaller, more opaque
+    #     plt.fill_between(radius_physical, 
+    #                     profile - sigma * error_rms, 
+    #                     profile + sigma * error_rms,
+    #                     label=fr'Measurement uncertainty ({sigma}$\sigma$)',
+    #                     color='gray', alpha=0.6)
+                        
+    #     # STD (morphological scatter) - larger, more transparent
+    #     plt.fill_between(radius_physical,
+    #                     profile - sigma * error_std, 
+    #                     profile + sigma * error_std,
+    #                     label=fr'Morphological scatter ({sigma}$\sigma$)',
+    #                     color='orange', alpha=0.3)
+    #     plt.legend()
+        
+    # elif which_error == 'combined':
+    #     # Combined error in quadrature (if you want total uncertainty)
+    #     error_combined = np.sqrt(error_rms**2 + error_std**2)
+    #     plt.fill_between(radius_physical,
+    #                     profile - sigma * error_combined,
+    #                     profile + sigma * error_combined,
+    #                     label=fr'Combined uncertainty ({sigma}$\sigma$)',
+    #                     color='purple', alpha=0.4)
+
+    # # Plot the profile
+    # plt.plot(radius_physical, profile, color='black', 
+    #          marker='.',linestyle='-.',
+    #          linewidth=1, label=f'{which_statistics.capitalize()} profile')
+
+    
+    # sigma should just be the number of standard deviations (e.g., 1, 2, 3)
+    # No scaling needed - errors already account for weighting and number of points
+    
+    # Plot error regions and profile
     if which_error == 'std':
-        plt.fill_between(bin_centers*cell_size, 
-                        profile - _sigma_std * error_std, 
-                        profile + _sigma_std * error_std,
-                        color='gray', alpha=0.3)
-    if which_error == 'rms':
-        plt.fill_between(bin_centers*cell_size, 
-                        profile - _sigma * error_rms, 
-                        profile + _sigma * error_rms,
-                        color='gray', alpha=0.3)
-    if which_error == 'both':
-        plt.fill_between(bin_centers*cell_size, 
-                        profile - _sigma * error_rms, 
-                        profile + _sigma * error_rms,
-                        label = 'rms error',
-                        color='gray', alpha=0.5)
-        plt.fill_between(bin_centers*cell_size,
-                        profile - _sigma_std * error_std, 
-                        profile + _sigma_std * error_std,
-                        label = 'std',
-                        color='orange', alpha = 0.3)
-        plt.legend()
+        plt.fill_between(radius_physical, 
+                        profile - sigma_std * error_std, 
+                        profile + sigma_std * error_std,
+                        color='orange', alpha=0.3, 
+                        label=fr'Scatter ({sigma_std}$\sigma$)')
+        plt.plot(radius_physical, profile, color='black', 
+                 marker='.',linestyle='-.',
+                 linewidth=1, label=f'{which_statistics.capitalize()} profile')
+                        
+    elif which_error == 'rms':
+        plt.errorbar(radius_physical, profile, yerr=sigma*error_rms,
+                     color='black', marker='.',linestyle='-.',linewidth=1,
+                     label=f'{which_statistics.capitalize()} profile', capsize=3,
+                     ecolor='gray', alpha=0.7)
+                        
+    elif which_error == 'both':
+        plt.errorbar(radius_physical, profile, yerr=sigma*error_rms,
+                     color='black', marker='.',linestyle='-.',linewidth=1,
+                     label=f'{which_statistics.capitalize()} profile', capsize=3,
+                     ecolor='gray', alpha=0.7)
+        
+        plt.fill_between(radius_physical,
+                        profile - sigma_std * error_std, 
+                        profile + sigma_std * error_std,
+                        label=fr'Scatter ({sigma_std}$\sigma$)',
+                        color='purple', alpha=0.3)
+        # plt.legend(fontsize=13, loc='upper center')
+        
+    elif which_error == 'combined':
+        error_combined = np.sqrt(error_rms**2 + error_std**2)
+        plt.errorbar(radius_physical, profile, yerr=sigma*error_combined,
+                     color='black', marker='.',linestyle='-.',linewidth=1,
+                     label=f'{which_statistics.capitalize()} profile', capsize=3,
+                     ecolor='orange', alpha=0.7)
+                     
+    else:
+        # Default: just plot the profile
+        plt.plot(radius_physical, profile, color='black', 
+                 marker='.',linestyle='-.',
+                 linewidth=1, label=f'{which_statistics.capitalize()} profile')
 
     if log_scale:
         plt.yscale('log')
-    plt.xlabel(fr'{xlabel}', fontsize=14)
-    plt.ylabel(fr'{ylabel}', fontsize=14)
+        
+
+    # plt.errorbar(radius_physical, profile, yerr=sigma*error_rms, 
+    #              color='black', marker='.',linestyle='-.',linewidth=1,
+    #              label='Mean profile', capsize=3)
+    # plt.fill_between(radius_physical, profile - sigma*error_std, profile + sigma*error_std, 
+    #                 alpha=0.3, label='Morphological scatter')
+    
+    plt.xlabel(fr'{xlabel}')
+    plt.ylabel(fr'{ylabel}')
     plt.title(title)
     plt.tight_layout()
 
@@ -669,7 +806,18 @@ def plot_fit_results(imagename, model_dict, image_results_conv,
         plt.xlabel(r'Projected Radius $R$ [px]')
         plt.ylabel(r'Radial Intensity $I(R)$')
         # plt.semilogx()
-    plt.legend(fontsize=11)
+    # plt.legend(fontsize=11)
+    plt.legend(
+        framealpha=0.9,
+        ncol=2,
+        # loc=loc,
+        # fontsize=int(fontsize-1),
+        fontsize=11,
+        handlelength=1,
+        handletextpad=0.5,
+        columnspacing=0.5,
+        borderaxespad=0.1
+    )
     plt.ylim(1e-7, -0.05 * np.log(ir[0]))
     # plt.xlim(0,3.0)
     plt.grid()
@@ -724,7 +872,8 @@ def total_flux_faster(data2D,mask):
 
 
 def plot_decomp_results(imagename,compact,extended_model,data_2D_=None,
-                        vmax_factor=0.5,vmin_factor=3,rms=None,
+                        bkg_image = None,
+                        vmax_factor=1.0,vmin_factor=1,rms=None,
                         figsize=(13,13),nfunctions=None,
                         obs_type = 'radio',
                         special_name=''):
@@ -748,6 +897,15 @@ def plot_decomp_results(imagename,compact,extended_model,data_2D_=None,
         residual_modeling = data_2D - (compact)
     else:
         residual_modeling = data_2D - (compact + extended_model)
+    if bkg_image is not None:
+        """
+        Background image is already contained in the arrays compact and extended_model.
+        So, (data_2D - compact) and (data_2D - extended_model) will not contain the background.
+        """
+        if isinstance(bkg_image, str):
+            bkg_image = load_fits_data(bkg_image)
+        extended = extended + bkg_image
+        residual_modeling = residual_modeling + bkg_image
     fig = plt.figure(figsize=figsize)
     ax1 = fig.add_subplot(3, 3, 1)
     # ax.yaxis.set_ticks([])
@@ -1449,10 +1607,14 @@ def plot_data_model_res(imagename, modelname, residualname, reference_image,
     #     norm = simple_norm(g,stretch='asinh',asinh_a=0.01)#,vmin=vmin,vmax=vmax)
     norm = visualization.simple_norm(g, stretch='linear',
                                      max_percent=max_percent_lowlevel)
-    norm2 = simple_norm(abs(g), min_cut=vmin, max_cut=vmax,
-                        stretch='asinh',asinh_a=0.05)  # , max_percent=max_percent_highlevel)
-
     ax = fig.add_subplot(1, 3, 1)
+    try:
+        norm2 = simple_norm(g, min_cut=vmin, max_cut=vmax,
+                            stretch='asinh',asinh_a=0.1)  # , max_percent=max_percent_highlevel)
+    except:
+        norm2 = simple_norm(abs(g), min_cut=vmin, max_cut=vmax,
+                            stretch='asinh',asinh_a=0.1)  # , max_percent=max_percent_highlevel)
+
 
     #     im = ax.imshow(g, cmap='gray_r',norm=norm,alpha=0.2)
 
@@ -1697,8 +1859,21 @@ def plot_image_model_res(imagename, modelname, residualname, reference_image, cr
     #     else:
     #         plt.close()
 
+from matplotlib.colors import Normalize
 
-def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
+class CustomLogNorm(Normalize): 
+    def __init__(self, vmin=None, vmax=None, log_factor=1.0, clip=False):
+        super().__init__(vmin, vmax, clip)
+        self.log_factor = log_factor  # Controls the "steepness" of log scaling
+        
+    def __call__(self, value, clip=None):
+        # Normalize to 0-1 range
+        result = super().__call__(value, clip)
+        # Apply custom log transformation
+        # The log_factor controls how "logarithmic" the scale appears
+        return np.log1p(result * self.log_factor) / np.log1p(self.log_factor)
+
+def eimshow_old(imagename, crop=False, box_size=128, center=None, with_wcs=True,
             vmax=None,fig=None,
             dx_shift = 0,
             dy_shift = 0,
@@ -1708,7 +1883,11 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
             add_contours=True, extent=None, projection='offset', add_beam=False,
             vmin_factor=3, plot_colorbar=False, cbar_orientation=None,pad=-0.2,
             figsize=(5, 5), aspect=None,n_pts_labels = 5,cbar_n_points=6,num_contours=6,
-            show_axis='on',flux_units='mJy',add_frequency=False,freq_label=None,
+            show_axis='on',
+            flux_units='mJy', flux_conversion_factor = 1.0,
+            cell_size = None,
+            add_frequency=False,freq_label=None,
+            plot_rms=False,
             source_distance=None, scalebar_length=250 * u.pc,
             ax=None, return_extent=False,no_show=False,
             save_name=None, special_name='',
@@ -1872,8 +2051,9 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
 
     if isinstance(imagename, str) == True:
         try:
-            cell_size = get_cell_size(imagename)
-            axis_units_label = r'Offset [arcsec]'
+            if cell_size is None:
+                cell_size = get_cell_size(imagename)
+                axis_units_label = r'Offset [arcsec]'
         except:
             print(
                 'No cell or pixel size information in the image wcs/header. '
@@ -1975,15 +2155,19 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
         vmax = vmax
     else:
         if vmax_factor is not None:
-            vmax = vmax_factor * g.max()
+            vmax = vmax_factor * np.nanmax(g)
         else:
-            vmax = 0.95 * g.max()
+            vmax = 0.95 * np.nanmax(g)
 
+    from matplotlib.colors import LogNorm
+    from matplotlib.colors import PowerNorm
 
     norm0 = simple_norm(g, stretch='linear', max_percent=99.0)
-    norm = simple_norm(g, stretch='sqrt', asinh_a=0.02, min_cut=vmin,
+    norm = simple_norm(g, stretch='asinh', asinh_a=0.02, min_cut=vmin,
                        max_cut=vmax)
-    
+    # norm = LogNorm(vmin=vmin, vmax=vmax, clip=True)
+    # norm = CustomLogNorm(vmin=vmin, vmax=vmax, log_factor=50.0,clip=True)
+    # norm = PowerNorm(gamma=0.7, vmin=vmin, vmax=vmax)
     if no_show:
         # # plot the first normalization (low level, transparent)
         im_plot = ax.imshow(g, origin='lower',aspect=aspect,
@@ -2011,11 +2195,11 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
 
     if add_contours:
         try:
-            levels_g = np.geomspace(2.0 * g.max(), 5 * std, num_contours)
+            levels_g = np.geomspace(2.0 * np.nanmax(g), 5 * std, num_contours)
             levels_low = np.asarray([4 * std, 3 * std])
-            levels_black = np.geomspace(vmin_factor * std + 0.00001, 2.5 * g.max(), num_contours)
+            levels_black = np.geomspace(vmin_factor * std + 0.00001, 2.5 * np.nanmax(g), num_contours)
             levels_neg = neg_levels * std
-            levels_white = np.geomspace(g.max(), 0.1 * g.max(), num_contours)
+            levels_white = np.geomspace(np.nanmax(g), 0.1 * np.nanmax(g), num_contours)
 
             contour_palette_ = ['#000000', '#444444', '#666666', '#EEEEEE',
                                '#EEEEEE', '#FFFFFF']
@@ -2076,11 +2260,24 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
                     frequency = f"{(getfreqs([imagename])[0]/1e9):.1f} GHz"
             else:
                 frequency = freq_label
-            ax.annotate(frequency,
-                        xy=(0.70, 0.82), xycoords='axes fraction',
-                        fontsize=12,
-                        bbox=dict(boxstyle='round', facecolor='white', alpha=0.9),
-                        color='red')
+            # ax.annotate(frequency,
+            #             xy=(0.70, 0.80), xycoords='figure fraction',
+            #             fontsize=12,
+            #             bbox=dict(boxstyle='round', facecolor='white', alpha=0.9),
+            #             color='red')
+            from matplotlib.offsetbox import AnchoredText
+
+            at = AnchoredText(frequency, 
+                            prop=dict(size=12, color='red'),
+                            frameon=True,
+                            loc='upper right',  # This uses a fixed position like 'upper right'
+                            bbox_to_anchor=(0.95, 0.95),
+                            bbox_transform=ax.transAxes,
+                            borderpad=0.5)
+            at.patch.set_boxstyle("round")
+            at.patch.set_alpha(0.9)
+            at.patch.set_facecolor("white")
+            ax.add_artist(at)
         except:
             pass
         
@@ -2118,20 +2315,44 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
             #                   orientation='horizontal', fraction=0.046, pad=0.04)
 
             if flux_units == 'Jy':
-                cb.set_label(r"Flux Density [Jy/Beam]", labelpad=10, fontsize=16)
-                cb.formatter = CustomFormatter(factor=1, useMathText=True)
+                cb.set_label(r"Flux Density [Jy/Beam]", labelpad=10, 
+                            #  fontsize=16
+                             )
+                cb.formatter = CustomFormatter(factor=1, 
+                                               useMathText=True)
                 cb.update_ticks()
             if flux_units == 'mJy':
-                cb.set_label(r"Flux Density [mJy/Beam]", labelpad=10, fontsize=16)
-                cb.formatter = CustomFormatter(factor=1000, useMathText=True)
+                cb.set_label(r"Flux Density [mJy/Beam]", labelpad=10, 
+                            #  fontsize=16
+                             )
+                cb.formatter = CustomFormatter(factor=1*1000, 
+                                               useMathText=True)
+                cb.update_ticks()
+            if flux_units == 'nanomaggies':
+                cb.set_label(r"Intensity [mJy/px] (from nanomaggies)", labelpad=10, 
+                            #  fontsize=14
+                             )
+                cb.formatter = CustomFormatter(factor=3.631e-3, useMathText=True)
+                cb.update_ticks()
+            if flux_units == 'mJy/px':
+                cb.set_label(r"Intensity [mJy/px] (from e/s)", labelpad=10, 
+                            #  fontsize=14
+                             )
+                cb.formatter = CustomFormatter(factor=flux_conversion_factor, useMathText=True)
                 cb.update_ticks()
             if flux_units == 'any':
-                cb.set_label(r"Pixel Intensity", labelpad=10, fontsize=16)
-                cb.formatter = CustomFormatter(factor=1, useMathText=True)
+                cb.set_label(r"Pixel Intensity", labelpad=10, 
+                            #  fontsize=16
+                             )
+                cb.formatter = CustomFormatter(factor=1, 
+                                               useMathText=True)
                 cb.update_ticks()
             if flux_units == 'sfr':
-                cb.set_label(r"${\rm M}_{\rm \odot} \ {\rm yr^{-1}} \ {\rm beam^{-1}}$", labelpad=10, fontsize=16)
-                cb.formatter = CustomFormatter(factor=1, useMathText=True)
+                cb.set_label(r"$[\mathrm{M}_{\odot}~\mathrm{yr^{-1}~beam^{-1}}]$", labelpad=10, 
+                            #  fontsize=16
+                             )
+                cb.formatter = CustomFormatter(factor=1, 
+                                               useMathText=True)
                 cb.update_ticks()
 
             levels_colorbar2 = np.geomspace(1.0 * vmax, 3 * std,
@@ -2154,89 +2375,236 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
         except:
             pass
 
+    # if plot_colorbar:
+            
+    #         divider = make_axes_locatable(ax)
+            
+    #         try:
+    #             if cbar_orientation == 'horizontal':
+    #                 # Use the pad parameter passed from the function call
+    #                 cax = divider.append_axes("top", size="7%", pad=pad)
+    #                 cb = fig.colorbar(im_plot, 
+    #                                 cax=cax,
+    #                                 fraction=0.046,
+    #                                 orientation='horizontal')
+    #             else:
+    #                 # For vertical colorbar
+    #                 cax = divider.append_axes("right", size="7%", pad=pad if pad is not None else 0.05)
+    #                 cb = plt.colorbar(im_plot, 
+    #                                 ax=ax,
+    #                                 fraction=0.046,
+    #                                 cax=cax
+    #                                 )
+
+    #             # Rest of the code remains the same
+    #             if flux_units == 'Jy':
+    #                 cb.set_label(r"Flux Density [Jy/Beam]", labelpad=10, fontsize=16)
+    #                 cb.formatter = CustomFormatter(factor=1, useMathText=True)
+    #                 cb.update_ticks()
+    #             if flux_units == 'mJy':
+    #                 cb.set_label(r"Flux Density [mJy/Beam]", labelpad=10, fontsize=16)
+    #                 cb.formatter = CustomFormatter(factor=1000, useMathText=True)
+    #                 cb.update_ticks()
+    #             if flux_units == 'any':
+    #                 cb.set_label(r"Pixel Intensity", labelpad=10, fontsize=16)
+    #                 cb.formatter = CustomFormatter(factor=1, useMathText=True)
+    #                 cb.update_ticks()
+    #             if flux_units == 'sfr':
+    #                 cb.set_label(r"${\rm M}_{\rm \odot} \ {\rm yr^{-1}} \ {\rm beam^{-1}}$", labelpad=10, fontsize=16)
+    #                 cb.formatter = CustomFormatter(factor=1, useMathText=True)
+    #                 cb.update_ticks()
+
+    #             levels_colorbar2 = np.geomspace(1.0 * vmax, 3 * std,
+    #                                             cbar_n_points)
+    #             cb.set_ticks(levels_colorbar2)
+
+    #             cb.ax.yaxis.set_tick_params(labelleft=True, labelright=False,
+    #                                         tick1On=False, tick2On=False)
+    #             cb.ax.yaxis.tick_right()
+
+    #             cb.ax.tick_params(labelsize=16)
+    #             cb.outline.set_linewidth(1)
+    #             # cbar.dividers.set_color(None)
+
+    #             cb.ax.xaxis.set_ticks_position('top')
+    #             cb.ax.xaxis.set_label_position('top')
+    #         except:
+    #             pass
+
     if plot_title is not None:
+        if (plot_rms) and (rms is not None):
+            plot_title = plot_title + f"\n$\\sigma_{{\\mathrm{{mad}}}}= {(rms*1e6):.2f}$ mJy/beam"
         ax.set_title(plot_title)
 
     if add_beam == True:
 
         if isinstance(imagename, str) == True:
             try:
+                # from matplotlib.patches import Ellipse
+                # imhd = imhead(imagename)
+                # a = imhd['restoringbeam']['major']['value']
+                # b = imhd['restoringbeam']['minor']['value']
+                # pa = imhd['restoringbeam']['positionangle']['value']
+                # if projection == 'px':
+                #     el = Ellipse((-(dx-dx_shift) * 0.85, 
+                #                   -(dy-dy_shift) * 0.85), 
+                #                  b, a, angle=pa,
+                #                  facecolor='black', alpha=1.0)
+                # else:
+                #     el = Ellipse((-(dx-dx_shift) * 0.85, 
+                #                   -(dy-dy_shift) * 0.85), 
+                #                  b / cell_size,
+                #                  a / cell_size,
+                #                  angle=pa, facecolor='black', alpha=1.0)
+
+                # ax.add_artist(el, )
+
+                # Oa = '{:.2f}'.format(a)
+                # Ob = '{:.2f}'.format(b)
+
+                # blabel_pos_y, blabel_pos_x = g.shape
+                # blabel_pos_x = (blabel_pos_x + dx+dx_shift)# * (dx/dy)
+                # blabel_pos_y = (blabel_pos_y + dy+dy_shift) 
+
+                # #         ax.annotate(r'$' + Oa +'\\times'+Ob+'$',
+                # #                     xy=(blabel_pos_x* 0.77, blabel_pos_y * 0.58), xycoords='data',
+                # #                     fontsize=15,bbox=dict(boxstyle='round', facecolor='white', alpha=0.9),
+                # #                     color='red')
+                # ax.annotate(r"$" + Oa + "''\\times" + Ob + "''$",
+                #             xy=(0.63, 0.08), xycoords='axes fraction',
+                #             fontsize=12,
+                #             bbox=dict(boxstyle='round', facecolor='white',
+                #                       alpha=0.9),
+                #             color='red')
+
+                # el.set_clip_box(ax.bbox)
+                from matplotlib.offsetbox import AnchoredText
                 from matplotlib.patches import Ellipse
+
+                # Your existing ellipse code
                 imhd = imhead(imagename)
                 a = imhd['restoringbeam']['major']['value']
                 b = imhd['restoringbeam']['minor']['value']
                 pa = imhd['restoringbeam']['positionangle']['value']
+
+                # Create the ellipse based on projection mode
                 if projection == 'px':
-                    el = Ellipse((-(dx-dx_shift) * 0.85, 
-                                  -(dy-dy_shift) * 0.85), 
-                                 b, a, angle=pa,
-                                 facecolor='black', alpha=1.0)
+                    el = Ellipse((-(dx-dx_shift) * 0.85, -(dy-dy_shift) * 0.85), 
+                                b, a, angle=pa, facecolor='black', alpha=1.0)
                 else:
-                    el = Ellipse((-(dx-dx_shift) * 0.85, 
-                                  -(dy-dy_shift) * 0.85), 
-                                 b / cell_size,
-                                 a / cell_size,
-                                 angle=pa, facecolor='black', alpha=1.0)
+                    el = Ellipse((-(dx-dx_shift) * 0.85, -(dy-dy_shift) * 0.85), 
+                                b / cell_size, a / cell_size,
+                                angle=pa, facecolor='black', alpha=1.0)
 
-                ax.add_artist(el, )
+                # Add the ellipse to the axes
+                ax.add_artist(el)
 
+                # Format the beam dimensions
                 Oa = '{:.2f}'.format(a)
                 Ob = '{:.2f}'.format(b)
 
-                blabel_pos_y, blabel_pos_x = g.shape
-                blabel_pos_x = (blabel_pos_x + dx+dx_shift)# * (dx/dy)
-                blabel_pos_y = (blabel_pos_y + dy+dy_shift) 
+                # Create an AnchoredText for the beam label
+                beam_label = r"$" + Oa + "''\\times" + Ob + "''$"
 
-                #         ax.annotate(r'$' + Oa +'\\times'+Ob+'$',
-                #                     xy=(blabel_pos_x* 0.77, blabel_pos_y * 0.58), xycoords='data',
-                #                     fontsize=15,bbox=dict(boxstyle='round', facecolor='white', alpha=0.9),
-                #                     color='red')
-                ax.annotate(r"$" + Oa + "''\\times" + Ob + "''$",
-                            xy=(0.63, 0.08), xycoords='axes fraction',
-                            fontsize=12,
-                            bbox=dict(boxstyle='round', facecolor='white',
-                                      alpha=0.9),
-                            color='red')
+                # Replace the annotation with AnchoredText
+                beam_text = AnchoredText(beam_label, 
+                                        loc='lower right',  # Position in lower right corner
+                                        prop=dict(size=12, color='red'),
+                                        frameon=True,
+                                        bbox_to_anchor=(0.95, 0.05),  # Fine-tune position (right side, near bottom)
+                                        bbox_transform=ax.transAxes,
+                                        borderpad=0.3)
 
+                # Style the text box
+                beam_text.patch.set_boxstyle("round,pad=0.3")
+                beam_text.patch.set_alpha(0.9)
+                beam_text.patch.set_facecolor("white")
+
+                # Add the text to the axes
+                ax.add_artist(beam_text)
+
+                # Ensure the ellipse is properly clipped
                 el.set_clip_box(ax.bbox)
             except:
                 print('Error adding beam.')
 
     if source_distance is not None:
         # try:
+        # ww.wcs.radesys = 'icrs'
+        # radesys = ww.wcs.radesys
+        # # distance = source_distance * u.Mpc
+        # distance = angular_distance_cosmo(source_distance)  # * u.Mpc
+        # #         scalebar_length = scalebar_length
+        # scalebar_loc = (0.99, 0.99)  # y, x
+        # left_side = coordinates.SkyCoord(
+        #     *ww.celestial.wcs_pix2world(
+        #         g.shape[0],
+        #         g.shape[1],
+        #         0) * u.deg,
+        #     frame=radesys.lower())
+
+        # length = (scalebar_length / distance).to(u.arcsec,
+        #                                          u.dimensionless_angles())
+
+        # scale_bar_length_pixels = length.value / cell_size
+        # scale_bar_position = (-(dx-1*dx_shift) * 0.7, +(dy+1*dy_shift) * 0.82)
+        # # scale_bar_position = (-(dx-1*dx_shift) * 0.50, -(dy-1*dy_shift) * 0.9)
+
+        # ax.annotate('',
+        #             xy=(scale_bar_position[0] + scale_bar_length_pixels,
+        #                 scale_bar_position[1]),
+        #             # xy=(0.1, 0.1), ##
+        #             xytext=scale_bar_position, arrowprops=dict(arrowstyle='-',
+        #                                                        color='black', #navy
+        #                                                        lw=5))
+
+        # ax.text(scale_bar_position[0] + scale_bar_length_pixels / 2,
+        #         scale_bar_position[1] + scale_bar_length_pixels / 15,
+        #         f'{scalebar_length}', fontsize=20,
+        #         color='black', ha='center',weight='bold',
+        #         va='bottom')
+
+        from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
+        # from matplotlib.transforms import blended_transform_factory
+
+        import matplotlib.font_manager as fm
+
+        # Calculate the scale bar length in pixels (keeping your existing calculation)
         ww.wcs.radesys = 'icrs'
         radesys = ww.wcs.radesys
-        # distance = source_distance * u.Mpc
-        distance = angular_distance_cosmo(source_distance)  # * u.Mpc
-        #         scalebar_length = scalebar_length
-        scalebar_loc = (0.99, 0.99)  # y, x
-        left_side = coordinates.SkyCoord(
-            *ww.celestial.wcs_pix2world(
-                g.shape[0],
-                g.shape[1],
-                0) * u.deg,
-            frame=radesys.lower())
-
-        length = (scalebar_length / distance).to(u.arcsec,
-                                                 u.dimensionless_angles())
-
+        distance = angular_distance_cosmo(source_distance)
+        length = (scalebar_length / distance).to(u.arcsec, u.dimensionless_angles())
         scale_bar_length_pixels = length.value / cell_size
-        scale_bar_position = (-(dx-1*dx_shift) * 0.7, +(dy+1*dy_shift) * 0.82)
-        # scale_bar_position = (-(dx-1*dx_shift) * 0.50, -(dy-1*dy_shift) * 0.9)
+        ylim = ax.get_ylim()
+        data_range = ylim[1] - ylim[0]
+        thickness_data_units = data_range * 0.01 
+        # thickness_fraction = 0.001  # Adjust this value to control thickness
+        # thickness_points = thickness_fraction * fig.get_figheight() * fig.dpi
 
-        ax.annotate('',
-                    xy=(scale_bar_position[0] + scale_bar_length_pixels,
-                        scale_bar_position[1]),
-                    # xy=(0.1, 0.1), ##
-                    xytext=scale_bar_position, arrowprops=dict(arrowstyle='-',
-                                                               color='black', #navy
-                                                               lw=5))
+        # Create a blend transform - x in data coordinates, y in figure coordinates
+        # trans_blend = blended_transform_factory(ax.transData, fig.transFigure)
 
-        ax.text(scale_bar_position[0] + scale_bar_length_pixels / 2,
-                scale_bar_position[1] + scale_bar_length_pixels / 15,
-                f'{scalebar_length}', fontsize=20,
-                color='black', ha='center',weight='bold',
-                va='bottom')
+        # Create an AnchoredSizeBar positioned in the upper left
+        fontprops = fm.FontProperties(size=20, weight='bold')
+        scalebar = AnchoredSizeBar(
+            ax.transData,                      # Transform (data coordinates)
+            scale_bar_length_pixels,           # Length in pixels
+            f'{scalebar_length}',              # Label
+            'upper left',                      # Position - now set to upper left
+            pad=0.5,                           # Padding around the scalebar
+            borderpad=0.5,                     # Padding between scalebar and figure edge
+            sep=5,                             # Separation between bar and label
+            frameon=False,                     # No frame around the scalebar
+            size_vertical=thickness_data_units,# Thickness of the bar
+            # linewidth=4,
+            color='black',                     # Color of the bar
+            fontproperties=fontprops,          # Font properties for the label
+            label_top=True                     # Label above the bar (changed to True for upper position)
+        )
+
+        # Add the scalebar to the plot
+        ax.add_artist(scalebar)
+        
         # except:
         #     print('Error adding scalebar.')
     if text_annotation:
@@ -2245,7 +2613,7 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
 
     if save_name != None:
     #         if not os.path.exists(save_name+special_name+'.jpg'):
-        plt.savefig(save_name + special_name + '.jpg', dpi=600,
+        plt.savefig(save_name + special_name + '.pdf', dpi=600,
                     bbox_inches='tight')
         # plt.savefig(save_name + special_name + '.pdf', dpi=600,
         #             bbox_inches='tight')
@@ -2257,6 +2625,1577 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
     else:
         return ax
 
+
+def eimshow_v2(imagename, crop=False, box_size=128, center=None, with_wcs=True,
+            vmax=None,fig=None,
+            dx_shift = 0,
+            dy_shift = 0,
+            vmax_factor=0.5, neg_levels=np.asarray([-3]), CM='magma_r',
+            cmap_cont='magma_r',
+            rms=None, plot_title=None, apply_mask=False,
+            add_contours=True, extent=None, projection='offset', add_beam=False,
+            vmin_factor=3, plot_colorbar=False, cbar_orientation=None,pad=-0.2,
+            figsize=(5, 5), aspect=None,n_pts_labels = 5,cbar_n_points=6,num_contours=6,
+            show_axis='on',
+            flux_units='mJy', flux_conversion_factor = 1.0,
+            cell_size = None,
+            add_frequency=False,freq_label=None,
+            plot_rms=False,
+            source_distance=None, scalebar_length=250 * u.pc,
+            ax=None, return_extent=False,no_show=False,
+            save_name=None, special_name='',
+            text_annotation=None, text_position=(0.3, 0.8),
+            verbose = 0):
+    """
+    Customised imshow function for plotting images. It includes the option to
+    automatically add contour levels, custom projections, colorbars, scalebars, etc.
+
+    Parameters
+    ----------
+    imagename : str, np.ndarray
+        Path to the image.
+    crop : bool, optional
+        Crop the image to the box_size. The default is False.
+    box_size : int, optional
+        Size of the box to crop the image. The default is 128.
+    center : tuple, optional
+        Center of the image. The default is None.
+    with_wcs : bool, optional
+        Use the wcs information of the image. The default is True.
+    vmax : float, optional
+        Maximum value of the colormap. The default is None.
+    vmax_factor : float, optional
+        Factor to multiply the maximum value of the image to set the
+        maximum value of the colormap. The default is 0.5.
+    neg_levels : np.ndarray, optional
+        Negative levels for the contours. The default is np.asarray([-3]).
+    CM : str, optional
+        Colormap. The default is 'magma_r'.
+    cmap_cont : str, optional
+        Colormap for the contours. The default is 'terrain'.
+    rms : float, optional
+        RMS of the image. The default is None.
+    plot_title : str, optional
+        Title of the plot. The default is None.
+    apply_mask : bool, optional
+        Apply a mask to the image. The default is False.
+    add_contours : bool, optional
+        Add contours to the image. The default is True.
+    extent : list, optional
+        Extent of the image. The default is None.
+    projection : str, optional
+        Projection of the image. The default is 'offset'.
+    add_beam : bool, optional
+        Add the beam to the image. The default is False.
+    vmin_factor : int, optional
+        Factor to multiply the standard deviation of the image to set the
+        minimum value of the colormap. The default is 3.
+    plot_colorbar : bool, optional
+        Plot the colorbar. The default is True.
+    figsize : tuple, optional
+        Size of the figure. The default is (5, 5).
+    aspect : str, optional
+        Aspect of the image. The default is None.
+    show_axis : str, optional
+        Show the axis. The default is 'on'.
+    flux_units : str, optional
+        Units of the flux. The default is 'Jy'.
+    source_distance : float, optional
+        Distance to the source. The default is None.
+    scalebar_length : float, optional
+        Length of the scalebar. The default is 250 * u.pc.
+    ax : matplotlib.pyplot.axis, optional
+        Axis of the plot. The default is None.
+    save_name : str, optional
+        Name of the output file. The default is None.
+    special_name : str, optional
+        Special name for the output file. The default is ''.
+    """
+    try:
+        import cmasher as cmr
+        # print('Imported cmasher for density maps.'
+        #       'If you would like to use, examples:'
+        #       'CM = cmr.ember,'
+        #       'CM = cmr.flamingo,'
+        #       'CM = cmr.gothic'
+        #       'CM = cmr.lavender')
+        """
+        ... lilac,rainforest,sepia,sunburst,torch.
+        Diverging: copper,emergency,fusion,infinity,pride'
+        """
+    except:
+        print('Error importing cmasher. If you want '
+              'to use its colormaps, install it. '
+              'Then you can use for example:'
+              'CM = cmr.flamingo')
+    if ax is None:
+        fig = plt.figure(figsize=figsize)
+        # if isinstance(box_size, int):
+        #     fig = plt.figure(figsize=figsize)
+        # else:
+        #     scale_fig_x = box_size[0]/box_size[1]
+        #     fig = plt.figure(figsize=(figsize[0]*scale_fig_x,figsize[1]))
+    else:
+        if fig is None:
+            fig = plt.figure(figsize=figsize)
+        else:
+            pass
+    if isinstance(imagename, str) == True:
+        if with_wcs == True:
+            hdu = pf.open(imagename)
+            # Find the best extension with science data and WCS
+            sci_ext, data, ww = find_sci_extension(hdu)
+            
+            # If we found a valid extension, use it
+            if sci_ext is not None:
+                g = data
+                
+                # Handle different data dimensions
+                if g is not None:
+                    if len(g.shape) == 4:  # [polarization, frequency, y, x]
+                        g = g[0, 0]
+                    elif len(g.shape) == 3:  # [frequency, y, x] or [polarization, y, x]
+                        g = g[0]
+            else:
+                # Fallback to original method if no valid extension found
+                try:
+                    ww = WCS(hdu[0].header, naxis=2)
+                    if len(np.shape(hdu[0].data)) == 4:
+                        g = hdu[0].data[0][0]
+                    elif len(np.shape(hdu[0].data)) == 3:
+                        g = hdu[0].data[0]
+                    else:
+                        g = hdu[0].data
+                except:
+                    g = load_fits_data(imagename)
+        else:
+            g = load_fits_data(imagename)
+
+        if crop == True:
+            yin, yen, xin, xen = do_cutout(imagename, box_size=box_size,
+                                           center=center, return_='box')
+            
+            # Update the WCS to match the cropped region if using celestial projection
+            if with_wcs and isinstance(imagename, str):
+                try:
+                    # Create a new WCS with correct reference pixel 
+                    new_wcs = ww.deepcopy()
+                    
+                    # For DEC coordinate direction issue, we need to examine and possibly 
+                    # flip the y-axis transformation
+                    
+                    # Check the CD matrix or PC matrix to determine axis directions
+                    try:
+                        # If CD matrix exists, use it
+                        cd = new_wcs.wcs.cd
+                        # Check signs to determine direction
+                        cd12 = cd[0, 1]  # How x pixel affects DEC
+                        cd21 = cd[1, 0]  # How y pixel affects RA
+                        cd11 = cd[0, 0]  # How x pixel affects RA
+                        cd22 = cd[1, 1]  # How y pixel affects DEC
+                        
+                        # For typical celestial images:
+                        # cd11 should be negative (RA decreases with increasing x)
+                        # cd22 should be positive (DEC increases with increasing y)
+                        
+                        # If cd22 is negative, DEC decreases with increasing y 
+                        # which is the opposite of what we want
+                        if cd22 < 0:
+                            # We need to invert the y-axis reference pixel shift
+                            yin_use = -yin
+                        else:
+                            yin_use = yin
+                    except AttributeError:
+                        # If no CD matrix, try PC matrix and CDELT
+                        try:
+                            pc = new_wcs.wcs.get_pc()
+                            cdelt = new_wcs.wcs.cdelt
+                            
+                            # Check the y-direction
+                            if (pc[1, 1] * cdelt[1]) < 0:
+                                # DEC decreases with increasing y
+                                yin_use = -yin
+                            else:
+                                yin_use = yin
+                        except:
+                            # If we can't determine, use the default
+                            yin_use = yin
+                    
+                    # Adjust the reference pixel coordinates
+                    new_wcs.wcs.crpix[0] = ww.wcs.crpix[0] - xin
+                    new_wcs.wcs.crpix[1] = ww.wcs.crpix[1] - yin_use
+                    
+                    # Update the WCS
+                    ww = new_wcs
+                    
+                except Exception as e:
+                    print(f"Warning: Could not update WCS for cropped region: {e}")
+                    print("Celestial projection may not accurately reflect the cropped data.")
+            
+            # Perform the actual cropping of the data
+            g = g[xin:xen, yin:yen]
+            
+            # Now crop the image data
+            g = g[xin:xen, yin:yen]
+
+        if apply_mask == True:
+            _, mask_d = mask_dilation(imagename, cell_size=None,
+                                      sigma=6, rms=None,
+                                      dilation_size=None,
+                                      iterations=2, dilation_type='disk',
+                                      PLOT=False, show_figure=False)
+            print('Masking emission....')
+            g = g * mask_d[xin:xen, yin:yen]
+        
+        g = np.nan_to_num(g,nan=0)
+    
+    else:
+        g = np.nan_to_num(imagename,nan=0)
+        mask_d = 1
+        # print('3', g)
+
+        if crop == True:
+            xin, xen, yin, yen = do_cutout(imagename, box_size=box_size,
+                                           center=center, return_='box')
+            g = g[xin:xen, yin:yen]
+            if apply_mask == True:
+                print('Masking emission....')
+                g = g * mask_d[xin:xen, yin:yen]
+
+    if rms is not None:
+        std = rms
+    else:
+        if mad_std(g) == 0:
+            """
+            About std:
+                mad_std is much more robust than np.std.
+                But:
+                    if mad_std is applied to a masked image, with zero
+                    values outside the emission region, mad_std(image) is zero!
+                    So, in that case, np.std is a good option.
+            """
+            # print('5', g)
+            std = np.nanstd(g)
+        else:
+            std = mad_std(g)
+
+    if isinstance(imagename, str) == True:
+        try:
+            if cell_size is None:
+                cell_size = get_cell_size(imagename)
+                axis_units_label = r'Offset [arcsec]'
+        except:
+            print(
+                'No cell or pixel size information in the image wcs/header. '
+                'Setting cell/pixel size = 1.')
+            cell_size = 1
+            axis_units_label = r'Offset [px]'
+    else:
+        cell_size = 1
+        axis_units_label = r'Offset [px]'
+    
+    dx = g.shape[1] / 2
+    dy = g.shape[0] / 2
+    
+    # Check if we're using celestial projection
+    use_celestial = (projection == 'celestial') and (with_wcs == True) and (isinstance(imagename, str) == True)
+    
+    if ax is None:
+        if use_celestial:
+            ax = fig.add_subplot(projection=ww.celestial)
+            ax.set_xlabel('RA', fontsize=14)
+            ax.set_ylabel('DEC', fontsize=14)
+            ax.grid()
+        elif isinstance(imagename, str) == False:
+            projection = 'px'
+            ax = fig.add_subplot()
+            cell_size = 1
+            ax.set_xlabel('x pix')
+            ax.set_ylabel('y pix')
+            axis_units_label = r'Offset [px]'
+            ax.set_xlabel(axis_units_label, fontsize=14)
+            ax.set_ylabel(axis_units_label, fontsize=14)
+        else:
+            ax = fig.add_subplot()
+            # dx = g.shape[0] / 2
+            axis_units_label = r'Offset [arcsec]'
+            ax.set_xlabel(axis_units_label, fontsize=14)
+            ax.set_ylabel(axis_units_label, fontsize=14)
+    else:
+        projection = 'offset'
+        if projection == 'offset':
+            # ax = fig.add_subplot()
+            # dx = g.shape[0] / 2
+            axis_units_label = r'Offset [arcsec]'
+            ax.set_xlabel(axis_units_label, fontsize=14)
+            ax.set_ylabel(axis_units_label, fontsize=14)
+
+    # Only set ticks for non-celestial projections
+    if not use_celestial:
+        xticks = np.linspace(-dx+dx_shift/2, dx+dx_shift/2, n_pts_labels)
+        yticks = np.linspace(-dy+dy_shift/2, dy+dy_shift/2, n_pts_labels)
+        xticklabels = np.linspace(-(dx-dx_shift/2) * cell_size, +(dx+dx_shift/2) * cell_size, n_pts_labels)
+        yticklabels = np.linspace(-(dy-dy_shift/2) * cell_size, +(dy+dy_shift/2) * cell_size, n_pts_labels)
+
+        if (projection =='offset') or (projection == 'celestial'):
+            xticklabels = ['{:.2f}'.format(xtick) for xtick in xticklabels]
+            yticklabels = ['{:.2f}'.format(ytick) for ytick in yticklabels]
+        else:
+            xticklabels = ['{:.0f}'.format(xtick) for xtick in xticklabels]
+            yticklabels = ['{:.0f}'.format(ytick) for ytick in yticklabels]
+
+        ax.set_yticks(yticks, yticklabels)
+        ax.set_xticks(xticks, xticklabels)
+        ax.set_aspect('equal')
+
+        ax.tick_params(axis='y', which='both', labelsize=16, color='black', pad=5)
+        ax.tick_params(axis='x', which='both', labelsize=16, color='black', pad=5)
+
+        if projection != 'celestial':
+            ax.grid(which='both', axis='both', color='gray', linewidth=0.6, alpha=0.7)
+            ax.grid(which='both', axis='both', color='gray', linewidth=0.6, alpha=0.7)
+        else:
+            ax.grid()
+
+    ax.axis(show_axis)
+
+    vmin = vmin_factor * std
+    if extent is None:
+        extent = [-dx+dx_shift, dx+dx_shift, -dy+dy_shift, dy+dy_shift]
+    #     print(g)
+
+    if vmax is not None:
+        vmax = vmax
+    else:
+        if vmax_factor is not None:
+            vmax = vmax_factor * np.nanmax(g)
+        else:
+            vmax = 0.95 * np.nanmax(g)
+
+    from matplotlib.colors import LogNorm
+    from matplotlib.colors import PowerNorm
+
+    norm0 = simple_norm(g, stretch='linear', max_percent=99.0)
+    norm = simple_norm(g, stretch='asinh', asinh_a=0.02, min_cut=vmin,
+                       max_cut=vmax)
+
+    if no_show:
+        # # plot the first normalization (low level, transparent)
+        im_plot = ax.imshow(g, origin='lower',aspect=aspect,
+                            cmap='gray', norm=norm0, alpha=0.0, extent=extent)
+
+
+        im_plot = ax.imshow((g), cmap=CM, 
+                            origin='lower', 
+                            alpha=0.0, extent=extent,
+                            norm=norm,
+                            aspect=aspect)  # ,vmax=vmax, vmin=vmin)#norm=norm
+
+    else:
+        im_plot = ax.imshow(g,
+                            # origin='lower',
+                            aspect=aspect,
+                            cmap='gray', norm=norm0, alpha=0.5, extent=extent)
+
+
+        im_plot = ax.imshow((g), cmap=CM, 
+                            # origin='lower', 
+                            alpha=1.0, extent=extent,
+                            norm=norm,
+                            aspect=aspect)  # ,vmax=vmax, vmin=vmin)#norm=norm
+        
+    if add_contours:
+        try:
+            levels_g = np.geomspace(2.0 * np.nanmax(g), 5 * std, num_contours)
+            levels_low = np.asarray([4 * std, 3 * std])
+            levels_black = np.geomspace(vmin_factor * std + 0.00001, 2.5 * np.nanmax(g), num_contours)
+            levels_neg = neg_levels * std
+            levels_white = np.geomspace(np.nanmax(g), 0.1 * np.nanmax(g), num_contours)
+
+            contour_palette_ = ['#000000', '#444444', '#666666', '#EEEEEE',
+                               '#EEEEEE', '#FFFFFF']
+            if '_r' in CM:
+                contour_palette = contour_palette_
+            else:
+                contour_palette = contour_palette_[::-1]
+
+            if no_show:
+                contour = ax.contour(g, levels=levels_g[::-1],
+                                    #  colors=contour_palette[::-1], #for dark cmap
+                                    colors=contour_palette, #for light cmap
+                                    # aspect=aspect,
+                                    linewidths=1.2, extent=extent,
+                                    alpha=0.0)
+
+                contour = ax.contour(g, levels=levels_low[::-1],
+                                    colors='brown',
+                                    # aspect=aspect,
+                                    # linestyles=['dashed', 'dashdot'],
+                                    linewidths=1.0, extent=extent,
+                                    alpha=0.0)
+
+            else:
+                contour = ax.contour(g, levels=levels_g[::-1],
+                                    #  colors=contour_palette[::-1], #for dark cmap
+                                    colors=contour_palette, #for light cmap
+                                    # aspect=aspect,
+                                    linewidths=1.2, extent=extent,
+                                    alpha=1.0)
+
+                contour = ax.contour(g, levels=levels_low[::-1],
+                                    colors='brown',
+                                    # aspect=aspect,
+                                    # linestyles=['dashed', 'dashdot'],
+                                    linewidths=1.0, extent=extent,
+                                    alpha=1.0)
+            # ax.clabel(contour, inline=1, fontsize=10)
+        except:
+            pass
+        try:
+            if no_show:
+                ax.contour(g, levels=levels_neg[::-1], colors='k',
+                        linewidths=1.0, extent=extent,
+                        alpha=0.0)
+
+            else:
+                ax.contour(g, levels=levels_neg[::-1], colors='k',
+                        linewidths=1.0, extent=extent,
+                        alpha=1.0)
+        except:
+            pass
+        
+    if add_frequency:
+        try:
+            if freq_label is None:
+                if isinstance(imagename, str) == True:
+                    frequency = f"{(getfreqs([imagename])[0]/1e9):.1f} GHz"
+            else:
+                frequency = freq_label
+            from matplotlib.offsetbox import AnchoredText
+
+            at = AnchoredText(frequency, 
+                            prop=dict(size=12, color='red'),
+                            frameon=True,
+                            loc='upper right',  # This uses a fixed position like 'upper right'
+                            bbox_to_anchor=(0.95, 0.95),
+                            bbox_transform=ax.transAxes,
+                            borderpad=0.5)
+            at.patch.set_boxstyle("round")
+            at.patch.set_alpha(0.9)
+            at.patch.set_facecolor("white")
+            ax.add_artist(at)
+        except:
+            pass
+        
+    
+    if plot_colorbar:
+        # Modified colorbar handling for celestial projection
+        if use_celestial:
+            # Create a new axis for the colorbar that doesn't overlap with the image
+            # Position [left, bottom, width, height] in figure coordinates
+            # Adjust position to be outside the main plot
+            
+            # Get the position of the main axis
+            pos = ax.get_position()
+            
+            # Calculate colorbar position to be right of the main plot
+            # with a small gap and using the full height
+            # Increased width from 0.02 to 0.04 for better visibility
+            cbar_ax = fig.add_axes([pos.x1 + 0.02, pos.y0, 0.04, pos.height])
+            
+            # Create the colorbar
+            cb = fig.colorbar(im_plot, cax=cbar_ax)
+            
+            # Set the colorbar label depending on flux units
+            if flux_units == 'Jy':
+                cb.set_label(r"Flux Density [Jy/Beam]", labelpad=10, fontsize=16)
+                cb.formatter = CustomFormatter(factor=1, useMathText=True)
+                cb.update_ticks()
+            elif flux_units == 'mJy':
+                cb.set_label(r"Flux Density [mJy/Beam]", labelpad=10, fontsize=16)
+                cb.formatter = CustomFormatter(factor=1*1000, useMathText=True)
+                cb.update_ticks()
+            elif flux_units == 'nanomaggies':
+                cb.set_label(r"Intensity [mJy/px] (from nanomaggies)", labelpad=10, fontsize=14)
+                cb.formatter = CustomFormatter(factor=3.631e-3, useMathText=True)
+                cb.update_ticks()
+            elif flux_units == 'mJy/px':
+                cb.set_label(r"Intensity [mJy/px] (from e/s)", labelpad=10, fontsize=14)
+                cb.formatter = CustomFormatter(factor=flux_conversion_factor, useMathText=True)
+                cb.update_ticks()
+            elif flux_units == 'any':
+                cb.set_label(r"Pixel Intensity", labelpad=10, fontsize=16)
+                cb.formatter = CustomFormatter(factor=1, useMathText=True)
+                cb.update_ticks()
+            elif flux_units == 'sfr':
+                cb.set_label(r"${\rm M}_{\rm \odot} \ {\rm yr^{-1}} \ {\rm beam^{-1}}$", labelpad=10, fontsize=16)
+                cb.formatter = CustomFormatter(factor=1, useMathText=True)
+                cb.update_ticks()
+                
+            # Set custom ticks
+            levels_colorbar2 = np.geomspace(1.0 * vmax, 3 * std, cbar_n_points)
+            cb.set_ticks(levels_colorbar2)
+            cb.ax.tick_params(labelsize=16)
+            cb.outline.set_linewidth(1)
+            
+        else:
+            # Original colorbar code for non-celestial projections
+            divider = make_axes_locatable(ax)
+            
+            try:
+                if cbar_orientation == 'horizontal':
+                    cax = divider.append_axes("top", size="7%", pad=0.05)
+                    cb = fig.colorbar(im_plot, 
+                                      cax=cax, fraction=0.046,
+                                      orientation='horizontal')
+                else:
+                    cax = divider.append_axes("right", size="7%", pad=0.05)
+                    cb = plt.colorbar(im_plot, 
+                                    ax=ax, fraction=0.046,
+                                    cax=cax
+                                    )
+
+                if flux_units == 'Jy':
+                    cb.set_label(r"Flux Density [Jy/Beam]", labelpad=10, fontsize=16)
+                    cb.formatter = CustomFormatter(factor=1, 
+                                                useMathText=True)
+                    cb.update_ticks()
+                if flux_units == 'mJy':
+                    cb.set_label(r"Flux Density [mJy/Beam]", labelpad=10, fontsize=16)
+                    cb.formatter = CustomFormatter(factor=1*1000, 
+                                                useMathText=True)
+                    cb.update_ticks()
+                if flux_units == 'nanomaggies':
+                    cb.set_label(r"Intensity [mJy/px] (from nanomaggies)", labelpad=10, fontsize=14)
+                    cb.formatter = CustomFormatter(factor=3.631e-3, useMathText=True)
+                    cb.update_ticks()
+                if flux_units == 'mJy/px':
+                    cb.set_label(r"Intensity [mJy/px] (from e/s)", labelpad=10, fontsize=14)
+                    cb.formatter = CustomFormatter(factor=flux_conversion_factor, useMathText=True)
+                    cb.update_ticks()
+                if flux_units == 'any':
+                    cb.set_label(r"Pixel Intensity", labelpad=10, fontsize=16)
+                    cb.formatter = CustomFormatter(factor=1, 
+                                                useMathText=True)
+                    cb.update_ticks()
+                if flux_units == 'sfr':
+                    cb.set_label(r"${\rm M}_{\rm \odot} \ {\rm yr^{-1}} \ {\rm beam^{-1}}$", labelpad=10, fontsize=16)
+                    cb.formatter = CustomFormatter(factor=1, 
+                                                useMathText=True)
+                    cb.update_ticks()
+
+                levels_colorbar2 = np.geomspace(1.0 * vmax, 6 * std,
+                                                cbar_n_points)
+                cb.set_ticks(levels_colorbar2)
+
+                cb.ax.yaxis.set_tick_params(labelleft=True, labelright=False,
+                                            tick1On=False, tick2On=False)
+                cb.ax.yaxis.tick_right()
+
+                cb.ax.tick_params(labelsize=16)
+                cb.outline.set_linewidth(1)
+                # cbar.dividers.set_color(None)
+
+                # Make sure the color bar has ticks and labels at the top, since the bar is on the top as well.
+                if cbar_orientation == 'horizontal':
+                    cb.ax.xaxis.set_ticks_position('top')
+                    cb.ax.xaxis.set_label_position('top')
+            except Exception as e:
+                print(f"Error creating colorbar: {e}")
+
+
+    if plot_title is not None:
+        if (plot_rms) and (rms is not None):
+            plot_title = plot_title + f"\n$\\sigma_{{\\mathrm{{mad}}}}= {(rms*1e6):.2f}"+r"~\mathrm{[\mu Jy/beam]}$"
+        ax.set_title(plot_title)
+
+    if add_beam == True:
+        if isinstance(imagename, str) == True:
+            try:
+                from matplotlib.offsetbox import AnchoredText
+                from matplotlib.patches import Ellipse
+
+                # Your existing ellipse code
+                imhd = imhead(imagename)
+                a = imhd['restoringbeam']['major']['value']
+                b = imhd['restoringbeam']['minor']['value']
+                pa = imhd['restoringbeam']['positionangle']['value']
+
+                # Create the ellipse based on projection mode
+                if projection == 'px':
+                    el = Ellipse((-(dx-dx_shift) * 0.85, -(dy-dy_shift) * 0.85), 
+                                b, a, angle=pa, facecolor='black', alpha=1.0)
+                else:
+                    el = Ellipse((-(dx-dx_shift) * 0.85, -(dy-dy_shift) * 0.85), 
+                                b / cell_size, a / cell_size,
+                                angle=pa, facecolor='black', alpha=1.0)
+
+                # Add the ellipse to the axes
+                ax.add_artist(el)
+
+                # Format the beam dimensions
+                Oa = '{:.2f}'.format(a)
+                Ob = '{:.2f}'.format(b)
+
+                # Create an AnchoredText for the beam label
+                beam_label = r"$" + Oa + "''\\times" + Ob + "''$"
+
+                # Replace the annotation with AnchoredText
+                beam_text = AnchoredText(beam_label, 
+                                        loc='lower right',  # Position in lower right corner
+                                        prop=dict(size=12, color='red'),
+                                        frameon=True,
+                                        bbox_to_anchor=(0.95, 0.05),  # Fine-tune position (right side, near bottom)
+                                        bbox_transform=ax.transAxes,
+                                        borderpad=0.3)
+
+                # Style the text box
+                beam_text.patch.set_boxstyle("round,pad=0.3")
+                beam_text.patch.set_alpha(0.9)
+                beam_text.patch.set_facecolor("white")
+
+                # Add the text to the axes
+                ax.add_artist(beam_text)
+
+                # Ensure the ellipse is properly clipped
+                el.set_clip_box(ax.bbox)
+            except:
+                print('Error adding beam.')
+
+    if source_distance is not None:
+        from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
+        # from matplotlib.transforms import blended_transform_factory
+
+        import matplotlib.font_manager as fm
+
+        # Calculate the scale bar length in pixels (keeping your existing calculation)
+        ww.wcs.radesys = 'icrs'
+        radesys = ww.wcs.radesys
+        distance = angular_distance_cosmo(source_distance)
+        length = (scalebar_length / distance).to(u.arcsec, u.dimensionless_angles())
+        scale_bar_length_pixels = length.value / cell_size
+        ylim = ax.get_ylim()
+        data_range = ylim[1] - ylim[0]
+        thickness_data_units = data_range * 0.01 
+        # thickness_fraction = 0.001  # Adjust this value to control thickness
+        # thickness_points = thickness_fraction * fig.get_figheight() * fig.dpi
+
+        # Create a blend transform - x in data coordinates, y in figure coordinates
+        # trans_blend = blended_transform_factory(ax.transData, fig.transFigure)
+
+        # Create an AnchoredSizeBar positioned in the upper left
+        fontprops = fm.FontProperties(size=20, weight='bold')
+        scalebar = AnchoredSizeBar(
+            ax.transData,                      # Transform (data coordinates)
+            scale_bar_length_pixels,           # Length in pixels
+            f'{scalebar_length}',              # Label
+            'upper left',                      # Position - now set to upper left
+            pad=0.5,                           # Padding around the scalebar
+            borderpad=0.5,                     # Padding between scalebar and figure edge
+            sep=5,                             # Separation between bar and label
+            frameon=False,                     # No frame around the scalebar
+            size_vertical=thickness_data_units,# Thickness of the bar
+            # linewidth=4,
+            color='black',                     # Color of the bar
+            fontproperties=fontprops,          # Font properties for the label
+            label_top=True                     # Label above the bar (changed to True for upper position)
+        )
+
+        # Add the scalebar to the plot
+        ax.add_artist(scalebar)
+        
+    if text_annotation:
+        ax.annotate(text_annotation, xy=text_position, xycoords='figure fraction',
+                    fontsize=18, color='black', fontweight='bold')
+
+    if save_name != None:
+    #         if not os.path.exists(save_name+special_name+'.jpg'):
+        plt.savefig(save_name + special_name + '.pdf', dpi=600,
+                    bbox_inches='tight')
+        # plt.savefig(save_name + special_name + '.pdf', dpi=600,
+        #             bbox_inches='tight')
+    # if no_show:
+    #     plt.clf()
+    #     plt.close()
+    if return_extent:
+        return ax,extent
+    else:
+        return ax
+
+def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
+            vmax=None,fig=None,
+            dx_shift = 0,
+            dy_shift = 0,
+            vmax_factor=0.5, neg_levels=np.asarray([-3]), CM='magma_r',
+            cmap_cont='magma_r', stretch='asinh', asinh_a=0.075,
+            rms=None, plot_title=None, apply_mask=False,
+            add_contours=True, extent=None, projection='offset', add_beam=False,
+            vmin_factor=3, plot_colorbar=False, add_cbar_label=True,
+            cbar_orientation=None,pad=-0.2,
+            figsize=(5, 5), aspect=None,n_pts_labels = 5,cbar_n_points=6,num_contours=6,
+            show_axis='on',
+            flux_units='mJy', flux_conversion_factor = 1.0,
+            cell_size = None,
+            add_frequency=False,freq_label=None,
+            plot_rms=False,
+            source_distance=None, scalebar_length=250 * u.pc,
+            ax=None, return_extent=False,no_show=False,
+            save_name=None, special_name='',
+            text_annotation=None, 
+            # text_position='upper left',
+            text_position=(0.03, 0.97),textsize=18,rms_text_size = 14, global_label_pad = 3,
+            verbose = 0):
+    """
+    Customised imshow function for plotting images. It includes the option to
+    automatically add contour levels, custom projections, colorbars, scalebars, etc.
+
+    Parameters
+    ----------
+    imagename : str, np.ndarray
+        Path to the image.
+    crop : bool, optional
+        Crop the image to the box_size. The default is False.
+    box_size : int, optional
+        Size of the box to crop the image. The default is 128.
+    center : tuple, optional
+        Center of the image. The default is None.
+    with_wcs : bool, optional
+        Use the wcs information of the image. The default is True.
+    vmax : float, optional
+        Maximum value of the colormap. The default is None.
+    vmax_factor : float, optional
+        Factor to multiply the maximum value of the image to set the
+        maximum value of the colormap. The default is 0.5.
+    neg_levels : np.ndarray, optional
+        Negative levels for the contours. The default is np.asarray([-3]).
+    CM : str, optional
+        Colormap. The default is 'magma_r'.
+    cmap_cont : str, optional
+        Colormap for the contours. The default is 'terrain'.
+    rms : float, optional
+        RMS of the image. The default is None.
+    plot_title : str, optional
+        Title of the plot. The default is None.
+    apply_mask : bool, optional
+        Apply a mask to the image. The default is False.
+    add_contours : bool, optional
+        Add contours to the image. The default is True.
+    extent : list, optional
+        Extent of the image. The default is None.
+    projection : str, optional
+        Projection of the image. The default is 'offset'.
+    add_beam : bool, optional
+        Add the beam to the image. The default is False.
+    vmin_factor : int, optional
+        Factor to multiply the standard deviation of the image to set the
+        minimum value of the colormap. The default is 3.
+    plot_colorbar : bool, optional
+        Plot the colorbar. The default is True.
+    figsize : tuple, optional
+        Size of the figure. The default is (5, 5).
+    aspect : str, optional
+        Aspect of the image. The default is None.
+    show_axis : str, optional
+        Show the axis. The default is 'on'.
+    flux_units : str, optional
+        Units of the flux. The default is 'Jy'.
+    source_distance : float, optional
+        Distance to the source. The default is None.
+    scalebar_length : float, optional
+        Length of the scalebar. The default is 250 * u.pc.
+    ax : matplotlib.pyplot.axis, optional
+        Axis of the plot. The default is None.
+    save_name : str, optional
+        Name of the output file. The default is None.
+    special_name : str, optional
+        Special name for the output file. The default is ''.
+    """
+    from matplotlib.offsetbox import AnchoredText
+    from matplotlib.patches import Ellipse
+    try:
+        import cmasher as cmr
+        # print('Imported cmasher for density maps.'
+        #       'If you would like to use, examples:'
+        #       'CM = cmr.ember,'
+        #       'CM = cmr.flamingo,'
+        #       'CM = cmr.gothic'
+        #       'CM = cmr.lavender')
+        """
+        ... lilac,rainforest,sepia,sunburst,torch.
+        Diverging: copper,emergency,fusion,infinity,pride'
+        """
+    except:
+        print('Error importing cmasher. If you want '
+              'to use its colormaps, install it. '
+              'Then you can use for example:'
+              'CM = cmr.flamingo')
+    
+    # init crop/cutout slice boxes.
+    xin = None
+    yin = None
+    xen = None
+    yen = None
+    
+    if ax is None:
+        fig = plt.figure(figsize=figsize)
+        # if isinstance(box_size, int):
+        #     fig = plt.figure(figsize=figsize)
+        # else:
+        #     scale_fig_x = box_size[0]/box_size[1]
+        #     fig = plt.figure(figsize=(figsize[0]*scale_fig_x,figsize[1]))
+    else:
+        if fig is None:
+            fig = plt.figure(figsize=figsize)
+        else:
+            pass
+    if isinstance(imagename, str) == True:
+        if with_wcs == True:
+            hdu = pf.open(imagename)
+            # Find the best extension with science data and WCS
+            sci_ext, data, ww = find_sci_extension(hdu)
+            
+            # If we found a valid extension, use it
+            if sci_ext is not None:
+                g = data
+                
+                # Handle different data dimensions
+                if g is not None:
+                    if len(g.shape) == 4:  # [polarization, frequency, y, x]
+                        g = g[0, 0]
+                    elif len(g.shape) == 3:  # [frequency, y, x] or [polarization, y, x]
+                        g = g[0]
+            else:
+                # Fallback to original method if no valid extension found
+                try:
+                    ww = WCS(hdu[0].header, naxis=2)
+                    if len(np.shape(hdu[0].data)) == 4:
+                        g = hdu[0].data[0][0]
+                    elif len(np.shape(hdu[0].data)) == 3:
+                        g = hdu[0].data[0]
+                    else:
+                        g = hdu[0].data
+                except:
+                    g = load_fits_data(imagename)
+        else:
+            g = load_fits_data(imagename)
+
+        if crop == True:
+            yin, yen, xin, xen = do_cutout(imagename, box_size=box_size,
+                                           center=center, return_='box')
+            g = g[xin:xen, yin:yen]
+            
+            # Update the WCS to match the cropped region if using celestial projection
+            if with_wcs and isinstance(imagename, str):
+                try:
+                    # Create a new WCS for the cropped region
+                    # Using ww as the original WCS and slicing it to match the crop
+                    # The slice format is [y_slice, x_slice]
+                    # First, make a deep copy to avoid modifying the original
+                    ww_cropped = ww.deepcopy()
+                    # Then create a cutout WCS using the slice information
+                    ww = ww_cropped.slice((slice(yin, yen), slice(xin, xen)))
+                except Exception as e:
+                    print(f"Warning: Could not update WCS for cropped region: {e}")
+                    print("Celestial projection may not accurately reflect the cropped data.")
+            # crop = False
+        
+        g = np.nan_to_num(g,nan=0)
+    
+    else:
+        g = np.nan_to_num(imagename,nan=0)
+        mask_d = 1
+        # print('3', g)
+
+        if crop == True:
+            yin, yen, xin, xen = do_cutout(imagename, box_size=box_size,
+                                           center=center, return_='box')
+            g = g[xin:xen, yin:yen]
+            if apply_mask == True:
+                print('Masking emission....')
+                g = g * mask_d[xin:xen, yin:yen]
+
+    if rms is not None:
+        std = rms
+    else:
+        if mad_std(g) == 0:
+            """
+            About std:
+                mad_std is much more robust than np.std.
+                But:
+                    if mad_std is applied to a masked image, with zero
+                    values outside the emission region, mad_std(image) is zero!
+                    So, in that case, np.std is a good option.
+            """
+            # print('5', g)
+            std = np.nanstd(g)
+        else:
+            std = mad_std(g)
+
+    if isinstance(imagename, str) == True:
+        try:
+            if cell_size is None:
+                cell_size = get_cell_size(imagename)
+                axis_units_label = r'Offset [arcsec]'
+        except:
+            print(
+                'No cell or pixel size information in the image wcs/header. '
+                'Setting cell/pixel size = 1.')
+            cell_size = 1
+            axis_units_label = r'Offset [px]'
+    else:
+        cell_size = 1
+        axis_units_label = r'Offset [px]'
+    
+    if apply_mask == True:
+        _, mask_d = mask_dilation(imagename, cell_size=None,
+                                    sigma=6, rms=None,
+                                    dilation_size=None,
+                                    iterations=2, dilation_type='disk',
+                                    PLOT=False, show_figure=False)
+        print('Masking emission....')
+        g = g * mask_d[xin:xen, yin:yen]
+    
+    dx = g.shape[1] / 2
+    dy = g.shape[0] / 2
+    
+    # Check if we're using celestial projection
+    use_celestial = (projection == 'celestial') and (with_wcs == True) and (isinstance(imagename, str) == True)
+    
+    if ax is None:
+        if use_celestial:
+            ax = fig.add_subplot(projection=ww.celestial)
+            ax.set_xlabel('RA',labelpad=global_label_pad)
+            ax.set_ylabel('DEC',labelpad=global_label_pad)
+            # ax.grid()
+        elif isinstance(imagename, str) == False:
+            projection = 'px'
+            ax = fig.add_subplot()
+            cell_size = 1
+            ax.set_xlabel('x pix')
+            ax.set_ylabel('y pix')
+            axis_units_label = r'Offset [px]'
+            ax.set_xlabel(axis_units_label, labelpad=global_label_pad)
+            ax.set_ylabel(axis_units_label, labelpad=global_label_pad)
+        else:
+            ax = fig.add_subplot()
+            # dx = g.shape[0] / 2
+            axis_units_label = r'Offset [arcsec]'
+            ax.set_xlabel(axis_units_label, labelpad=global_label_pad)
+            ax.set_ylabel(axis_units_label, labelpad=global_label_pad)
+    else:
+        projection = 'offset'
+        if projection == 'offset':
+            # ax = fig.add_subplot()
+            # dx = g.shape[0] / 2
+            axis_units_label = r'Offset [arcsec]'
+            ax.set_xlabel(axis_units_label, labelpad=global_label_pad)
+            ax.set_ylabel(axis_units_label, labelpad=global_label_pad)
+
+    # Only set ticks for non-celestial projections
+    if not use_celestial:
+        xticks = np.linspace(-dx+dx_shift/2, dx+dx_shift/2, n_pts_labels)
+        yticks = np.linspace(-dy+dy_shift/2, dy+dy_shift/2, n_pts_labels)
+        xticklabels = np.linspace(-(dx-dx_shift/2) * cell_size, +(dx+dx_shift/2) * cell_size, n_pts_labels)
+        yticklabels = np.linspace(-(dy-dy_shift/2) * cell_size, +(dy+dy_shift/2) * cell_size, n_pts_labels)
+
+        if (projection =='offset') or (projection == 'celestial'):
+            xticklabels = ['{:.2f}'.format(xtick) for xtick in xticklabels]
+            yticklabels = ['{:.2f}'.format(ytick) for ytick in yticklabels]
+        else:
+            xticklabels = ['{:.0f}'.format(xtick) for xtick in xticklabels]
+            yticklabels = ['{:.0f}'.format(ytick) for ytick in yticklabels]
+
+        ax.set_yticks(yticks, yticklabels)
+        ax.set_xticks(xticks, xticklabels)
+        ax.set_aspect('equal')
+
+        ax.tick_params(axis='y', which='both',  color='black', pad=global_label_pad)
+        ax.tick_params(axis='x', which='both',  color='black', pad=global_label_pad)
+
+        if projection != 'celestial':
+            ax.grid(which='both', axis='both', color='gray', linewidth=0.6, alpha=0.7)
+            ax.grid(which='both', axis='both', color='gray', linewidth=0.6, alpha=0.7)
+        else:
+            ax.grid()
+
+
+
+    vmin = vmin_factor * std
+    if extent is None:
+        extent = [-dx+dx_shift, dx+dx_shift, -dy+dy_shift, dy+dy_shift]
+    #     print(g)
+
+    if vmax is not None:
+        vmax = vmax
+    else:
+        if vmax_factor is not None:
+            vmax = vmax_factor * np.nanmax(g)
+        else:
+            vmax = 0.95 * np.nanmax(g)
+
+    from matplotlib.colors import LogNorm
+    from matplotlib.colors import PowerNorm
+    from matplotlib.colors import SymLogNorm
+
+
+    norm0 = simple_norm(g, stretch='linear', max_percent=99.0)
+    norm = simple_norm(g, stretch=stretch, asinh_a=asinh_a, min_cut=vmin,
+                       max_cut=vmax)
+    # from matplotlib.colors import PowerNorm
+
+    # Power < 1 emphasizes faint features, Power > 1 emphasizes bright features
+    # norm = PowerNorm(gamma=0.5, vmin=vmin, vmax=vmax)  # Try gamma between 0.3-0.7
+
+    if no_show:
+        # # plot the first normalization (low level, transparent)
+        im_plot = ax.imshow(g, origin='lower',aspect=aspect,
+                            cmap='gray', norm=norm0, alpha=0.0, extent=extent)
+
+
+        im_plot = ax.imshow((g), cmap=CM, origin='lower', alpha=0.0, extent=extent,
+                            norm=norm,
+                            aspect=aspect)  # ,vmax=vmax, vmin=vmin)#norm=norm
+
+    else:
+        im_plot = ax.imshow(g, 
+                            origin='lower',
+                            aspect=aspect,
+                            cmap='gray', norm=norm0, alpha=0.5, extent=extent)
+
+
+        im_plot = ax.imshow((g), cmap=CM, 
+                            origin='lower', 
+                            alpha=1.0, extent=extent,
+                            norm = norm,
+                            # norm=PowerNorm(gamma=0.55, vmin=vmin, vmax=vmax),
+                            # norm = SymLogNorm(linthresh=0.99, linscale=0.99, vmin=vmin, vmax=vmax),
+                            aspect=aspect)  # ,vmax=vmax, vmin=vmin)#norm=norm
+        
+    if add_contours:
+        def sigma_formatter(x):
+            return fr'{x/std:.0f}$\sigma$'
+        try:
+            levels_g = np.geomspace(0.9 * np.nanmax(g), 6 * std, num_contours)
+            # levels_low = np.asarray([5 * std, 3 * std])
+            levels_low = np.asarray([3 * std])
+            levels_black = np.geomspace(vmin_factor * std + 0.00001, 2.5 * np.nanmax(g), num_contours)
+            levels_neg = neg_levels * std
+            levels_white = np.geomspace(np.nanmax(g), 0.1 * np.nanmax(g), num_contours)
+
+            contour_palette_ = ['#000000', '#444444', '#666666', '#EEEEEE',
+                               '#EEEEEE', '#FFFFFF','#FFFFFF']
+            if '_r' in CM:
+                contour_palette = contour_palette_
+            else:
+                contour_palette = contour_palette_[::-1]
+
+            # print('***************')
+            # print('Levels for contours:', levels_g / std)
+            # print('Max/sigma:', np.nanmax(g) / std)
+            # print('Max/sigma:', np.nanmax(g))
+            # print('***************')
+            if no_show:
+                contour_plot = ax.contour(g, levels=levels_g[::-1],
+                                    #  colors=contour_palette[::-1], #for dark cmap
+                                    colors=contour_palette, #for light cmap
+                                    # aspect=aspect,
+                                    linewidths=1.2, extent=extent,
+                                    alpha=0.0)
+
+                contour_plot = ax.contour(g, levels=levels_low[::-1],
+                                    colors='brown',
+                                    # aspect=aspect,
+                                    # linestyles=['dashed', 'dashdot'],
+                                    linewidths=1.0, extent=extent,
+                                    alpha=0.0)
+
+            else:
+                # Store the main contour plot separately
+                main_contours = ax.contour(g, levels=levels_g[::-1],
+                                    colors=contour_palette,
+                                    linewidths=1.2, extent=extent,
+                                    alpha=1.0)
+                
+                # Low level contours (separate)
+                low_contours = ax.contour(g, levels=levels_low[::-1],
+                                    colors='brown',
+                                    linewidths=1.0, extent=extent,
+                                    alpha=1.0)
+                # # legend_elements = [
+                # #     plt.Line2D([0], [0], color='brown', linewidth=2, 
+                # #             label='Low levels (3sigma, 5sigma)'),
+                # #     plt.Line2D([0], [0], color=contour_palette[0], linewidth=2, 
+                # #             label=f'Main ({6}sigma to {(0.9 * np.nanmax(g)/std):.0f}sigma)'),
+                # #     plt.Line2D([0], [0], color='white', linewidth=2, 
+                # #             label=f'High ({(0.1 * np.nanmax(g)/std):.0f}sigma to {(np.nanmax(g)/std):.0f}sigma)')
+                # # ]
+
+                # # ax.legend(handles=legend_elements, 
+                # #         title='Contour Types',
+                # #         loc='upper right', 
+                # #         bbox_to_anchor=(0.98, 0.98), 
+                # #         framealpha=0.9,
+                # #         fontsize=10)
+                # # # Add comprehensive information box
+                # # sigma_peak = np.nanmax(g) / std
+                
+                # # contour_info = (f"Main: {(0.9 * np.nanmax(g)/std):.0f}s to {6}s ({num_contours} levels)\n"
+                # #             f"Low: {5}s, {3}s (brown)\n"
+                # #             f"Peak: {sigma_peak:.0f}s\n"
+                # #             f"Spacing: logarithmic")
+                
+                # # ax.text(0.02, 0.98, contour_info,
+                # #         transform=ax.transAxes,
+                # #         fontsize=10,
+                # #         verticalalignment='top',
+                # #         bbox=dict(boxstyle='round,pad=0.4', 
+                # #                 facecolor='white', 
+                # #                 edgecolor='black',
+                # #                 alpha=0.9))
+                
+                # # Label the main contours (levels_g)
+                # # labels_contours = ax.clabel(main_contours, 
+                # #                 inline=True, 
+                # #                 fontsize=12,  # Reduced from 20 for better readability
+                # #                 fmt=lambda x: fr'{x/std:.0f}$\sigma$',
+                # #                 colors='white',
+                # #                 # Remove extent parameter
+                # #                 bbox=dict(boxstyle='round,pad=0.3', facecolor='black', alpha=0.8))
+                # # labels = ax.clabel(main_contours, 
+                # #                 inline=True, 
+                # #                 fontsize=15,
+                # #                 fmt=sigma_formatter,
+                # #                 colors='green')
+                # # Add clean text box in empty area
+                # sigma_range = f"{levels_g.min()/std:.0f}$\sigma$ - {levels_g.max()/std:.0f}$\sigma$"
+                # contour_info = (
+                #     # f"Contours: {len(levels_g)} levels\n"
+                #     # f"6$\\times$ {sigma_range}\n"
+                #     f"Geometric\n"
+                #     r"$0.9 \times S_{\mathrm{p}} ~ \to ~ 6\sigma$"
+                #     )
+
+                # # ax.text(0.92, 0.3, contour_info,
+                # #         transform=ax.transAxes,
+                # #         fontsize=12,
+                # #         # horizontalalignment='center',
+                # #         # verticalalignment='center',
+                # #         ha='center',    # Centers text within bbox
+                # #         va='center',    # Centers text within bbox
+                # #         horizontalalignment='right',
+                # #         bbox=dict(
+                # #             # boxstyle='round,pad=0.5',  # Increase padding for better spacing
+                # #                 facecolor='white', 
+                # #                 edgecolor='black',
+                # #                 alpha=0.9))
+                # contour_info_text = AnchoredText(contour_info,
+                #                             loc='lower right',
+                #                             bbox_to_anchor=(1.0, 0.2),  # Fine-tune position
+                #                             bbox_transform=ax.transAxes,
+                #                             frameon=True,               # Enable background frame
+                #                             prop=dict(fontsize=12,
+                #                                       multialignment='center',
+                #                                     color='black'),
+                #                             pad=0.3,                    # Internal padding
+                #                             borderpad=0.2)              # Border padding
+                # ax.add_artist(contour_info_text)
+            # ax.clabel(contour, inline=1, fontsize=10)
+        except:
+            pass
+        try:
+            if no_show:
+                ax.contour(g, levels=levels_neg[::-1], colors='k',
+                        linewidths=1.5, extent=extent,
+                        alpha=0.0)
+
+            else:
+                ax.contour(g, levels=levels_neg[::-1], colors='k',
+                        linewidths=1.5, extent=extent,
+                        alpha=1.0)
+        except:
+            pass
+        
+    if add_frequency:
+        try:
+            if freq_label is None:
+                if isinstance(imagename, str) == True:
+                    frequency = f"{(getfreqs([imagename])[0]/1e9):.1f} GHz"
+            else:
+                frequency = freq_label
+            from matplotlib.offsetbox import AnchoredText
+
+            at = AnchoredText(frequency, 
+                            prop=dict(size=14, color='red'),
+                            frameon=True,
+                            loc='upper right',  # This uses a fixed position like 'upper right'
+                            bbox_to_anchor=(1.0, 1.0),
+                            bbox_transform=ax.transAxes,
+                            pad = 0.2,
+                            borderpad=0.5)
+            at.patch.set_boxstyle("round")
+            at.patch.set_alpha(0.9)
+            at.patch.set_facecolor("white")
+            ax.add_artist(at)
+        except:
+            pass
+        
+    
+    if plot_colorbar:
+        # Modified colorbar handling for celestial projection
+        if use_celestial:
+            # Create a new axis for the colorbar that doesn't overlap with the image
+            # Position [left, bottom, width, height] in figure coordinates
+            # Adjust position to be outside the main plot
+            
+            # Get the position of the main axis
+            pos = ax.get_position()
+            
+            # Calculate colorbar position to be right of the main plot
+            # with a small gap and using the full height
+            # Increased width from 0.02 to 0.04 for better visibility
+            cbar_ax = fig.add_axes([pos.x1 + 0.02, pos.y0, 0.04, pos.height])
+            
+            # Create the colorbar
+            cb = fig.colorbar(im_plot, cax=cbar_ax)
+            
+            # Set the colorbar label depending on flux units
+            if flux_units == 'Jy':
+                cb.set_label(r"Flux Density [Jy/Beam]", labelpad=10)
+                cb.formatter = CustomFormatter(factor=1, useMathText=True)
+                cb.update_ticks()
+            elif flux_units == 'mJy':
+                cb.set_label(r"Flux Density [mJy/Beam]", labelpad=10)
+                cb.formatter = CustomFormatter(factor=1*1000, useMathText=True)
+                cb.update_ticks()
+            elif flux_units == 'nanomaggies':
+                cb.set_label(r"Intensity [mJy/px] (from nanomaggies)", labelpad=10)
+                cb.formatter = CustomFormatter(factor=3.631e-3, useMathText=True)
+                cb.update_ticks()
+            elif flux_units == 'mJy/px':
+                cb.set_label(r"Intensity [mJy/px] (from e/s)", labelpad=10)
+                cb.formatter = CustomFormatter(factor=flux_conversion_factor, useMathText=True)
+                cb.update_ticks()
+            elif flux_units == 'any':
+                cb.set_label(r"Pixel Intensity", labelpad=10)
+                cb.formatter = CustomFormatter(factor=1, useMathText=True)
+                cb.update_ticks()
+            elif flux_units == 'sfr':
+                cb.set_label(r"${\rm M}_{\rm \odot} \ {\rm yr^{-1}} \ {\rm beam^{-1}}$", labelpad=10)
+                cb.formatter = CustomFormatter(factor=1, useMathText=True)
+                cb.update_ticks()
+            elif flux_units == 'K':
+                cb.set_label(r"$T_{\mathrm{b}}~\mathrm{[\times 10^5~K]}$", labelpad=10)
+                cb.formatter = CustomFormatter(factor=1, useMathText=True)
+                cb.update_ticks()
+            # Set custom ticks
+            levels_colorbar2 = np.geomspace(0.9 * vmax, 6 * std, cbar_n_points)
+            cb.set_ticks(levels_colorbar2)
+            cb.ax.tick_params(labelsize=12)
+            cb.outline.set_linewidth(1)
+            
+        else:
+            # Original colorbar code for non-celestial projections
+            divider = make_axes_locatable(ax)
+            
+            try:
+                if cbar_orientation == 'horizontal':
+                    cax = divider.append_axes("top", size="7%", pad=0.05)
+                    cb = fig.colorbar(im_plot, 
+                                      cax=cax, fraction=0.046,
+                                      orientation='horizontal')
+                else:
+                    cax = divider.append_axes("right", size="7%", pad=0.05)
+                    cb = plt.colorbar(im_plot, 
+                                    ax=ax, fraction=0.046,
+                                    cax=cax
+                                    )
+
+                if flux_units == 'Jy':
+                    cbar_label = r"Flux Density [Jy/Beam]"
+                    cb.formatter = CustomFormatter(factor=1, 
+                                                useMathText=True)
+                    cb.update_ticks()
+                if flux_units == 'mJy':
+                    cbar_label = r"Flux Density [mJy/Beam]"
+                    # cb.set_label(r"Flux Density [mJy/Beam]", labelpad=10, fontsize=12)
+                    cb.formatter = CustomFormatter(factor=1*1000, 
+                                                useMathText=True)
+                    cb.update_ticks()
+                if flux_units == 'nanomaggies':
+                    cbar_label = r"Intensity [mJy/px] (from nanomaggies)"
+                    # cb.set_label(r"Intensity [mJy/px] (from nanomaggies)", labelpad=10, fontsize=12)
+                    cb.formatter = CustomFormatter(factor=3.631e-3, useMathText=True)
+                    cb.update_ticks()
+                if flux_units == 'mJy/px':
+                    cbar_label = r"Intensity [mJy/px] (from e/s)"
+                    # cb.set_label(r"Intensity [mJy/px] (from e/s)", labelpad=10, fontsize=12)
+                    cb.formatter = CustomFormatter(factor=flux_conversion_factor, useMathText=True)
+                    cb.update_ticks()
+                if flux_units == 'any':
+                    cbar_label = r"Pixel Intensity"
+                    # cb.set_label(r"Pixel Intensity", labelpad=10, fontsize=12)
+                    cb.formatter = CustomFormatter(factor=1, 
+                                                useMathText=True)
+                    cb.update_ticks()
+                if flux_units == 'sfr':
+                    cbar_label = r"$[\mathrm{M}_{\odot}~\mathrm{yr^{-1}~beam^{-1}}]$"
+                    # cb.set_label(r"${\rm M}_{\rm \odot} \ {\rm yr^{-1}} \ {\rm beam^{-1}}$", labelpad=10, fontsize=12)
+                    cb.formatter = CustomFormatter(factor=1, 
+                                                useMathText=True)
+                    cb.update_ticks()
+                if flux_units == 'K':
+                    cbar_label = r"$T_{\mathrm{b}}~\mathrm{[\times 10^5~K]}$"
+                    # cb.set_label(r"$T_{\mathrm{b}}~\mathrm{[\times 10^5~K]}$", labelpad=10, fontsize=12)
+                    cb.formatter = CustomFormatter(factor=1, useMathText=True)
+                    cb.update_ticks()
+
+                if add_cbar_label:
+                    cb.set_label(cbar_label, labelpad=5)
+                # else:
+                #     cb.set_label('', labelpad=10, fontsize=12)
+                levels_colorbar2 = np.geomspace(0.9 * vmax, 6 * std, cbar_n_points,endpoint=True)
+                cb.set_ticks(levels_colorbar2)
+
+                cb.ax.yaxis.set_tick_params(labelleft=True, labelright=False,
+                                            tick1On=False, tick2On=False)
+                cb.ax.yaxis.tick_right()
+
+                cb.ax.tick_params(labelsize=12)
+                cb.outline.set_linewidth(1)
+                # cbar.dividers.set_color(None)
+                
+                # import matplotlib.ticker as ticker
+                # cb.locator = ticker.MaxNLocator(nbins=6, prune='both')
+                # cb.formatter = ticker.ScalarFormatter(useMathText=True)
+                # cb.formatter.set_powerlimits((-1, 2))
+                # cb.update_ticks() 
+                
+                # cb.formatter = ticker.ScalarFormatter(useMathText=True)
+                # cb.locator = ticker.MaxNLocator(nbins=6, prune='both')  # Reduce ticks
+                # cb.update_ticks()
+
+                # Make sure the color bar has ticks and labels at the top, since the bar is on the top as well.
+                if cbar_orientation == 'horizontal':
+                    cb.ax.xaxis.set_ticks_position('top')
+                    cb.ax.xaxis.set_label_position('top')
+            except Exception as e:
+                print(f"Error creating colorbar: {e}")
+
+
+    if plot_title is not None:
+        # if (plot_rms) and (rms is not None):
+        #     plot_title = plot_title + f"\n$\\sigma_{{\\mathrm{{mad}}}}= {(rms*1e6):.2f}"+r"~[\mu\mathrm{Jy/beam}]$"
+        ax.set_title(plot_title)
+
+    if plot_rms:
+        if rms is not None:
+            sigma_range = f"{levels_g.min()/std:.0f}$\sigma$ - {levels_g.max()/std:.0f}$\sigma$"
+            line1 = r"$S_{\mathrm{p}}" + f" = {(np.nanmax(g)*1e3):.2f}$ mJy/B"
+            line2 = f"$\\sigma = {(rms*1e6):.2f}~\\mu$Jy/B"
+            # line3 = f"Geometric"
+            # line4 = r"$0.9 \times S_{\mathrm{p}} ~ \to ~ 6\sigma$"
+            # text_content = f"{line1}\n{line2}\n{line3}\n{line4}"
+            text_content = f"{line1}\n{line2}"
+
+            text_box = AnchoredText(text_content,
+                        loc='upper left',
+                        bbox_to_anchor=(0.0, 1.00),  # Fine-tune position (right side, near bottom)
+                        bbox_transform=ax.transAxes,
+                        frameon=True,
+                        prop=dict(
+                            size=rms_text_size,
+                            multialignment='center',
+                            # fontweight='bold'
+                            ),
+                        pad=0.3,
+                        borderpad=0.2)
+            # text_box.patch.set(boxstyle='round,pad=0.5', 
+            #       facecolor='white',
+            #       alpha=0.8,
+            #       edgecolor='black',
+            #       linewidth=1)
+
+            ax.add_artist(text_box)
+            text_box.patch.set_alpha(0.8)
+            # ax.annotate(f"$\\sigma_{{\\mathrm{{mad}}}}= {(rms*1e6):.2f}"+r"~[\mu\mathrm{Jy/beam}]$",
+            #     xy=(0.02, 0.96), xycoords='figure fraction',
+            #     bbox=dict(boxstyle="round,pad=0.5", facecolor='white', 
+            #          alpha=0.8, edgecolor='black'),
+            #     fontsize=12, ha='left', va='top')
+            # ax.text(0.05, 0.95, f"$\\sigma_{{\\mathrm{{mad}}}}= {(rms*1e6):.2f}"+r"~[\mu\mathrm{Jy/beam}]$",
+            #         transform=ax.transAxes, fontsize=16,
+            #         verticalalignment='top', color='black')
+
+    if add_beam == True:
+        if isinstance(imagename, str) == True:
+            try:
+                # Your existing ellipse code
+                imhd = imhead(imagename)
+                a = imhd['restoringbeam']['major']['value']
+                b = imhd['restoringbeam']['minor']['value']
+                pa = imhd['restoringbeam']['positionangle']['value']
+
+                # Create the ellipse based on projection mode
+                if projection == 'px':
+                    el = Ellipse((-(dx-dx_shift) * 0.85, -(dy-dy_shift) * 0.85), 
+                                b, a, angle=pa, facecolor='black', alpha=1.0)
+                else:
+                    el = Ellipse((-(dx-dx_shift) * 0.85, -(dy-dy_shift) * 0.85), 
+                                b / cell_size, a / cell_size,
+                                angle=pa, facecolor='black', alpha=1.0)
+
+                # Add the ellipse to the axes
+                ax.add_artist(el)
+
+                # Format the beam dimensions
+                Oa = '{:.2f}'.format(a)
+                Ob = '{:.2f}'.format(b)
+
+                # Create an AnchoredText for the beam label
+                beam_label = r"$" + Oa + "''\\times~" + Ob + "''$"
+
+                # Replace the annotation with AnchoredText
+                beam_text = AnchoredText(beam_label, 
+                                        loc='lower left',  # Position in lower right corner
+                                        prop=dict(
+                                            size=12, 
+                                            color='red'),
+                                        frameon=True,
+                                        bbox_to_anchor=(0.15, 0.03),  # Fine-tune position (lef side, near bottom)
+                                        bbox_transform=ax.transAxes,
+                                        pad = 0.2,
+                                        borderpad=0.3)
+
+                # Style the text box
+                beam_text.patch.set_boxstyle("round,pad=0.3")
+                beam_text.patch.set_alpha(0.9)
+                beam_text.patch.set_facecolor("white")
+
+                # Add the text to the axes
+                ax.add_artist(beam_text)
+
+                # Ensure the ellipse is properly clipped
+                el.set_clip_box(ax.bbox)
+            except:
+                print('Error adding beam.')
+
+    if source_distance is not None:
+        from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
+        # from matplotlib.transforms import blended_transform_factory
+
+        import matplotlib.font_manager as fm
+
+        # Calculate the scale bar length in pixels
+        ww.wcs.radesys = 'icrs'
+        radesys = ww.wcs.radesys
+        distance = angular_distance_cosmo(source_distance)
+        length = (scalebar_length / distance).to(u.arcsec, u.dimensionless_angles())
+        scale_bar_length_pixels = length.value / cell_size
+        ylim = ax.get_ylim()
+        data_range = ylim[1] - ylim[0]
+        thickness_data_units = data_range * 0.015
+        # thickness_fraction = 0.001  # Adjust this value to control thickness
+        # thickness_points = thickness_fraction * fig.get_figheight() * fig.dpi
+
+        # Create a blend transform - x in data coordinates, y in figure coordinates
+        # trans_blend = blended_transform_factory(ax.transData, fig.transFigure)
+
+        # Create an AnchoredSizeBar positioned in the upper left
+        fontprops = fm.FontProperties(size=20, weight='bold')
+        scalebar = AnchoredSizeBar(
+            transform = ax.transData,                      # Transform (data coordinates)
+            size = scale_bar_length_pixels,           # Length in pixels
+            label = f'{scalebar_length}',              # Label
+            loc = 'lower right',                      # Position - now set to lower right
+            pad=0.01,                           # Padding around the scalebar
+            borderpad=0.15,                     # Padding between scalebar and figure edge
+            sep=5,                             # Separation between bar and label
+            frameon=False,                     # No frame around the scalebar
+            size_vertical=thickness_data_units,# Thickness of the bar
+            # linewidth=4,
+            color='black',                     # Color of the bar
+            fontproperties=fontprops,          # Font properties for the label
+            label_top=True                     # Label above the bar (changed to True for upper position)
+        )
+
+        # Add the scalebar to the plot
+        ax.add_artist(scalebar)
+        
+    # if text_annotation:
+    #     ax.annotate(text_annotation, xy=text_position, xycoords='figure fraction',
+    #                 fontsize=18, color='black', fontweight='bold')
+    # if text_annotation:
+    #     # Create AnchoredText without frame for clean text display
+    #     text_display = AnchoredText(text_annotation,
+    #                             loc=text_position,  # Customize location as needed
+    #                             frameon=False,     # No box frame
+    #                             prop=dict(size=18, 
+    #                                         color='black', 
+    #                                         fontweight='bold'),
+    #                             bbox_to_anchor=(0.0, 1.0),
+    #                             bbox_transform=ax.transAxes,   # Axes coordinates
+    #                             pad=0.1)
+        
+    #     # Add to the axes
+    #     ax.add_artist(text_display)
+    
+    # if text_annotation:
+    #     ax.text(text_position[0], text_position[1], text_annotation,
+    #             transform=ax.transAxes,  # Use axes fraction coordinates
+    #             fontsize=textsize, 
+    #             color='black', 
+    #             fontweight='bold',
+    #             ha='left',  # horizontal alignment
+    #             va='top')   # vertical alignment
+    if text_annotation:
+        anchored_text = AnchoredText(text_annotation,
+                                    loc='upper left',
+                                    bbox_to_anchor=(0.0, 1.0),  # Fine-tune position
+                                    bbox_transform=ax.transAxes,
+                                    frameon=True,               # Enable background frame
+                                    prop=dict(fontsize=textsize, 
+                                            color='black', 
+                                            fontweight='bold'),
+                                    pad=0.3,                    # Internal padding
+                                    borderpad=0.2)              # Border padding
+        ax.add_artist(anchored_text)
+    
+    # ax.axis(show_axis)
+    if show_axis == 'off':
+        ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+        ax.set_xlabel('')
+        ax.set_ylabel('')
+        # Optionally hide the spine (axis lines) but keep grid
+        # for spine in ax.spines.values():
+        #     spine.set_visible(False)
+        
+    if show_axis == 'bottom':
+        ax.tick_params(left=False, bottom=True, labelleft=False, labelbottom=True,pad=global_label_pad)
+        ax.set_ylabel('')
+
+    if show_axis == 'left':
+        ax.tick_params(left=True, bottom=False, labelleft=True, labelbottom=False,pad=global_label_pad)
+        ax.set_xlabel('')
+
+    
+    # ax.grid(True)
+
+    if save_name != None:
+    #         if not os.path.exists(save_name+special_name+'.jpg'):
+        plt.savefig(save_name + special_name + '.pdf', dpi=600,
+                    bbox_inches='tight')
+        # plt.savefig(save_name + special_name + '.pdf', dpi=600,
+        #             bbox_inches='tight')
+    # if no_show:
+    #     plt.clf()
+    #     plt.close()
+    if return_extent:
+        return ax,extent
+    else:
+        return ax
+
+
+
 def plot_alpha_map(alphaimage,radio_map,frequencies,
                    alphaimage_error=None,
                    mask_good_alpha = None,
@@ -2265,9 +4204,10 @@ def plot_alpha_map(alphaimage,radio_map,frequencies,
                    vmin=None,vmax=None,rms=None,figsize=(6, 6),
                    extent = None,crop=False,centre=None,
                    plot_title='',label_colorbar='',
-                   cmap='magma_r',n_contours = 8,
+                   cmap='magma_r',n_contours = 6,
                    projection='offset',cell_size = None,
                    box_size=None,plot_alpha_error_points=False,
+                   text_annotation=None, text_position=(0.03, 0.97),textsize = 16,
                    save_name=None):
 
     from matplotlib.colors import ListedColormap
@@ -2380,10 +4320,11 @@ def plot_alpha_map(alphaimage,radio_map,frequencies,
 
     
     if levels_g is None:
-        levels_g = np.geomspace(3.0 * _g.max(), 5 * std, n_contours)
+        levels_g = np.geomspace(0.9 * np.nanmax(_g), 6 * std, n_contours)
     else:
         levels_g = levels_g
     
+    levels_low = np.asarray([3 * std])
 
     # levels_low = np.asarray([4 * std, 3 * std])
     # levels_black = np.geomspace(vmin_factor * std + 0.00001, 2.5 * _g.max(), 6)
@@ -2399,6 +4340,10 @@ def plot_alpha_map(alphaimage,radio_map,frequencies,
                          # aspect=aspect,
                          linewidths=1.2, extent=extent,
                          alpha=1.0)
+    low_contours = ax.contour(_g, levels=levels_low[::-1],
+                        colors='brown',
+                        linewidths=1.0, extent=extent,
+                        alpha=1.0)
 
     if plot_alpha_error_points and _alphaimage_error is not None:
         # Downsample the data for scatter plot
@@ -2427,9 +4372,9 @@ def plot_alpha_map(alphaimage,radio_map,frequencies,
                         label=fr'Max err $\alpha$ = {(marker_sizes[max_error_pos][0]/50):.2f}')
         plt.legend()
     if label_colorbar == '':
-        label_colorbar = fr"$\alpha$ [{(frequencies[0]/1e9):.1f} ~ {(frequencies[-1]/1e9):.1f} GHz]"
+        label_colorbar = fr"$\alpha$ [{(frequencies[0]/1e9):.1f} $\sim$ {(frequencies[-1]/1e9):.1f} GHz]"
     else:
-        _label_colorbar = fr"[{(frequencies[0]/1e9):.1f} ~ {(frequencies[-1]/1e9):.1f} GHz]"
+        _label_colorbar = fr"[{(frequencies[0]/1e9):.1f} $\sim$ {(frequencies[-1]/1e9):.1f} GHz]"
         label_colorbar = label_colorbar + _label_colorbar
 
     divider = make_axes_locatable(ax)
@@ -2447,6 +4392,19 @@ def plot_alpha_map(alphaimage,radio_map,frequencies,
                 alpha=0.7)
     
     ax.set_title(f"{plot_title} ({len(frequencies)} images)")
+    if text_annotation:
+        anchored_text = AnchoredText(text_annotation,
+                                    loc='upper left',
+                                    bbox_to_anchor=(0.0, 1.0),  # Fine-tune position
+                                    bbox_transform=ax.transAxes,
+                                    frameon=True,               # Enable background frame
+                                    prop=dict(fontsize=textsize, 
+                                            color='black', 
+                                            fontweight='bold'),
+                                    pad=0.3,                    # Internal padding
+                                    borderpad=0.2)              # Border padding
+        ax.add_artist(anchored_text)
+    
     # plt.savefig('alpha_map_and_errors_MCG12_S_C_X_new_fit_in_linear.pdf',dpi=300,bbox_inches='tight')
     # plt.show()
     if save_name != None:
@@ -2483,7 +4441,8 @@ def add_beam_to_image(imagename, ax, dx, cell_size):
             #                     color='red')
             ax.annotate(r'$' + Oa + '\\times' + Ob + '$',
                         xy=(0.60, 0.06), xycoords='axes fraction',
-                        fontsize=15, bbox=dict(boxstyle='round', facecolor='white',
+                        # fontsize=15, 
+                        bbox=dict(boxstyle='round', facecolor='white',
                                                alpha=0.9),
                         color='red')
 
@@ -3313,3 +5272,835 @@ def plot_fluxes(x_data,y_data,yerr,
         plt.savefig(f"{fig_save_name}.pdf", bbox_inches='tight', pad_inches = 0.01)
     # plt.show()
     return(fig,ax1)
+
+
+def plot_galaxy_sed(combined_df, df_data, source_name='', special_name='',
+                    figsize=(5, 3), use_colors=True, custom_labels=None, 
+                    show_total=True, save_path=None, markersize = 9):
+    """
+    Create a plot of Spectral Energy Distribution (SED) for galaxy components.
+    
+    Parameters:
+    -----------
+    combined_deconv_df : DataFrame
+        DataFrame containing component data with 'comp_ID', 'freq', 'total_flux_mask', 
+        and 'flux_error_res_3' columns.
+    df_data : DataFrame
+        DataFrame containing total data with 'freq', 'total_flux_mask', and 'flux_error_res_3' columns.
+    source_name : str, optional
+        Name of the source for the plot title.
+    special_name : str, optional
+        Additional name information for the plot title.
+    figsize : tuple, optional
+        Figure size as (width, height) in inches.
+    use_colors : bool, optional
+        If True, use colorblind-friendly palette; if False, use different symbols in black.
+    custom_labels : list, optional
+        Custom labels for each component. If None, will use "COMP_X" format.
+    show_total : bool, optional
+        Whether to show the total flux data.
+    save_path : str, optional
+        If provided, save the figure to this path.
+    
+    Returns:
+    --------
+    fig : Figure object
+        The created figure object.
+    """
+
+    
+    # Create colorblind-friendly palette
+    # colorblind_palette = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', 
+    #                       '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', 
+    #                       '#bcbd22', '#17becf']
+    colorblind_palette = [
+        '#E69F00',
+        '#006B5C',
+        '#994F9F',
+        '#D5A87F',
+        '#5DC1C0',
+        '#FF8425',
+        '#EE3377','#33557B',
+        '#0077BB',
+        '#E6C700',
+        '#777777','#CC3311','orange',
+        '#F9E949','#88BB44',
+        '#56C667',
+    ]
+    # Different marker symbols if not using colors
+    # markers = ['X','*','^', 'v', '<','D', '>', 'p', 'x']
+    markers = ['d', 's', 'p', '+', '>', 'v', '^', 'd']
+    
+    # Create the figure
+    fig = plt.figure(figsize=figsize)
+    
+    # Get unique component IDs
+    unique_comps = sorted(combined_df['comp_ID'].unique())
+    
+    # Plot each component
+    sum_flux = []
+    for i, comp_id in enumerate(unique_comps):
+        df_component = combined_df[combined_df['comp_ID'] == comp_id]
+        Snu_component = df_component['total_flux_mask'].values * 1000
+        Snu_component_err = df_component['flux_error_res_3'].values * 1000
+        sum_flux.append(Snu_component)
+        
+        # Set the label
+        if custom_labels is not None and i < len(custom_labels):
+            label = custom_labels[i]
+        else:
+            label = f"COMP_{int(comp_id)}"
+        
+        # Set plotting parameters based on use_colors flag
+        if use_colors:
+            color = colorblind_palette[i % len(colorblind_palette)]
+            marker = '.'
+        else:
+            color = 'black'
+            marker = markers[i % len(markers)]
+        
+        plt.errorbar(
+            (df_component['freq'] / 1e9), (Snu_component),
+            yerr=Snu_component_err,
+            linestyle='',
+            linewidth=0.5, 
+            markersize=markersize,
+            marker=markers[i],
+            capsize=2,
+            markeredgewidth=1,
+            markerfacecolor=(1, 1, 1, 0.4),  # White with 30% opacity
+            markeredgecolor= color,
+            label=label,
+            color=color
+        )
+    residual_flux = 1000 * df_data['total_flux_mask'].values - np.nansum(sum_flux,axis=0)
+    print(residual_flux)
+    # Plot the total if requested
+    if show_total:
+        plt.errorbar(
+            (df_data['freq'] / 1e9), (df_data['total_flux_mask'] * 1000),
+            yerr=df_data['flux_error_res_3'] * 1000,
+            linestyle='',
+            linewidth=0.5, 
+            markersize=markersize,
+            marker='.',
+            capsize=2,
+            markeredgewidth=1,
+            markerfacecolor=(1, 1, 1, 0.4),  # White with 30% opacity
+            markeredgecolor='black',
+            label=r"$S_{\nu}^{\mathrm{tot}}$",
+            color='black'
+        )
+        plt.errorbar(
+            (df_data['freq'] / 1e9), residual_flux,
+            # yerr=df_data['flux_error_res_3'] * 1000,
+            linestyle='',
+            linewidth=0.5, 
+            markersize=markersize,
+            marker='.',
+            capsize=2,
+            markeredgewidth=1,
+            markerfacecolor=(1, 1, 1, 0.4),  # White with 30% opacity
+            markeredgecolor='red',
+            label=r"$S_{\nu}^{\mathrm{res}}$",
+            color='red'
+        )
+    
+    # Set labels and title
+    plt.xlabel(r'Frequency $\nu_{\mathrm{obs}}$ [GHz]')
+    plt.ylabel(r'$S_{\nu}(\nu_{\mathrm{obs}})$ [mJy]')
+    plt.title(f'{source_name} - {special_name}')
+    
+    # Add legend
+    plt.legend(
+        framealpha=0.9,
+        ncol=2,
+        # loc=loc,
+        # fontsize=int(fontsize-1),
+        # fontsize=13,
+        handlelength=1,
+        handletextpad=0.5,
+        columnspacing=0.5,
+        borderaxespad=0.1
+    )
+    
+    # Set log scales
+    # plt.semilogy()
+    plt.yscale('symlog', linthresh=1.0)
+    plt.semilogx()
+    # # Fix x-axis ticks and formatting
+    # ax = plt.gca()  # Get current axes
+    # ax.xaxis.set_major_locator(mticker.LogLocator(base=10, numticks=12))
+    # ax.xaxis.set_minor_locator(mticker.LogLocator(base=10, subs='auto', numticks=100))
+    # ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, p: f'{x:.0f}' if x >= 1 else f'{x:.1f}'))
+    # ax.grid(True, which="both", ls="-", alpha=0.3)
+    ax = plt.gca()
+    ax.xaxis.set_major_locator(mticker.LogLocator(base=10, numticks=10))
+    ax.xaxis.set_minor_locator(mticker.LogLocator(base=10, subs='auto'))
+    ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
+    ax.ticklabel_format(style='plain', axis='x')
+    # plt.grid(True, which="both", linestyle="-", alpha=0.3)
+    major_ticks = [1.4, 3, 6, 10, 20, 33]  # Adjust based on your data range
+    ax.set_xticks(major_ticks)    
+    freqs = (df_data['freq'] / 1e9)
+    # plt.xlim(0.9 * np.min(freqs), 1.1 * np.max(freqs))
+    # plt.ylim(0.1, 1.2 * np.max(df_data['total_flux_mask'] * 1000))
+    # Save the figure if requested
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    
+    return None
+
+
+
+def plot_galaxy_sed_v2(combined_df, df_data, source_name='', special_name='',
+                       label_total = r"$S_{\nu}^{\mathrm{tot}}$",
+                       figsize=(5, 3), use_colors=True, custom_labels=None, 
+                       ext_ids = None,
+                       show_total=True, save_path=None, markersize = 9):
+    """
+    Create a plot of Spectral Energy Distribution (SED) for galaxy components.
+    
+    Parameters:
+    -----------
+    combined_deconv_df : DataFrame
+        DataFrame containing component data with 'comp_ID', 'freq', 'total_flux_mask', 
+        and 'flux_error_res_3' columns.
+    df_data : DataFrame
+        DataFrame containing total data with 'freq', 'total_flux_mask', and 'flux_error_res_3' columns.
+    source_name : str, optional
+        Name of the source for the plot title.
+    special_name : str, optional
+        Additional name information for the plot title.
+    figsize : tuple, optional
+        Figure size as (width, height) in inches.
+    use_colors : bool, optional
+        If True, use colorblind-friendly palette; if False, use different symbols in black.
+    custom_labels : list, optional
+        Custom labels for each component. If None, will use "COMP_X" format.
+    show_total : bool, optional
+        Whether to show the total flux data.
+    save_path : str, optional
+        If provided, save the figure to this path.
+    
+    Returns:
+    --------
+    fig : Figure object
+        The created figure object.
+    """
+
+    
+    # Create colorblind-friendly palette
+    # colorblind_palette = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', 
+    #                       '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', 
+    #                       '#bcbd22', '#17becf']
+    colorblind_palette = [
+        '#E69F00',
+        '#006B5C',
+        '#994F9F',
+        '#D5A87F',
+        '#5DC1C0',
+        '#FF8425',
+        '#EE3377','#33557B',
+        '#0077BB',
+        '#E6C700',
+        '#777777','#CC3311','orange',
+        '#F9E949','#88BB44',
+        '#56C667',
+    ]
+    # Different marker symbols if not using colors
+    # markers = ['X','*','^', 'v', '<','D', '>', 'p', 'x']
+    markers = ['d', 's', 'p', '+', '>', 'v', '^', 'd','h','x','*']
+    
+    # Create the figure with subplots
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(figsize[0], figsize[1]*1.5), 
+                                   gridspec_kw={'height_ratios': [3, 1], 
+                                                # 'hspace': 0.03
+                                                }, 
+                                   sharex=True)
+    
+    # Get unique component IDs
+    unique_comps = sorted(combined_df['comp_ID'].unique())
+    
+    # Plot each component on main subplot
+    sum_flux = []
+    for i, comp_id in enumerate(unique_comps):
+        df_component = combined_df[combined_df['comp_ID'] == comp_id]
+        Snu_component = df_component['total_flux_mask'].values * 1000
+        Snu_component_err = df_component['flux_error_res_3'].values * 1000
+        sum_flux.append(Snu_component)
+        
+        # Set the label
+        if custom_labels is not None and i < len(custom_labels):
+            label = custom_labels[i]
+        else:
+            label = f"COMP_{int(comp_id)}"
+        
+        # Set plotting parameters based on use_colors flag
+        if use_colors:
+            color = colorblind_palette[i % len(colorblind_palette)]
+            marker = '.'
+        else:
+            color = 'black'
+            marker = markers[i % len(markers)]
+        
+        ax1.errorbar(
+            (df_component['freq'] / 1e9), (Snu_component),
+            yerr=Snu_component_err,
+            linestyle='',
+            linewidth=0.5, 
+            markersize=markersize,
+            marker=markers[i],
+            capsize=2,
+            markeredgewidth=1,
+            markerfacecolor=(1, 1, 1, 0.4),  # White with 30% opacity
+            markeredgecolor= color,
+            label=label,
+            color=color
+        )
+    #We need to add the flux error back since the flux error is already included in both data and models.
+    residual_flux = (1000 * df_data['total_flux_mask'].values 
+        - np.nansum(sum_flux,axis=0) 
+        + df_data['flux_error_res_3'].values * 1000)
+    normalised_residual_flux = residual_flux / (df_data['total_flux_mask'].values * 1000)
+    # print(residual_flux)
+    
+    if ext_ids is not None:
+        df_component = combined_df[combined_df['comp_ID'] == ext_ids]
+        Snu_component = df_component['total_flux_mask'].values * 1000
+        Snu_component_err = df_component['flux_error_res_3'].values * 1000
+        Snu_component_ext_corrected = Snu_component + residual_flux
+        Snu_component_ext_corrected_err = np.sqrt(Snu_component_err**2.0 + (df_data['flux_error_res_3'].values * 1000)**2.0)
+        ax1.errorbar(
+            (df_component['freq'] / 1e9), (Snu_component_ext_corrected),
+            yerr=Snu_component_ext_corrected_err,
+            linestyle='',
+            linewidth=0.5, 
+            markersize=markersize,
+            marker='o',
+            capsize=2,
+            markeredgewidth=1,
+            markerfacecolor=(1, 1, 1, 0.4),  # White with 30% opacity
+            markeredgecolor='grey',
+            # label=f"COMP_{int(ext_ids)} (ext. corr.)",
+            color='grey'
+        )
+
+    # Plot the total if requested on main subplot
+    if show_total:
+        ax1.errorbar(
+            (df_data['freq'] / 1e9), (df_data['total_flux_mask'] * 1000),
+            yerr=df_data['flux_error_res_3'] * 1000,
+            linestyle='',
+            linewidth=0.5, 
+            markersize=markersize,
+            marker='o',
+            capsize=2,
+            markeredgewidth=1,
+            markerfacecolor=(1, 1, 1, 0.4),  # White with 30% opacity
+            markeredgecolor='black',
+            label=label_total,
+            color='black'
+        )
+        
+        # Plot residuals on bottom subplot
+        ax2.errorbar(
+            (df_data['freq'] / 1e9), normalised_residual_flux,
+            # yerr=df_data['flux_error_res_3'] * 1000,
+            linestyle='',
+            linewidth=0.5, 
+            markersize=markersize,
+            marker='o',
+            capsize=2,
+            markeredgewidth=1,
+            markerfacecolor=(1, 1, 1, 0.4),  # White with 30% opacity
+            markeredgecolor='red',
+            label=r"$S_{\nu}^{\mathrm{res}}$",
+            color='red'
+        )
+        
+        # Add zero reference line to residuals subplot
+        ax2.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
+    
+    # Set labels and title for main subplot
+    ax1.set_ylabel(r'$S_{\nu}(\nu_{\mathrm{obs}})$ [mJy]')
+    ax1.set_title(f'{source_name} - {special_name}')
+    
+    # Set labels for residuals subplot
+    ax2.set_xlabel(r'Frequency $\nu_{\mathrm{obs}}$ [GHz]')
+    ax2.set_ylabel(r'$S_{\nu}^{\mathrm{res}}~/~$'+label_total)
+    
+    # Add legend to main subplot
+    ax1.legend(
+        framealpha=0.9,
+        ncol=2,
+        # loc=loc,
+        # fontsize=int(fontsize-1),
+        # fontsize=13,
+        handlelength=1,
+        handletextpad=0.5,
+        columnspacing=0.5,
+        borderaxespad=0.1
+    )
+    
+    # Set log scales for main subplot
+    # plt.semilogy()
+    ax1.set_yscale('log')
+    ax1.set_xscale('log')
+    
+    # Set log scale for x-axis of residuals subplot
+    ax2.set_xscale('log')
+    
+    # # Fix x-axis ticks and formatting
+    # ax = plt.gca()  # Get current axes
+    # ax.xaxis.set_major_locator(mticker.LogLocator(base=10, numticks=12))
+    # ax.xaxis.set_minor_locator(mticker.LogLocator(base=10, subs='auto', numticks=100))
+    # ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, p: f'{x:.0f}' if x >= 1 else f'{x:.1f}'))
+    # ax.grid(True, which="both", ls="-", alpha=0.3)
+    
+    # Configure x-axis formatting for both subplots
+    for ax in [ax1, ax2]:
+        ax.xaxis.set_major_locator(mticker.LogLocator(base=10, numticks=10))
+        ax.xaxis.set_minor_locator(mticker.LogLocator(base=10, subs='auto'))
+        ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
+        ax.ticklabel_format(style='plain', axis='x')
+        # plt.grid(True, which="both", linestyle="-", alpha=0.3)
+        major_ticks = [1.4, 3, 6, 10, 20, 33]  # Adjust based on your data range
+        ax.set_xticks(major_ticks)
+    
+    freqs = (df_data['freq'] / 1e9)
+    # plt.xlim(0.9 * np.min(freqs), 1.1 * np.max(freqs))
+    # plt.ylim(0.1, 1.2 * np.max(df_data['total_flux_mask'] * 1000))
+    
+    # Adjust layout to prevent overlapping
+    # plt.tight_layout()
+    plt.subplots_adjust(hspace=0.03)
+    
+    # Save the figure if requested
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    
+    return None
+
+def make_plot_m(x_value,
+              y_value,
+              x_error,
+              y_error,
+              color_indicator = None,
+              classes = None,
+              x_label = None,
+              y_label = None,
+              log_x = False,
+              log_y = False,
+              add_legend = False,
+              plot_tau_K = True,
+              plot_one_to_one = False,
+              cmap='Greys',
+              class_color = 'black',
+              cb_label = None,
+              figsize = (3.0,4.0),
+              x_lim = (None,None),
+              y_lim = (None,None),
+              fontsize = 14,
+              label_font_size = 13,
+              ncol=1,
+              loc = 'best',
+              colours = ['grey','black','orange','limegreen'],
+              marker_list = ['X','s','o'],
+              plot_list=False,
+              list_labels = None,
+              savename = None,
+              fig = None,  # New parameter
+              ax = None    # New parameter
+             ):
+    
+    # Create figure and axes if not provided
+    if fig is None or ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    
+    # Plot data using ax instead of plt
+    if classes is None:
+        if plot_list:
+            x_tau_list_data = []
+            y_tau_list_data = []
+            for kk in range(len(x_value)):
+                eb = ax.errorbar(
+                    x=x_value[kk],
+                    y=y_value[kk],
+                    xerr=[x_error[kk]],
+                    yerr=[y_error[kk]],
+                    # linestyle='',linewidth=2, markersize=9,color=colours[kk], marker='.',capsize=3,
+                    linestyle='', linewidth=2, markersize=10, color=colours[kk], 
+                    marker=marker_list[kk], capsize=2,
+                    markerfacecolor=(1, 1, 1, 0.4),  # White with 30% opacity
+                    markeredgecolor=colours[kk], 
+                    markeredgewidth=2,
+                    label=list_labels[kk]
+                )
+                x_tau_list_data.extend(x_value[kk])
+                y_tau_list_data.extend(y_value[kk])
+                
+                
+        else:
+            eb = ax.errorbar(
+                x=x_value,
+                y=y_value,
+                xerr=[x_error],
+                yerr=[y_error],
+                linestyle='',linewidth=0.5, markersize=10,color='black', 
+                marker='.',
+                # markerfacecolor='none',markeredgewidth=0.5,
+                capsize=3,
+            )
+    if classes is not None:
+        # Plot errorbars per class
+        for cls in np.unique(classes):
+            mask = classes == cls
+            eb = ax.errorbar(
+                x=x_value[mask],
+                y=y_value[mask],
+                xerr=x_error[mask],
+                yerr=y_error[mask],
+                marker=markers[cls], linestyle='', 
+                linewidth=2, markersize=15,
+                alpha = 0.5,
+                color=class_color,
+                label=class_names[cls], capsize=3
+            )
+        
+            # Set different alpha values in one-liners
+            eb[0].set_alpha(0.5)  # Points
+            [cap.set_alpha(0.4) for cap in eb[1]]  # Caps
+            [bar.set_alpha(0.4) for bar in eb[2]]  # Bars
+            
+    if color_indicator is not None:    
+        cmap = plt.cm.magma
+        norm = plt.Normalize(vmin=np.nanmin(color_indicator), 
+                                   vmax=np.nanmax(color_indicator))
+        colors = cmap(norm(color_indicator))
+        
+        sizes = 1.0 * color_indicator
+        sc = ax.scatter(x_value, 
+                        y_value, 
+                        s=sizes, linestyle='',linewidth=2,
+                        alpha=0.5,
+                        cmap='Greys',
+                        c=color_indicator,
+                        marker='o')
+        if cb_label is not None:
+            cbar = plt.colorbar(sc)
+            cbar.set_label(cb_label)
+
+    if plot_list:
+        tau, tau_uncertainty, p_value, n_valid = kendall_tau(
+            x_data = x_tau_list_data, 
+            y_data = y_tau_list_data, 
+            n_bootstrap = 10000)
+    else:
+        tau, tau_uncertainty, p_value, n_valid = kendall_tau(
+            x_data = x_value, 
+            y_data = y_value, 
+            n_bootstrap = 10000)
+    print(f"tau = {tau}+/-{tau_uncertainty}")
+    print(f"p_value = {p_value}")
+
+    if plot_tau_K:
+        tau_str = r"$\tau_{\mathrm{K}}=$" + f"${tau:.2f}+/-{tau_uncertainty:.2f}$; "
+        p_str = r"$p=$" + f"${p_value:.2f}$"
+        ax.annotate(tau_str + p_str, 
+            xy=(0.1, 0.1),
+            xytext=(0.50, 1.04),  # Position relative to axes
+            xycoords='axes fraction',  # Use axes coordinates
+            textcoords='axes fraction',
+            # fontsize=int(fontsize-1),
+            ha='center',
+            bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.8),
+        )
+
+    if add_legend:
+        legend = ax.legend(
+            framealpha=0.9,
+            ncol=ncol,
+            loc=loc,
+            # fontsize=int(fontsize-1),
+            fontsize=label_font_size,
+            handlelength=1,
+            handletextpad=0.5,
+            columnspacing=0.5,
+            borderaxespad=0.1
+        )
+    
+    if log_x:
+        ax.set_xscale('log')
+    if log_y:
+        ax.set_yscale('log')
+
+    ax.set_xlim(x_lim)
+    ax.set_ylim(y_lim)
+
+    if plot_one_to_one:
+        # Get the current axis limits 
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+        
+        # Create the line range
+        min_val = min(xlim[0], ylim[0])
+        max_val = max(xlim[1], ylim[1])
+        
+        # Create a simple linear range for the 1:1 line
+        line_range = np.linspace(min_val, max_val, 100)
+        
+        # Plot the one-to-one relation line
+        ax.plot(line_range, line_range, color='grey',ls='--', alpha=0.7)
+
+    if x_label is not None:
+        ax.set_xlabel(x_label,labelpad=0)
+    else:
+        ax.tick_params(axis='x', labelbottom=False)
+        
+    if y_label is not None:
+        ax.set_ylabel(y_label,labelpad=0)
+    else:
+        ax.tick_params(axis='y', labelleft=False)
+    # fig.tight_layout()
+    # Only save if this is called in standalone mode (not as part of a multi-plot)
+    # if savename is not None and fig is None:
+    if savename is not None:
+        fig.savefig(savename, dpi=300, bbox_inches='tight')
+        
+    return ax  # Return the axis object for further customization
+
+def make_plot_m_v2(x_value,
+              y_value,
+              x_error,
+              y_error,
+              color_indicator = None,
+              classes = None,
+              x_label = None,
+              y_label = None,
+              log_x = False,
+              log_y = False,
+              add_legend = False,
+              plot_tau_K = False,
+              plot_one_to_one = False,
+              cmap_indicator = 'Greys',
+              class_color = 'black',
+              cb_label = None,
+              figsize = (3.0,4.0),
+              x_lim = (None,None),
+              y_lim = (None,None),
+              fontsize = 14,
+              label_font_size = 13,
+              ncol=1,
+              loc = 'best',
+              colours = ['grey','black','orange','limegreen'],
+              color = 'black',
+            #   marker_list = ['X','s','o'],
+              marker = '.',markersize = 10,
+              marker_list = ['d', 's', 'o', '*', 'v', '.',r'$\bigcirc$'],
+            #   marker_list = ['X','s','o'],
+              class_names = ['Class 1', 'Class 2', 'Class 3', 'Class 4'],
+              label = None,
+              plot_list=False,
+              list_labels = None,
+              savename = None,
+              fig = None,  # New parameter
+              ax = None    # New parameter
+             ):
+    
+    def _format_errors(errors, selection=None):
+        """
+        Format errors for matplotlib errorbar function.
+        Handles both symmetric (numpy array) and asymmetric (list of two arrays) errors.
+        
+        Args:
+            errors: numpy array or list of [lower_errors, upper_errors]
+            selection: index, slice, or boolean mask to apply
+        
+        Returns:
+            Properly formatted errors for matplotlib errorbar
+        """
+        if isinstance(errors, (list, tuple)) and len(errors) == 2:
+            # Asymmetric errors: [lower_errors, upper_errors]
+            lower, upper = errors
+            if selection is not None:
+                lower = lower[selection]
+                upper = upper[selection]
+            return [lower, upper]
+        else:
+            # Symmetric errors: single numpy array
+            if selection is not None:
+                return errors[selection]
+            return errors
+    
+    # Create figure and axes if not provided
+    if fig is None or ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    
+    # Plot data using ax instead of plt
+    if classes is None:
+        if plot_list:
+            x_tau_list_data = []
+            y_tau_list_data = []
+            for kk in range(len(x_value)):
+                eb = ax.errorbar(
+                    x=x_value[kk],
+                    y=y_value[kk],
+                    xerr=_format_errors(x_error, kk),
+                    yerr=_format_errors(y_error, kk),
+                    # linestyle='',linewidth=2, markersize=9,color=colours[kk], marker='.',capsize=3,
+                    linestyle='', linewidth=1.5, markersize=10, color=colours[kk], 
+                    marker=marker_list[kk], capsize=2,
+                    markerfacecolor=(0.9, 0.9, 0.9, 0.1),  # Grey with 10% opacity
+                    markeredgecolor=colours[kk], 
+                    markeredgewidth=2,
+                    label=list_labels[kk]
+                )
+                x_tau_list_data.extend(x_value[kk])
+                y_tau_list_data.extend(y_value[kk])
+                # Set different alpha values in one-liners
+                eb[0].set_alpha(0.7)  # Points
+                [cap.set_alpha(0.4) for cap in eb[1]]  # Caps
+                [bar.set_alpha(0.4) for bar in eb[2]]  # Bars
+        else:
+            if color_indicator is not None:
+                _label = None
+            else:
+                _label = label
+            eb = ax.errorbar(
+                x=x_value,
+                y=y_value,
+                xerr=_format_errors(x_error),
+                yerr=_format_errors(y_error),
+                linestyle='',linewidth=1.0, markersize=markersize,color=color, 
+                marker=marker,
+                label = _label,
+                markerfacecolor=(0.9, 0.9, 0.9, 0.1),  # Grey with 10% opacity
+                markeredgecolor=color, 
+                markeredgewidth=2,
+                # markerfacecolor='none',markeredgewidth=0.5,
+                capsize=2,
+            )
+            # Set different alpha values in one-liners
+            eb[0].set_alpha(0.7)  # Points
+            [cap.set_alpha(0.3) for cap in eb[1]]  # Caps
+            [bar.set_alpha(0.3) for bar in eb[2]]  # Bars
+    if classes is not None:
+        # Plot errorbars per class
+        for cls in np.unique(classes):
+            mask = classes == cls
+            eb = ax.errorbar(
+                x=x_value[mask],
+                y=y_value[mask],
+                xerr=_format_errors(x_error, mask),
+                yerr=_format_errors(y_error, mask),
+                marker=marker_list[cls], linestyle='', 
+                linewidth=2, markersize=15,
+                alpha = 0.5,
+                color=class_color,
+                label=class_names[cls], capsize=3
+            )
+        
+            # Set different alpha values in one-liners
+            eb[0].set_alpha(0.5)  # Points
+            [cap.set_alpha(0.4) for cap in eb[1]]  # Caps
+            [bar.set_alpha(0.4) for bar in eb[2]]  # Bars
+            
+    if color_indicator is not None:    
+        cmap = plt.cm.magma
+        norm = plt.Normalize(vmin=np.nanmin(color_indicator), 
+                                   vmax=np.nanmax(color_indicator))
+        colors = cmap(norm(color_indicator))
+        
+        sizes = 1.0 * color_indicator
+        sc = ax.scatter(x_value, 
+                        y_value, 
+                        s=sizes, linestyle='',linewidth=2,
+                        alpha=0.5,
+                        cmap=cmap_indicator,
+                        label=label,
+                        c=color_indicator,
+                        marker='o')
+        if cb_label is not None:
+            cbar = plt.colorbar(sc)
+            cbar.set_label(cb_label)
+
+    if plot_list:
+        tau, tau_uncertainty, p_value, n_valid = kendall_tau(
+            x_data = x_tau_list_data, 
+            y_data = y_tau_list_data, 
+            n_bootstrap = 10000)
+    else:
+        tau, tau_uncertainty, p_value, n_valid = kendall_tau(
+            x_data = x_value, 
+            y_data = y_value, 
+            n_bootstrap = 10000)
+    print(f"tau = {tau}+/-{tau_uncertainty}")
+    print(f"p_value = {p_value}")
+
+    if plot_tau_K:
+        tau_str = r"$\tau_{\mathrm{K}}=$" + f"${tau:.2f}+/-{tau_uncertainty:.2f}$; "
+        p_str = r"$p=$" + f"${p_value:.2f}$"
+        ax.annotate(tau_str + p_str, 
+            xy=(0.1, 0.1),
+            xytext=(0.50, 1.04),  # Position relative to axes
+            xycoords='axes fraction',  # Use axes coordinates
+            textcoords='axes fraction',
+            # fontsize=int(fontsize-1),
+            ha='center',
+            bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.8),
+        )
+
+    if add_legend:
+        legend = ax.legend(
+            framealpha=0.9,
+            ncol=ncol,
+            loc=loc,
+            # fontsize=int(fontsize-1),
+            fontsize=label_font_size,
+            handlelength=1,
+            handletextpad=0.5,
+            columnspacing=0.5,
+            borderaxespad=0.1
+        )
+    
+    if log_x:
+        ax.set_xscale('log')
+    if log_y:
+        ax.set_yscale('log')
+
+    ax.set_xlim(x_lim)
+    ax.set_ylim(y_lim)
+
+    if plot_one_to_one:
+        # Get the current axis limits 
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+        
+        # Create the line range
+        min_val = min(xlim[0], ylim[0])
+        max_val = max(xlim[1], ylim[1])
+        
+        # Create a simple linear range for the 1:1 line
+        line_range = np.linspace(min_val, max_val, 100)
+        
+        # Plot the one-to-one relation line
+        ax.plot(line_range, line_range, color='grey',ls='--', lw=4, alpha=0.7)
+
+    if x_label is not None:
+        ax.set_xlabel(x_label,labelpad=0)
+    else:
+        ax.tick_params(axis='x', labelbottom=False)
+        
+    if y_label is not None:
+        ax.set_ylabel(y_label,labelpad=0)
+    else:
+        ax.tick_params(axis='y', labelleft=False)
+    # fig.tight_layout()
+    # Only save if this is called in standalone mode (not as part of a multi-plot)
+    # if savename is not None and fig is None:
+    if savename is not None:
+        fig.savefig(savename, dpi=300, bbox_inches='tight')
+        
+    return ax  # Return the axis object for further customization
+
