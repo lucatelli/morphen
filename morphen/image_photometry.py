@@ -411,9 +411,9 @@ def compute_petrosian_properties(data_2D, imagename, mask_component=None,
         if verbose>0:
             print('WARNING: Number of pixels for petro region is too small. '
                   'Looping over until good condition is satisfied.')
-            print(f"Rlast        = {source_props['rlast']}")
-            print(f"2*Rp           =  {2*source_props['Rp']}")
-            print(f"r_total_flux = {p.r_total_flux}")
+            # print(f"Rlast        = {source_props['rlast']}")
+            # print(f"2*Rp           =  {2*source_props['Rp']}")
+            # print(f"r_total_flux = {p.r_total_flux}")
 
 
         if (mask_component is not None):
@@ -442,9 +442,9 @@ def compute_petrosian_properties(data_2D, imagename, mask_component=None,
         if verbose>0:
             print('WARNING: Number of pixels for petro region is too small. '
                   'Looping over until good condition is satisfied.')
-            print(f"Rlast        = {source_props['rlast']}")
-            print(f"2*Rp         =  {2*source_props['Rp']}")
-            print(f"r_total_flux = {p.r_total_flux}")
+            # print(f"Rlast        = {source_props['rlast']}")
+            # print(f"2*Rp         =  {2*source_props['Rp']}")
+            # print(f"r_total_flux = {p.r_total_flux}")
         Rlast_new = 2 * source_props['Rp'] + (2 * source_props['Rp']-source_props['rlast']+1)
         # print(f'Rlast (new) = {Rlast_new}')
         source_props, flux_arr, area_arr, error_arr, p, r_list = \
@@ -456,6 +456,10 @@ def compute_petrosian_properties(data_2D, imagename, mask_component=None,
                               vmin=vmin,bkg_sub=bkg_sub,error=error,
                               plot=plot)
 
+    # if verbose>0:
+    #     print(f"2*Rp         =  {2*source_props['Rp']}")
+    #     print(f"r_total_flux = {p.r_total_flux}")
+    #     print(f"Rlast        = {source_props['rlast']}")
 
     beam_A = beam_area2(imagename)
     S_flux = flux_arr / beam_A
