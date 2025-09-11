@@ -2635,8 +2635,10 @@ def compute_image_properties(img, residual,
     x0max, y0max = peak_center(g * mask)
     results['x0'], results['y0'] = x0max, y0max
     # determine momentum centres.
-    x0m, y0m, q_mom, PAdeg_mom = momenta(g * mask, PArad_0=None, q_0=None)
+    x0m, y0m, a_mom, b_mom, q_mom, PAdeg_mom = momenta(g * mask, 
+                                                       PArad_0=None, q_0=None)
     results['x0m'], results['y0m'] = x0m, y0m
+    results['a_mom'], results['b_mom'] = a_mom, b_mom
     results['q_mom'], results['PAdeg_mom'] = q_mom, PAdeg_mom
 
     if do_fit_ellipse:
@@ -4085,20 +4087,28 @@ def q_PA(image):
     x0col = m10 / m00
     y0col = m01 / m00
 
-    # manor, minor and axis ratio
-    lam1 = np.sqrt(abs((1 / 2.) * (mu20 + mu02 + np.sqrt((mu20 - mu02) ** 2 + 4 * mu11 ** 2))) / m00)
-    lam2 = np.sqrt(abs((1 / 2.) * (mu20 + mu02 - np.sqrt((mu20 - mu02) ** 2 + 4 * mu11 ** 2))) / m00)
-    a = max(lam1, lam2)
-    b = min(lam1, lam2)
+    # Calculate eigenvalues (these give RMS^2)
+    lam1_sq = (1 / 2.) * (mu20 + mu02 + np.sqrt((mu20 - mu02) ** 2 + 4 * mu11 ** 2)) / m00
+    lam2_sq = (1 / 2.) * (mu20 + mu02 - np.sqrt((mu20 - mu02) ** 2 + 4 * mu11 ** 2)) / m00
+    
+    lam1_rms = np.sqrt(abs(lam1_sq))
+    lam2_rms = np.sqrt(abs(lam2_sq))
+    
+    # Apply scaling to get physical size
+    a_phys = max(lam1_rms, lam2_rms) * sigma_scale
+    b_phys = min(lam1_rms, lam2_rms) * sigma_scale
+    
+    a_rms = max(lam1_rms, lam2_rms)
+    b_rms = min(lam1_rms, lam2_rms)
 
     PA = (1 / 2.) * np.arctan2(2 * mu11, (mu20 - mu02))
     if PA < 0:
         PA = PA + np.pi
     PAdeg = np.rad2deg(PA)
-    a = a
-    b = b
-    q = b / a
-    return PAdeg, b / a, x0col, y0col
+    
+    q = b_phys / a_phys
+    
+    return PAdeg, q, x0col, y0col, a_phys, b_phys
 
 
 def peak_center(image):
@@ -4137,7 +4147,7 @@ def peak_center(image):
         return (x0max, y0max)
 
 
-def momenta(image, PArad_0=None, q_0=None):
+def momenta(image, PArad_0=None, q_0=None, sigma_scale=3.0):
     '''
     <<<Morfometryka-core part>>>
     Calculates center of mass, axis lengths and position angle
@@ -4158,15 +4168,16 @@ def momenta(image, PArad_0=None, q_0=None):
     x0col = m10 / m00
     y0col = m01 / m00
 
-    # manor, minor and axis ratio
-    lam1 = np.sqrt(abs((1 / 2.) *
-                       (mu20 + mu02 + np.sqrt((mu20 - mu02) ** 2 +
-                                              4 * mu11 ** 2))) / m00)
-    lam2 = np.sqrt(abs((1 / 2.) *
-                       (mu20 + mu02 - np.sqrt((mu20 - mu02) ** 2 +
-                                              4 * mu11 ** 2))) / m00)
-    a = max(lam1, lam2)
-    b = min(lam1, lam2)
+    # major, minor and axis ratio
+    lam1_sq = (1 / 2.) * (mu20 + mu02 + np.sqrt((mu20 - mu02) ** 2 + 4 * mu11 ** 2)) / m00
+    lam2_sq = (1 / 2.) * (mu20 + mu02 - np.sqrt((mu20 - mu02) ** 2 + 4 * mu11 ** 2)) / m00
+    
+    lam1_rms = np.sqrt(abs(lam1_sq))
+    lam2_rms = np.sqrt(abs(lam2_sq))
+    
+    # Apply scaling to get physical size
+    a = max(lam1_rms, lam2_rms) * sigma_scale
+    b = min(lam1_rms, lam2_rms) * sigma_scale
 
     PA = (1 / 2.) * np.arctan2(2 * mu11, (mu20 - mu02))
     if PA < 0:
@@ -4179,7 +4190,7 @@ def momenta(image, PArad_0=None, q_0=None):
     # self.PAdeg = np.rad2deg(self.PArad)
     # self.q = self.b/self.a
 
-    # mofified by lucatelli.
+    # mofified by lucatelli (2018)
     """This will force mfmtk to do photometry for the given input PA
     this can be useful when we want to study how the light profile changes
     as function of PA or q. This was indented to explore the difference between the
@@ -4198,7 +4209,7 @@ def momenta(image, PArad_0=None, q_0=None):
         q = b / a
     else:
         q = q_0
-    return (x0col, y0col, q, PAdeg)
+    return (x0col, y0col, a, b, q, PAdeg)
 
 
 def cal_PA_q(gal_image_0,Isequence = None,region_split=None,SAVENAME=None):
@@ -4227,7 +4238,7 @@ def cal_PA_q(gal_image_0,Isequence = None,region_split=None,SAVENAME=None):
                                   save_name=SAVENAME)
 
     # global PA,  global q
-    PA, q, x0col, y0col = q_PA(gal_image_0)
+    PA, q, x0col, y0col, a, b = q_PA(gal_image_0)
 
     # print("Initial PA and q = ", PA, q)
     # print("Median PA and q = ", PAm, qm)
@@ -5183,3 +5194,4 @@ def convex_morpho(image, mask, scale=1.0, do_plot=False, weight_power=1.0):
         "minor_diameter": diameters["minor_diameter"]
     }
     return report
+
