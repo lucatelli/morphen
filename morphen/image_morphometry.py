@@ -1756,9 +1756,9 @@ def measures(imagename, residualname, z, mask_component=None, sigma_mask=6,
         try:
             if verbose >= 1:
                 if logger is not None:
-                    logger.info(f"  ++>> Computing Petrosian properties.")
+                    logger.info(f"++>> Computing Petrosian properties.")
                 else:
-                    print(' ++>> Computing Petrosian properties.')
+                    print('++>> Computing Petrosian properties.')
             r_list, area_arr, area_beam, p, flux_arr, error_arr, results_final, cat, \
                 segm, segm_deblend, sorted_idx_list = \
                 compute_petrosian_properties(data_2D, imagename,
@@ -1779,10 +1779,10 @@ def measures(imagename, residualname, z, mask_component=None, sigma_mask=6,
             error_petro = False
         except Exception as e:
             if logger is not None:
-                logger.warning(f"  -->> ERROR when computing Petrosian properties. "
+                logger.warning(f"-->> ERROR when computing Petrosian properties. "
                                 f"Will flag error_petro as True.")
             else:
-                print("     -->> ERROR when computing Petrosian properties. Will "
+                print("-->> ERROR when computing Petrosian properties. Will "
                         "flag error_petro as True.")
             error_petro = True
     else:
@@ -2616,7 +2616,7 @@ def compute_image_properties(img, residual,
     
     try:
         results['convex_error_flag'] = False
-        convex_properties = convex_morpho(g, mask, do_plot=True)
+        convex_properties = convex_morpho(g, mask, do_plot=show_figure)
         results['PA_convex'] = convex_properties['PA_convex']
         results['q_convex'] = convex_properties['q_convex']
         results['centroid_convex'] = convex_properties['centroid_convex']
@@ -3186,9 +3186,9 @@ def compute_image_properties(img, residual,
         try:
             if verbose >= 1:
                 if logger is not None:
-                    logger.info(f"  ++>> Computing Petrosian properties.")
+                    logger.info(f"++>> Computing Petrosian properties.")
                 else:
-                    print(' ++>> Computing Petrosian properties.')
+                    print('++>> Computing Petrosian properties.')
             r_list, area_arr, area_beam, p, flux_arr, error_arr, results, cat, \
                 segm, segm_deblend, sorted_idx_list = \
                 compute_petrosian_properties(g, img,
@@ -3211,10 +3211,10 @@ def compute_image_properties(img, residual,
             error_petro = False
         except Exception as e:
             if logger is not None:
-                logger.warning(f"  -->> ERROR when computing Petrosian properties. "
+                logger.warning(f"-->> ERROR when computing Petrosian properties. "
                                 f"Will flag error_petro as True.")
             else:
-                print("     -->> ERROR when computing Petrosian properties. Will "
+                print("-->> ERROR when computing Petrosian properties. Will "
                         "flag error_petro as True.")
             error_petro = True
     else:
