@@ -55,32 +55,61 @@ class config():
         """
         Global configuration for matplotlib.pyplot
         """
-        mpl.rcParams.update({'font.size': 16,
-                             'text.usetex': False,  #
+        # global_font_size = 14
+        global_font_size = 14
+        mpl.rcParams.update({'font.size': global_font_size,
+                             'text.usetex': False, 
                              'font.family': 'sans-serif',
                              'mathtext.fontset': 'stix',
                              'font.family': 'sans',
                              'font.weight': 'medium',  
                              'font.family': 'STIXGeneral',
-                             'xtick.labelsize': 16,
+                            #  'text.usetex' : True,
+                            #  'font.family' : 'serif',
+                            #  'font.serif' : ['Garamond Libre', 'EB Garamond', 'Cormorant Garamond', 'serif'],
+                            #  'text.latex.preamble': r'''
+                            #     \usepackage{ebgaramond-maths}
+                            #     \usepackage{garamondlibre}
+                            #     \usepackage{amsmath}
+                            #     \usepackage{amssymb}
+                            #     \usepackage{mathrsfs}
+                            #     \DeclareFontFamily{U}{BOONDOX-calo}{\skewchar\font=45}
+                            #     \DeclareFontShape{U}{BOONDOX-calo}{m}{n}{<-> s*[1.05] BOONDOX-r-calo}{}
+                            #     \DeclareFontShape{U}{BOONDOX-calo}{b}{n}{<-> s*[1.05] BOONDOX-b-calo}{}
+                            #     \DeclareMathAlphabet{\mcb}{U}{BOONDOX-calo}{m}{n}
+                            #     \SetMathAlphabet{\mcb}{bold}{U}{BOONDOX-calo}{b}{n}
+                            #     \DeclareMathAlphabet{\mbcb}{U}{BOONDOX-calo}{b}{n}
+                            #     ''',
+                             'xtick.labelsize': global_font_size,
                              'figure.figsize': (6, 4),
-                             'ytick.labelsize': 16,
-                             'axes.labelsize': 16,
+                             'ytick.labelsize': global_font_size,
+                             'axes.labelsize': global_font_size,
                              'xtick.major.width': 1,
                              'ytick.major.width': 1,
                              'axes.linewidth': 1.5,
                              'axes.edgecolor':'orange',
                              'lines.linewidth': 2,
-                             'legend.fontsize': 14,
+                             'legend.fontsize': global_font_size,
                              'grid.linestyle': '--',
                              # 'grid.color':'black',
+                             #  'figure.dpi': 96,
                              'axes.grid.which': 'major',  
                              'axes.grid.axis': 'both', 
                              'axes.spines.right': True,
                              'axes.grid': True,
-                             'axes.titlesize' : 16,
+                             'axes.titlesize' : global_font_size,
                              'legend.framealpha': 1.0
                              })
+        # mpl.rcParams['text.usetex'] = True
+        # mpl.rcParams['font.family'] = 'serif'
+        # mpl.rcParams['font.serif'] = ['Garamond Libre', 'EB Garamond', 'Cormorant Garamond', 'serif']
+        # # LaTeX preamble with your specific packages
+        # mpl.rcParams['text.latex.preamble'] = r'''
+        # \usepackage{ebgaramond-maths}
+        # \usepackage{garamondlibre}
+        # \usepackage{amsmath}
+        # \usepackage{amssymb}
+        # '''
         pass
 
     reset_rc_params()
@@ -155,10 +184,11 @@ class read_data():
         self.psfname = psfname
         self.print_names()
         self.get_data()
-        try:
-            self.get_info()
-        except:
-            pass
+        self.get_info()
+        # try:
+        #     self.get_info()
+        # except:
+        #     pass
 
     def print_names(self):
         if self.filename != None:
@@ -178,18 +208,272 @@ class read_data():
         self.psf_data_2D = None
         self.rms_img = None
         self.rms_res = None
+        
         if self.filename != None:
             self.image_data_2D = mlibs.load_fits_data(self.filename)
-            self.rms_img = mlibs.mad_std(self.image_data_2D)
+            self.rms_img = mlibs.mad_std(self.image_data_2D,ignore_nan=True)
         if self.residualname != None:
             self.residual_data_2D = mlibs.load_fits_data(self.residualname)
-            self.rms_res = mlibs.mad_std(self.residual_data_2D)
+            self.rms_res = mlibs.mad_std(self.residual_data_2D,ignore_nan=True)
         if self.psfname != None:
             self.psf_data_2D = mlibs.load_fits_data(self.psfname)
     
     def get_info(self):
         self.cell_size = mlibs.get_cell_size(self.filename)
-        self.beam_area_px = mlibs.beam_area2(self.filename)
+        try:
+            self.beam_area_px = mlibs.beam_area2(self.filename)
+        except:
+            self.beam_area_px = 1
+        self.get_pixel_scale()
+        self.get_jy_conversion_factor()
+        self.get_filter_info()
+        self.report_units()
+    
+    def get_pixel_scale(self):
+        cell_size_arcsec = mlibs.get_cell_size(self.filename)
+        self.pixel_scale = cell_size_arcsec
+        self.pixel_scale_x = cell_size_arcsec
+        self.pixel_scale_y = cell_size_arcsec
+        self.scale_source = "cell size"
+        
+        
+    # def get_pixel_scale(self):
+    #     """
+    #     Determine the pixel scale from the FITS header in arcseconds.
+    #     Order of preference:
+    #     1. D00*SCAL (for drizzled HST images)
+    #     2. CD matrix calculation (accounts for rotation)
+    #     3. IDCSCALE (HST specific)
+    #     4. CDELT values (for non-rotated images)
+    #     """
+    #     try:
+    #         with mlibs.pf.open(self.filename) as hdul:
+    #             # Try each method in order of preference
+                
+    #             # Method 1: Use drizzle scale if available (HST/WFC3 drizzled images)
+    #             drizzle_scale_keys = [k for k in hdul[0].header.keys() if k.startswith('D') and k.endswith('SCAL')]
+    #             if drizzle_scale_keys:
+    #                 self.pixel_scale = hdul[0].header[drizzle_scale_keys[0]]
+    #                 self.pixel_scale_x = self.pixel_scale_y = self.pixel_scale
+    #                 self.scale_source = f"drizzle parameter ({drizzle_scale_keys[0]})"
+    #                 return
+                
+    #             # Method 2: Check for CD matrix (accounts for rotation)
+    #             for i, hdu in enumerate(hdul):
+    #                 if 'CD1_1' in hdu.header and 'CD1_2' in hdu.header and 'CD2_1' in hdu.header and 'CD2_2' in hdu.header:
+    #                     cd1_1 = hdu.header.get('CD1_1', 0)
+    #                     cd1_2 = hdu.header.get('CD1_2', 0)
+    #                     cd2_1 = hdu.header.get('CD2_1', 0)
+    #                     cd2_2 = hdu.header.get('CD2_2', 0)
+                        
+    #                     # Calculate pixel scales using the proper formula for rotated images
+    #                     self.pixel_scale_x = np.sqrt(cd1_1**2 + cd2_1**2) * 3600.0  # Convert from degrees to arcsec
+    #                     self.pixel_scale_y = np.sqrt(cd1_2**2 + cd2_2**2) * 3600.0  # Convert from degrees to arcsec
+                        
+    #                     # Use average of x and y scales for overall scale
+    #                     self.pixel_scale = (self.pixel_scale_x + self.pixel_scale_y) / 2.0
+    #                     self.scale_source = "CD matrix calculation"
+    #                     return
+                
+    #             # Method 3: Check for IDCSCALE (HST specific)
+    #             for hdu in hdul:
+    #                 if 'IDCSCALE' in hdu.header:
+    #                     self.pixel_scale = hdu.header['IDCSCALE']
+    #                     self.pixel_scale_x = self.pixel_scale_y = self.pixel_scale
+    #                     self.scale_source = "IDCSCALE"
+    #                     return
+                
+    #             # Method 4: Check for CDELT values (for non-rotated images)
+    #             for hdu in hdul:
+    #                 if 'CDELT1' in hdu.header and 'CDELT2' in hdu.header:
+    #                     self.pixel_scale_x = abs(hdu.header.get('CDELT1', 0)) * 3600.0  # Convert from degrees to arcsec
+    #                     self.pixel_scale_y = abs(hdu.header.get('CDELT2', 0)) * 3600.0  # Convert from degrees to arcsec
+    #                     self.pixel_scale = (self.pixel_scale_x + self.pixel_scale_y) / 2.0
+    #                     self.scale_source = "CDELT values"
+    #                     return
+                
+    #             # If we get here, no scale information was found
+    #             self.pixel_scale = None
+    #             self.pixel_scale_x = self.pixel_scale_y = None
+    #             self.scale_source = None
+    #             print("-->> Warning: Could not determine pixel scale from header")
+                    
+    #     except Exception as e:
+    #         print(f"-->> Error determining pixel scale: {e}")
+    #         self.pixel_scale = None
+    #         self.pixel_scale_x = self.pixel_scale_y = None
+    #         self.scale_source = None
+        
+    # def get_pixel_scale(self):
+    #     """
+    #     Determine the pixel scale from the FITS header in arcseconds
+    #     """
+    #     try:
+    #         with mlibs.pf.open(self.filename) as hdul:
+    #             # Try different methods to get pixel scale
+    #             # Method 1: Check for CD matrix (most common)
+    #             if 'CD1_1' in hdul[0].header or ('CD1_1' in hdul[1].header if len(hdul) > 1 else False):
+    #                 header = hdul[0].header if 'CD1_1' in hdul[0].header else hdul[1].header
+    #                 cd1_1 = header.get('CD1_1', 0)
+    #                 cd1_2 = header.get('CD1_2', 0)
+    #                 cd2_1 = header.get('CD2_1', 0)
+    #                 cd2_2 = header.get('CD2_2', 0)
+    #                 self.pixel_scale_x = np.sqrt(cd1_1**2 + cd2_1**2) * 3600.0  # Convert from degrees to arcsec
+    #                 self.pixel_scale_y = np.sqrt(cd1_2**2 + cd2_2**2) * 3600.0  # Convert from degrees to arcsec
+    #                 self.pixel_scale = (self.pixel_scale_x + self.pixel_scale_y) / 2.0
+    #                 print(f"Pixel scale determined from CD matrix: {self.pixel_scale:.4f} arcsec/pixel")
+                
+    #             # Method 2: Check for CDELT
+    #             elif 'CDELT1' in hdul[0].header or ('CDELT1' in hdul[1].header if len(hdul) > 1 else False):
+    #                 header = hdul[0].header if 'CDELT1' in hdul[0].header else hdul[1].header
+    #                 self.pixel_scale_x = abs(header.get('CDELT1', 0)) * 3600.0  # Convert from degrees to arcsec
+    #                 self.pixel_scale_y = abs(header.get('CDELT2', 0)) * 3600.0  # Convert from degrees to arcsec
+    #                 self.pixel_scale = (self.pixel_scale_x + self.pixel_scale_y) / 2.0
+    #                 print(f"Pixel scale determined from CDELT: {self.pixel_scale:.4f} arcsec/pixel")
+                
+    #             # Method 3: Check for other possible keywords (HST specific)
+    #             elif 'IDCSCALE' in hdul[0].header or ('IDCSCALE' in hdul[1].header if len(hdul) > 1 else False):
+    #                 header = hdul[0].header if 'IDCSCALE' in hdul[0].header else hdul[1].header
+    #                 self.pixel_scale = header.get('IDCSCALE')
+    #                 self.pixel_scale_x = self.pixel_scale_y = self.pixel_scale
+    #                 print(f"Pixel scale determined from IDCSCALE: {self.pixel_scale:.4f} arcsec/pixel")
+                
+    #             # Method 4: Use drizzle scale if available (HST/WFC3 specific)
+    #             elif 'D001SCAL' in hdul[0].header:
+    #                 self.pixel_scale = hdul[0].header.get('D001SCAL') 
+    #                 self.pixel_scale_x = self.pixel_scale_y = self.pixel_scale
+    #                 print(f"Pixel scale determined from D001SCAL: {self.pixel_scale:.4f} arcsec/pixel")
+                
+    #             else:
+    #                 # Default value if no scale information found
+    #                 self.pixel_scale = None
+    #                 self.pixel_scale_x = self.pixel_scale_y = None
+    #                 print("-->> Warning: Could not determine pixel scale from header")
+                
+    #     except Exception as e:
+    #         print(f"-->> Error determining pixel scale: {e}")
+    #         self.pixel_scale = None
+    #         self.pixel_scale_x = self.pixel_scale_y = None
+            
+    def get_jy_conversion_factor(self):
+        """
+        Determine the conversion factor from raw pixel values to Janskys
+        """
+        # try:
+        with mlibs.pf.open(self.filename) as hdul:
+            # Check for instrument-specific keywords
+            self.instrument = None
+            self.bunit = None
+            
+            # First, determine the instrument and the units
+            for i, hdu in enumerate(hdul):
+                if 'INSTRUME' in hdu.header:
+                    self.instrument = hdu.header['INSTRUME'].strip()
+                
+                # Check for BUNIT in this HDU
+                if 'BUNIT' in hdu.header:
+                    self.bunit = hdu.header['BUNIT'].strip()
+                    # For HST data, science data is often in extension, so prioritize that
+                    if i > 0 and 'SCI' in hdu.name:
+                        break  # Found units in SCI extension, prioritize this
+            
+            # Now find appropriate conversion factor
+            self.jy_conversion = None
+            
+            # For HST WFC3 data
+            if self.instrument == 'WFC3' or self.instrument == 'WFC3  ':
+                # Look for PHOTFNU (direct conversion to Jy)
+                for hdu in hdul:
+                    if 'PHOTFNU' in hdu.header:
+                        self.jy_conversion = hdu.header['PHOTFNU']
+                        break
+                
+                # If PHOTFNU not found, try PHOTFLAM with PHOTPLAM
+                if self.jy_conversion is None:
+                    for hdu in hdul:
+                        if 'PHOTFLAM' in hdu.header and 'PHOTPLAM' in hdu.header:
+                            photflam = hdu.header['PHOTFLAM']
+                            photplam = hdu.header['PHOTPLAM']
+                            # Convert from FLAM to Jy: Jy = FLAM * PHOTPLAM² / 3.34e4
+                            self.jy_conversion = photflam * (photplam**2) / 3.34e4
+                            break
+            
+            # For Legacy Survey data (nanomaggies)
+            elif 'Legacy' in str(hdul[0].header.get('SURVEY', '')):
+                # Standard conversion for nanomaggies
+                self.jy_conversion = 3.631e-6
+            
+            # For other instruments, provide warning
+            if self.jy_conversion is None:
+                print("-->> Warning: Could not determine Jy conversion factor from header")
+            else:
+                # Create conversion methods for convenience
+                self.to_jy = lambda data: data * self.jy_conversion
+                self.to_mjy = lambda data: data * self.jy_conversion * 1000  # Convert to mJy
+                    
+        # except Exception as e:
+        #     print(f"-->> Error determining Jy conversion: {e}")
+        #     self.jy_conversion = None
+    
+    def get_filter_info(self):
+        """
+        Get information about the filter used for the observation
+        """
+        # try:
+        with mlibs.pf.open(self.filename) as hdul:
+            self.filter = None
+            self.filter_wavelength = None
+            self.filter_frequency = None
+            
+            # Try to get filter name
+            for hdu in hdul:
+                if 'FILTER' in hdu.header:
+                    self.filter = hdu.header['FILTER'].strip()
+                    break
+            
+            # Try to get filter wavelength info
+            for hdu in hdul:
+                if 'PHOTPLAM' in hdu.header:
+                    # PHOTPLAM is in Angstroms
+                    self.filter_wavelength = hdu.header['PHOTPLAM'] * 1e-10  # Convert to meters
+                    # Calculate frequency in Hz
+                    self.filter_frequency = 2.99792458e8 / self.filter_wavelength
+                    break
+            
+            # Additional info for HST WFC3
+            if self.instrument == 'WFC3' or self.instrument == 'WFC3  ':
+                for hdu in hdul:
+                    if 'PHOTBW' in hdu.header:
+                        self.filter_bandwidth = hdu.header['PHOTBW'] * 1e-10  # Convert to meters
+                        break
+                
+        # except Exception as e:
+        #     print(f"-->> Error getting filter info: {e}")
+        #     self.filter = None
+        #     self.filter_wavelength = None
+        #     self.filter_frequency = None
+    
+    def report_units(self):
+        """
+        Print a report of the units and conversion factors
+        """
+        print("\n===== Image Units and Conversion Information =====")
+        print(f"Instrument: {self.instrument}")
+        print(f"Filter: {self.filter}")
+        
+        if self.filter_wavelength is not None:
+            print(f"Filter wavelength: {self.filter_wavelength*1e9:.2f} nm")
+            print(f"Filter frequency: {self.filter_frequency/1e9:.2f} GHz")
+        
+        print(f"Original units: {self.bunit}")
+        
+        if self.jy_conversion is not None:
+            print(f"Conversion factor to Jy: {self.jy_conversion:.6e}")        
+        if self.pixel_scale is not None:
+            print(f"Pixel scale: {self.pixel_scale:.4f} arcsec/pixel")
+        
+        print("=================================================\n")
+        
         
 
 
@@ -334,7 +618,7 @@ class source_extraction():
                  mask_grow_iterations = 1,
                  ell_size_factor=None,  # unstable, please inspect!
                  obs_type = 'radio', algorithm='SEP',threshold_mode='sigma',
-                 force_circular=False,
+                 force_circular=False,force_circular_all=False,
                  show_detection=False,show_petro_plots=False,
                  show_bkg_map=False,
                  SAVE=True, show_figure=True,dry_run = False,SE_ref=None):
@@ -469,6 +753,7 @@ class source_extraction():
         self.show_petro_plots = show_petro_plots
         self.obs_type = obs_type
         self.force_circular = force_circular
+        self.force_circular_all = force_circular_all
         self.mask_grow_iterations = mask_grow_iterations
         self.threshold_mode = threshold_mode
         
@@ -551,6 +836,7 @@ class source_extraction():
                               obs_type=self.obs_type,algorithm=self.algorithm,
                               sort_by=self.sort_by,
                               force_circular = self.force_circular,
+                              force_circular_all = self.force_circular_all,
                               show_petro_plots=self.show_petro_plots)
 
 class evaluate_source_structure():
