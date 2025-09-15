@@ -20,11 +20,11 @@
 __versions__ = ('0.3.1alpha-1', '0.4.0alpha-1', '0.5.0alpha-1')
 __codenames__ = ('Pelicoto', 'Saurinho', '')
 __package_name__ = 'morphen'
-__version__ = '0.5.0alpha-1'
+__version__ = '0.5.0alpha-2'
 __codename__ = 'Saurinho'
 __author__ = 'Geferson Lucatelli'
 __email__ = 'geferson.lucatelli@postgrad.manchester.ac.uk; gefersonlucatelli@gmail.com'
-__date__ = '2024 12 18'
+__date__ = '2025 04 01'
 print(__doc__)
 print('Version',__version__, '('+__codename__+')')
 print('By',__author__)
@@ -32,6 +32,7 @@ print('Date',__date__)
 import os
 import sys
 
+import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 from matplotlib.text import Text
@@ -39,6 +40,10 @@ from matplotlib.patches import Ellipse
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.text import Text
 from matplotlib import rcParams
+from matplotlib import colors
+from matplotlib.ticker import ScalarFormatter
+from matplotlib.offsetbox import AnchoredText
+from matplotlib.patches import Ellipse
 
 
 import numpy as np
@@ -46,6 +51,7 @@ from sympy import *
 import casatasks
 from casatasks import *
 import casatools
+import casaviewer.imview as imview
 # from casatools import *
 from scipy.ndimage import rotate
 import matplotlib.pyplot as plt
@@ -91,6 +97,7 @@ from scipy.special import huber
 from skimage.morphology import disk, square
 from skimage.morphology import dilation
 from scipy.spatial import ConvexHull
+from itertools import combinations
 
 
 from scipy.optimize import leastsq, fmin, curve_fit
@@ -191,6 +198,7 @@ exec(open(f"{morphen_path}/radio_utils.py").read())
 exec(open(f"{morphen_path}/signal_stats.py").read())
 exec(open(f"{morphen_path}/source_extraction.py").read())
 exec(open(f"{morphen_path}/utils_analysis.py").read())
+exec(open(f"{morphen_path}/testing_deploy.py").read())
 
 
 reset_rc_params()
