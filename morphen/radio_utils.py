@@ -44,14 +44,14 @@ def prepare_data(root_paths,prefix_images):
         freqlist.extend(freqs_i)
     
     i = 0
-    for image in MFS_images:
+    for image in imagelist:
         print(i, '>>', os.path.basename(image))
         i = i + 1    
-    freqlist_MFS = getfreqs(MFS_images)
+    freqlist_MFS = getfreqs(imagelist)
 
 
     imagelist_beam,residuallist_beam = \
-        sort_list_by_beam_size(imagelist=MFS_images,
+        sort_list_by_beam_size(imagelist=imagelist,
                                      return_df = False)
 #     ax=eimshow(imagelist_beam[0],crop=True,add_beam=True)
     return(np.asarray(MFS_images),
