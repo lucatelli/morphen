@@ -25,7 +25,7 @@ sh Miniconda3-latest-Linux-x86_64.sh
  
 After, create a new conda environment (e.g. python 3.8 is more appropriate to be used with CASA):
 ```commandline
-conda create -n morphen python=3.8
+conda create -n morphen python=3.10
 conda activate morphen
 conda update --all
 ```
@@ -61,8 +61,8 @@ conda install casacore
 
 Install CASA related packages with pip:
 ```commandline
-pip install casatools==6.4.4.31
-pip install casatasks==6.4.4.31 casaplotms casadata casaviewer casampi casaplotserver casalogger
+pip install casatools
+pip install casatasks casaplotms casadata casaviewer casampi casaplotserver casalogger
 ```
 
 To use `casaviewer` (`imview`), you have to downgrade `protobuf` to version `3.20.3`:
@@ -73,8 +73,8 @@ pip install protobuf==3.20.3
 Then, install python related packages:
 ```commandline
 pip install ipython notebook jupyter tqdm matplotlib corner sympy cmasher coloredlogs 
-pip install scipy==1.10.1
-pip install numpy==1.24.3 astropy==5.2.2  pandas==1.5.3 astroquery tableprint prettytable
+pip install scipy
+pip install numpy astropy  pandas astroquery tableprint prettytable
 ```
 
 Optmisation packages:
@@ -87,12 +87,12 @@ pip install datashader
 ### Image Shape Analysis
 Some utilities are used to quantify image structure. For that, python packages that are used are:
 ```commandline
-pip install scikit-image==0.20.0 scikit-learn==1.2.2
+pip install scikit-image scikit-learn
 ```
 ### Photometry and Source Detection
 ```commandline
 pip install petrofit
-pip install photutils==1.6.0 sep fitsio
+pip install photutils sep fitsio
 ```
 ### Additional packages (for completeness)
 ```
@@ -102,7 +102,7 @@ pip install astrodendro bdsf
 ### Image Fitting Libraries
 Image fitting is performed with the `LMFIT` package, alongside `scipy` and the Monte Carlo `emcee` package. 
 ```commandline
-pip install lmfit==1.1.0 emcee==3.1.4 h5py==3.7.0 corner arviz==0.15.1 dynesty
+pip install lmfit==1.1.0 emcee h5py corner arviz dynesty
 ```
 
 Note: At the momment, for an unknown reason, minimisation using Jax is not occuring in the desired 
@@ -169,13 +169,13 @@ arch -x86_64 conda update --all
 
 Install CASA related packages with pip:
 ```commandline
-arch -x86_64 python3 -m pip install casatools==6.5.1.23
-arch -x86_64 python3 -m pip install casatasks==6.5.1.23
+arch -x86_64 python3 -m pip install casatools
+arch -x86_64 python3 -m pip install casatasks
 arch -x86_64 python3 -m pip install casadata
 arch -x86_64 conda install casacore
 arch -x86_64 python3 -m pip install casaplotms casaviewer casampi casaplotserver casalogger
-<!-- arch -x86_64 conda install casampi mpi4py -->
 ```
+<!-- arch -x86_64 conda install casampi mpi4py -->
 
 To use `casaviewer` (`imview`), you have to downgrade `protobuf` to version `3.20.3`:
 ```commandline
@@ -185,20 +185,20 @@ arch -x86_64 python3 -m pip install protobuf==3.20.3
 Then, install python related packages:
 ```commandline
 arch -x86_64 pip install ipython notebook jupyter tqdm matplotlib corner sympy cmasher coloredlogs 
-arch -x86_64 pip install scipy==1.10.1
-arch -x86_64 pip install numpy==1.24.3 astropy==5.2.2  pandas==1.5.3 astroquery tableprint prettytable
+arch -x86_64 pip install scipy
+arch -x86_64 pip install numpy astropy  pandas astroquery tableprint prettytable
 ```
 
 
 ### Image Shape Analysis
 Some utilities are used to quantify image structure. For that, python packages that are used are:
 ```commandline
-arch -x86_64 pip install scikit-image==0.20.0 scikit-learn==1.2.2
+arch -x86_64 pip install scikit-image scikit-learn
 ```
 ### Photometry and Source Detection
 ```commandline
 arch -x86_64 pip install petrofit
-arch -x86_64 pip install photutils==1.6.0 sep fitsio
+arch -x86_64 pip install photutils sep fitsio
 ```
 ### Additional packages (for completeness)
 ```
@@ -208,7 +208,7 @@ arch -x86_64 pip install astrodendro bdsf
 ### Image Fitting Libraries
 Image fitting is performed with the `LMFIT` package, alongside `scipy` and the Monte Carlo `emcee` package. 
 ```commandline
-arch -x86_64 pip install lmfit==1.1.0 emcee==3.1.4 h5py==3.7.0 corner arviz==0.15.1
+arch -x86_64 pip install lmfit==1.1.0 emcee h5py corner arviz
 ```
 ## Install Jax for CPU
 

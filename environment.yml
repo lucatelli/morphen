@@ -4,10 +4,10 @@ channels:
   - pkgw-forge
   - defaults
 dependencies:
-  - python=3.8
+  - python=3.10
   - casacore
-  - aoflagger=2.15.0
-  - boost==1.70.0
+  # - aoflagger
+  # - boost
   - pip
   - pip:
     - casatools
