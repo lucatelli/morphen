@@ -544,4 +544,68 @@ def get_err_frac(x,y,x_err,y_err):
 
 
 
+def fit2D_norm_metric(data, model, mask_region,
+                                 background_level=None, bound_to_one=True,
+                                 w_RFF=0.6, w_log_RFF=0.4
+                                 ):
+    """
+    Calculates a fractional quality metric, both in Log-Space and Linear-Space.
+    Combine both into a single metric. 
+
+    This turned good for high-dynamic-range images.
+
+
+    
+    Parameters:
+        data (np.array): The 2D image data.
+        model (np.array): The 2D model data.
+        mask_region (np.array): Boolean mask to define region of interest (this is critical!)
+        background_level (float): A constant added to data/model before logging.
+                                  Should be roughly equal to the background RMS/Sigma.
+                                  Prevents log(0) and suppresses sky noise.
+        bound_to_one (bool): Clip result to max 1.0.
+    Returns:
+        float: 0.0 (Perfect) to 1.0 (Bad)
+    """
+    # 1. Clean inputs (handle negatives from background subtraction)
+    # We clip at 0 to avoid NaNs in log, then add the background level
+    # This acts as a "softening" parameter.
+    if background_level is None:
+        background_level = mad_std(data,ignore_nan=True)
+        if background_level < 1e-10:
+            background_level = mad_std(data[data > 0],ignore_nan=True)
+
+    # LINEAR SPACE METRIC: in [0,1]
+    RFF = np.sum((np.abs(data - model))*mask_region)/np.sum(data*mask_region)
+
+    data_clean = np.maximum(data, 0) + background_level
+    model_clean = np.maximum(model, 0) + background_level
+    
+    data_log = np.log10(data_clean)
+    model_log = np.log10(model_clean)
+    
+    # 3. Calculate Residuals in Log Space
+    # This measures the "factor" of disagreement rather than absolute difference.
+    # e.g., an error of 10 vs 100 counts (factor 10) is weighted similarly to
+    # 1000 vs 10000 counts (factor 10).
+    residual_log_abs = np.abs(data_log - model_log) * mask_region
+
+    # 4. Normalization
+    # We sum the absolute log values of the data. 
+    total_log_flux = np.sum(np.abs(data_log) * mask_region)
+    
+    # Avoid divide by zero
+    if total_log_flux == 0:
+        return 1.0
+        
+    # 5. Calculate Metric
+    log_RFF = np.sum(residual_log_abs) / total_log_flux
+
+    # 6. Combine the two metrics
+    # combined_metric = (RFF + log_RFF) / 2.0
+    combined_metric = (w_RFF * RFF + w_log_RFF * log_RFF)
+    print(f"RFF: {RFF:.4f}, log_RFF: {log_RFF:.4f}, Combined: {combined_metric:.4f}")
+    if bound_to_one:
+        return min(combined_metric, 1.0)
+    return combined_metric
 
