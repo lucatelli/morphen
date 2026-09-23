@@ -51,6 +51,43 @@ class CustomFormatter(mticker.ScalarFormatter):
             # Let the parent formatter handle this
             return super().__call__(x, pos)
 
+
+def flux_peak_rms_labels(peak, rms, flux_units, flux_conversion_factor=1.0):
+    """
+    Format a (peak, rms) pair of *raw* pixel-array values (i.e. before any
+    unit conversion) into the two LaTeX strings eimshow's `plot_rms` text box
+    displays. Uses the same flux_units/flux_conversion_factor vocabulary and
+    per-unit conversion factors as the colorbar formatting above, so this
+    annotation always matches what the colorbar claims -- instead of
+    hardcoding the "raw array is Jy/beam" assumption regardless of flux_units.
+    """
+    if flux_units in ('Jy', 'mJy'):
+        # raw array already in Jy(/beam)
+        line1 = r"$S_{\mathrm{p}}" + f" = {(peak * 1e3):.2f}$ mJy/B"
+        line2 = f"$\\sigma = {(rms * 1e6):.2f}~\\mu$Jy/B"
+    elif flux_units == 'nanomaggies':
+        # 1 nanomaggy = 3.631e-6 Jy
+        line1 = r"$S_{\mathrm{p}}" + f" = {(peak * 3.631e-3):.2f}$ mJy/px"
+        line2 = f"$\\sigma = {(rms * 3.631):.2f}~\\mu$Jy/px"
+    elif flux_units == 'mJy/px':
+        # flux_conversion_factor is already mJy per native pixel unit
+        line1 = r"$S_{\mathrm{p}}" + f" = {(peak * flux_conversion_factor):.2f}$ mJy/px"
+        line2 = f"$\\sigma = {(rms * flux_conversion_factor * 1000):.2f}~\\mu$Jy/px"
+    elif flux_units == 'sfr':
+        # array is already a SFR surface density, not a flux -- no mJy/uJy scaling
+        line1 = r"$S_{\mathrm{p}}" + f" = {peak:.3f}$ " + r"$M_{\odot}\,{\rm yr^{-1}\,beam^{-1}}$"
+        line2 = r"$\sigma" + f" = {rms:.4f}$ " + r"$M_{\odot}\,{\rm yr^{-1}\,beam^{-1}}$"
+    elif flux_units == 'K':
+        # array is already a brightness temperature, not a flux
+        line1 = r"$S_{\mathrm{p}}" + f" = {peak:.2f}$ K"
+        line2 = f"$\\sigma = {rms:.2f}$ K"
+    else:
+        # 'any' or an unrecognised flux_units -- no photometric unit to claim
+        line1 = r"$S_{\mathrm{p}}" + f" = {peak:.3g}$ [counts]"
+        line2 = f"$\\sigma = {rms:.3g}$ [counts]"
+    return line1, line2
+
+
 def make_scalebar(ax, left_side, length, color='w', linestyle='-', label='',
                   fontsize=12, text_offset=0.1*u.arcsec):
     axlims = ax.axis()
@@ -212,7 +249,7 @@ def azimuthal_average_profile_with_shaded_errors(image, rms_image, center, sigma
     return bin_centers, profile, error_rms, error_std, ax
 
 
-def plot_azimuthal_profile(image, rms_image, center, 
+def plot_azimuthal_profile(image, rms_image, center=None, 
                            sigma=1.0, sigma_std= 3.0,
                            bin_size=1.0,
                            log_scale=False, cell_size=1.0,
@@ -240,6 +277,10 @@ def plot_azimuthal_profile(image, rms_image, center,
     - points_per_bin: numpy array, number of valid points in each bin
     """
     
+    if center is None:
+        # use peak position as center
+        center = nd.maximum_position(image)[::-1]  # (x, y) format
+
     y, x = np.indices(image.shape)
     r = np.sqrt((x - center[0])**2 + (y - center[1])**2)
     if r_max is None:
@@ -247,6 +288,7 @@ def plot_azimuthal_profile(image, rms_image, center,
     else:
         r_max = r_max
     
+
     
     bin_edges = np.arange(0, r_max + bin_size, bin_size)
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
@@ -542,7 +584,7 @@ def fast_plot2(imagename, crop=False, box_size=128, center=None, with_wcs=True,v
     #     print(g)
     vmax = vmax_factor * g.max()
 
-    norm = simple_norm(g, stretch='sqrt', asinh_a=0.02, min_cut=vmin, max_cut=vmax)
+    norm = simple_norm(g, stretch='sqrt', asinh_a=0.02, vmin=vmin, vmax=vmax)
 
     im_plot = ax.imshow((g), cmap='magma_r', origin='lower', alpha=1.0, norm=norm,
                         aspect=aspect)  # ,vmax=vmax, vmin=vmin)#norm=norm
@@ -713,7 +755,7 @@ def plot_slices(data_2D, residual_2D, model_dict, image_results_conv=None,
     # plt.xlim(300,600)
     if image_results_conv is not None:
         plt.savefig(
-            image_results_conv.replace('.fits', 'result_lmfit_slices.pdf'),
+            image_results_conv.replace('.fits', 'result_lmfit_slices.png'),
             dpi=300, bbox_inches='tight')
         if show_figure == True:
             plt.show()
@@ -722,55 +764,132 @@ def plot_slices(data_2D, residual_2D, model_dict, image_results_conv=None,
 
 
 def plot_fit_results(imagename, model_dict, image_results_conv,
-                     sources_photometies,bkg_image=None,vmax_factor=0.1,data_2D_=None,
-                     mask = None,
+                     sources_photometries, bkg_image=None,vmax_factor=0.1,data_2D_=None,
+                     # deprecated alias for bkg_image; both must be the FITTED
+                     # background s_a*bkg (model_dict['conv_bkg']), never the raw
+                     # input map
+                     bkg_map=None,
+                     mask = None, plotlim=None,
+                     psf_px_size=0,
+                     result_mini=None,
                      vmin_factor=3, obs_type = 'radio',
                      show_figure=True,crop=False,box_size=100):
     if data_2D_ is not None:
         data_2D = data_2D_
     else:
         data_2D = load_fits_data(imagename)
+    # `psf_px_size` is the PSF exclusion RADIUS in pixels (mlibs.psf_exclusion_radius_px).
+    # It used to be cast to int and decremented, then used to slice the first N
+    # radial bins off every curve -- a third, slightly different number from the
+    # one the fit actually excluded. The profiles are now drawn in full and the
+    # excluded region is marked instead, so the plot shows what was cut rather
+    # than hiding it.
+    psf_exclusion_radius = float(psf_px_size)
 
-    plot_data_model_res(data_2D, modelname=model_dict['model_total_conv'],
-               residualname=model_dict['best_residual_conv'],
+    plot_data_model_res(data_2D, model_dict=model_dict,
                reference_image=imagename,
                NAME=image_results_conv[-2].replace('.fits',
                                                    '_data_model_res'),
                crop=crop, vmin_factor=vmin_factor,obs_type = obs_type,
+               mask_region=mask, sources_photometries=sources_photometries,
+               result_mini=result_mini,
                box_size=box_size)
 
 
 
-    ncomponents = sources_photometies['ncomps']
-    if sources_photometies is not None:
-        plotlim =  4.0 * sources_photometies['c'+str(int(ncomponents))+'_Rp']
-        if plotlim > data_2D.shape[0]/2:
+    ncomponents = sources_photometries['ncomps']
+    if plotlim is None:
+        if sources_photometries is not None:
+            # plotlim =  4.0 * sources_photometries['c'+str(int(ncomponents))+'_Rp']
+            radius_increment = 0
+            for kk in range(ncomponents):
+                # radius_increment = np.sqrt(radius_increment**2.0 + sources_photometries['c'+str(kk+1)+'_Rp']**2.0)
+                radius_increment = (radius_increment + 4*sources_photometries['c'+str(kk+1)+'_Rp'])
+            plotlim = 2*radius_increment
+            if plotlim > data_2D.shape[0]/2:
+                plotlim = data_2D.shape[0]/2
+            # plotlim = 0
+            # for i in range(ncomponents):
+            #     plotlim = plotlim + sources_photometries['c' + str(i + 1) + '_rlast']
+        else:
             plotlim = data_2D.shape[0]/2
-        # plotlim = 0
-        # for i in range(ncomponents):
-        #     plotlim = plotlim + sources_photometies['c' + str(i + 1) + '_rlast']
+    else:
+        plotlim = plotlim
 
     model_name = image_results_conv[-2]
     residual_name = image_results_conv[-1]
-    cell_size = get_cell_size(imagename)
+    model_data = load_fits_data(model_name)
+    # cell_size = get_cell_size(imagename)
+    cell_size = 1.0
     profile_data = {}
     # center = get_peak_pos(imagename)
     center = nd.maximum_position(data_2D*mask)[::-1]
+
+    def _component_center(i):
+        """
+        Centre for component i+1's radial profile.
+
+        Every component used to be azimuthally averaged about the *global* peak.
+        For an off-centre component that is an average about the wrong origin, so
+        it never shows a peak at all -- it smears into a shoulder and looks like a
+        bad fit when the fit is fine. Each component is now averaged about its own
+        fitted centre.
+        """
+        if sources_photometries is not None and f'c{i+1}_x0c' in sources_photometries:
+            return (sources_photometries[f'c{i+1}_x0c'],
+                    sources_photometries[f'c{i+1}_y0c'])
+        return center
+
     for i in range(ncomponents):
         component_name = image_results_conv[
             i]  # crop_image.replace('.fits','')+"_"+str(ncomponents)+"C_model_component_"+str(i+1)+special_name+'_IMFIT_opt.fits'
-        Ir_r = get_profile(component_name,
-                           center=center)
+        Ir_r = get_profile(load_fits_data(component_name),
+                            center=_component_center(i))
         profile_data['r' + str(i + 1)], profile_data['Ir' + str(i + 1)], \
         profile_data['c' + str(i + 1) + '_name'] = Ir_r[0], Ir_r[
             1], component_name
+    # ------------------------------------------------------------------
+    # ONE background, resolved once.
+    #
+    # The fit compares the unmodified image against conv(M) + s_a*bkg, so every
+    # curve here has to use that same fitted s_a*bkg -- which is what
+    # `bkg_image` holds (the saved conv_bkg map). `bkg_map` used to take
+    # precedence and carried the RAW, unscaled map instead, so the DATA-bkg curve
+    # had a whole unscaled sky removed from it while the model had s_a times that
+    # sky added. It is kept only as a deprecated alias.
+    bkg = bkg_image if bkg_image is not None else bkg_map
+    if isinstance(bkg, str):
+        bkg = load_fits_data(bkg)
+    if bkg is not None:
+        bkg = np.asarray(bkg, dtype=float)
+        # A background term that was switched off leaves an all-zero map. Treat
+        # it as absent rather than drawing a flat line at zero under a symlog
+        # axis, where it is invisible anyway.
+        bkg_is_zero = not np.any(bkg)
+        # sky_mode='flat' produces a constant map, and there s_a IS the sky in
+        # image units -- worth putting the number in the legend.
+        bkg_is_flat = (not bkg_is_zero
+                       and np.allclose(bkg, bkg.flat[0], rtol=0, atol=0))
+    else:
+        bkg_is_zero = True
+        bkg_is_flat = False
+    bkg_label = ('bkg (not fitted)' if bkg_is_zero
+                 else (f'bkg (flat, $s_a$={bkg.flat[0]:.4g})' if bkg_is_flat
+                       else r'bkg ($s_a\cdot B$)'))
 
-    r, ir = get_profile(data_2D, center=center)
+    if bkg is not None and not bkg_is_zero:
+        r, ir = get_profile(data_2D - bkg, center=center)
+        rmodel_nobkg, irmodel_nobkg = get_profile(model_data - bkg, center=center)
+    else:
+        r, ir = get_profile(data_2D, center=center)
+        rmodel_nobkg, irmodel_nobkg = get_profile(model_data, center=center)
+    r_wbck, ir_wbck = get_profile(data_2D, center=center)
     rmodel, irmodel = get_profile(model_name, center=center)
     rre, irre = get_profile(residual_name, center=center)
-    if bkg_image is not None:
-        r_bkg, ir_bkg = get_profile(bkg_image,center=center)
+    if bkg is not None:
+        r_bkg, ir_bkg = get_profile(bkg, center=center)
 
+    # print(ir_bkg)
     # plt.plot(radiis[0],profiles[0])
     # plt.plot(radiis[1],profiles[1])
     # plt.plot(radiis[2],np.log(profiles[2]))
@@ -779,31 +898,60 @@ def plot_fit_results(imagename, model_dict, image_results_conv,
               'pink', 'slategrey','darkseagreen','peru','royalblue','darkorange']
 
     plt.figure(figsize=(5, 5))
-    plt.plot(r * cell_size, abs(ir), '--.', ms=10, color='purple', alpha=1.0,
-             label='DATA')
-    for i in range(ncomponents):
-        #     try:
-        #         plt.plot(profile_data['r'+str(i+1)],abs(profile_data['Ir'+str(i+1)])[0:r.shape[0]],'--',label='comp'+str(i+1),color=colors[i])
-        plt.plot(profile_data['r' + str(i + 1)] * cell_size,
-                 abs(profile_data['Ir' + str(i + 1)]), '--',
-                 label='COMP_' + str(i + 1), color=colors[i])
-    #     except:
-    #         pass
-    if bkg_image is not None:
-        ir_model_data =  irmodel# + ir_bkg
-        plt.plot(r_bkg * cell_size, abs(ir_bkg), '--', label='bkg', color='brown')
-    else:
-        ir_model_data = irmodel
+    ax = plt.gca()  # Get current axes for explicit scale control
 
-    plt.plot(r * cell_size, abs(irre), '.-', label='RESIDUAL', color='black')
-    plt.plot(r * cell_size, abs(ir_model_data), '--', color='limegreen', label='MODEL',
-             linewidth=4)
-    plt.semilogy()
+    # Set symmetric log scale for y-axis (handles negatives and values near zero)
+    # and log scale for x-axis (radius)
+    ax.set_yscale('symlog', linthresh=1e-6)  # Adjust linthresh based on your data range
+    # ax.set_xscale('log')
+    # Plot data - no need for abs() with symlog
+    plt.plot(r[0:] * cell_size, ir[0:], '--.', ms=10, color='purple', alpha=1.0,
+            label='DATA$-$bkg' if not bkg_is_zero else 'DATA')
+    if not bkg_is_zero:
+        plt.plot(r_wbck[0:] * cell_size, ir_wbck[0:], '--.', ms=6, color='gray',
+                 alpha=0.3, label='DATA w/ bkg')
+
+    # Plot components
+    for i in range(ncomponents):
+        plt.plot(profile_data['r' + str(i + 1)] * cell_size,
+                profile_data['Ir' + str(i + 1)], '--',
+                label='COMP_' + str(i + 1), color=colors[i])
+
+    # Plot background if present. When the background term was not fitted the
+    # map is identically zero; say so in the legend instead of letting the curve
+    # silently disappear below the symlog floor.
+    ir_model_data = irmodel
+    if bkg is not None and not bkg_is_zero:
+        plt.plot(r_bkg * cell_size, ir_bkg, '--', label=bkg_label, color='brown')
+    elif bkg is not None:
+        plt.plot([], [], '--', label=bkg_label, color='brown')
+
+    # Plot residual and model
+    plt.plot(r[0:] * cell_size, irre[0:], '.-', label='RESIDUAL', color='black')
+    plt.plot(r * cell_size, ir_model_data, '--', color='limegreen', label='MODEL',
+            linewidth=4)
+    #plot model withouyt background
+    # plt.plot(r * cell_size, irmodel - ir_bkg, '--', color='orange', label='MODEL $-$ bkg',
+    #         linewidth=2)
+    if not bkg_is_zero:
+        plt.plot(rmodel_nobkg * cell_size, irmodel_nobkg, '--', color='orange',
+                 label='MODEL $-$ bkg', linewidth=2)
+
+    plt.axvline(2*sources_photometries['cg_Rp'], 
+                color='#B41FFF', ##660099
+                # edgecolor="#660099",facecolor="none"
+                ls="dashed", lw=3, label=r'$2R_{p}$')
+    if psf_exclusion_radius > 0:
+        plt.axvspan(0, psf_exclusion_radius * cell_size, color='gray', alpha=0.15,
+                    zorder=0)
+        plt.axvline(psf_exclusion_radius * cell_size, color='gray', linestyle=':',
+                    lw=1.5, label='PSF exclusion')
+
     if obs_type == 'radio':
         plt.xlabel(r'Projected Radius $R$ [arcsec]')
         plt.ylabel(r'Radial Intensity $I(R)$ [Jy/beam]')
     else:
-        plt.xlabel(r'Projected Radius $R$ [px]')
+        plt.xlabel(r'Projected Radius $R$ [arcsec]')
         plt.ylabel(r'Radial Intensity $I(R)$')
         # plt.semilogx()
     # plt.legend(fontsize=11)
@@ -818,14 +966,15 @@ def plot_fit_results(imagename, model_dict, image_results_conv,
         columnspacing=0.5,
         borderaxespad=0.1
     )
-    plt.ylim(1e-7, -0.05 * np.log(ir[0]))
+    plt.ylim(0.05*mad_std(ir,ignore_nan=True),  2 *  (ir[0]))
+    # plt.ylim(1e-7,  2 *  (ir[0]))
     # plt.xlim(0,3.0)
-    plt.grid()
-    if sources_photometies is not None:
-        plt.xlim(0, plotlim * cell_size)
-        idRp_main = int(sources_photometies['c1_Rp'])
-        plt.axvline(r[idRp_main] * cell_size)
-    plt.savefig(image_results_conv[-2].replace('.fits', 'result_lmfit_IR.pdf'),
+    plt.grid(True, alpha=0.8, linestyle=':', linewidth=0.5)
+    # if sources_photometries is not None:
+    #     idRp_main = int(sources_photometries['c1_Rp'])
+    #     plt.axvline(r[idRp_main] * cell_size)
+    plt.xlim(0, plotlim * cell_size)
+    plt.savefig(image_results_conv[-2].replace('.fits', 'result_lmfit_IR.png'),
                 dpi=300, bbox_inches='tight')
     if show_figure == True:
         plt.show()
@@ -834,6 +983,462 @@ def plot_fit_results(imagename, model_dict, image_results_conv,
         plt.close()
 
 
+
+def plot_fitting_summary(imagename, result_mini, model_dict, image_results_conv,
+                         ncomponents=1, 
+                         bkg_map=None,
+                         observation_type='radio', mask=None,
+                         rms=None, cell_size=None, box_size=None, crop=False,
+                         save_name=None, show_figure=True, figsize=(16, 8),
+                         vmax_factor=0.5, vmin_factor=3, add_contours=True,
+                         plotlim=None, psf_px_size=0,
+                         sources_photometries=None,
+                         CM='magma_r'):
+    """
+    Create a comprehensive summary plot of fitting results.
+    
+    This function produces a multi-panel figure showing data, model, residual maps,
+    parameter summary, and azimuthal radial profiles with model fit.
+    
+    Layout: Left section (2x2 grid) for plots, Right section for parameters
+    
+    Parameters
+    ----------
+    imagename : str
+        Path to the original data image
+    result_mini : lmfit.MinimizerResult
+        LMFIT fitting result object containing best-fit parameters and uncertainties
+    model_dict : dict
+        Dictionary containing model images (not used, reads from image_results_conv instead)
+    image_results_conv : list
+        List of output filenames: [component1, ..., componentN, model_total, residual]
+    ncomponents : int, optional
+        Number of Sersic components fitted. Default is 1.
+    observation_type : str, optional
+        Type of observation ('radio' or 'optical'). Default is 'radio'.
+    mask : 2D array, optional
+        Mask applied during fitting. Default is None.
+    rms : float, optional
+        RMS noise level of the image. Default is None.
+    cell_size : float, optional
+        Pixel scale in arcsec/pixel for radio data. Default is None (will be computed).
+    box_size : int, optional
+        Size for cropping images. Default is None.
+    crop : bool, optional
+        Whether to crop the images for display. Default is False.
+    save_name : str, optional
+        Path to save the output figure. If None, uses image_results_conv naming.
+    show_figure : bool, optional
+        Whether to display the figure. Default is True.
+    figsize : tuple, optional
+        Figure size in inches. Default is (16, 8).
+    vmax_factor : float, optional
+        Factor for setting maximum display value. Default is 0.5.
+    vmin_factor : float, optional
+        Factor for setting minimum display value (in sigma). Default is 3.
+    add_contours : bool, optional
+        Whether to add contours to image displays. Default is True.
+    CM : str, optional
+        Colormap for image display. Default is 'magma_r'.
+    
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        The generated figure object
+    """
+    from matplotlib.patches import Ellipse
+    from astropy.visualization import simple_norm
+    
+    # Load data
+    data_2D = load_fits_data(imagename)
+    model_2D = load_fits_data(image_results_conv[-2])
+    residual_2D = load_fits_data(image_results_conv[-1])
+    # PSF exclusion RADIUS in pixels (mlibs.psf_exclusion_radius_px), shared with
+    # the fit mask. Curves are drawn in full and the excluded region is shaded,
+    # rather than the first few radial bins being silently sliced away.
+    psf_exclusion_radius = float(psf_px_size)
+    # Get cell size if not provided
+    if cell_size is None:
+        try:
+            cell_size = get_cell_size(imagename)
+        except:
+            cell_size = 1.0
+            print("Warning: Could not determine cell size, using 1.0")
+    
+    # Get RMS if not provided
+    if rms is None:
+        rms = mad_std(residual_2D, ignore_nan=True)
+    
+    # Determine center from fit parameters
+    center = (result_mini.params['f1_x0'].value,
+                result_mini.params['f1_y0'].value)
+    
+    # Apply cropping if requested
+    if crop and box_size is not None:
+        # `do_cutout` comes from the mlibs namespace, like every other call site
+        # in this file. Importing data_io as a standalone module here loaded a
+        # SECOND copy whose own dependencies (load_fits_data among them) were
+        # never resolved, so its load fell through to `return(ValueError)` and
+        # crop=True died on `data.ndim` inside do_cutout.
+        xin, xen, yin, yen = do_cutout(imagename, box_size=box_size,
+                                       center=center, return_='box')
+        data_2D = data_2D[xin:xen, yin:yen]
+        model_2D = model_2D[xin:xen, yin:yen]
+        residual_2D = residual_2D[xin:xen, yin:yen]
+
+    # The FITTED background s_a*bkg, resolved once and used by every curve, same
+    # as in plot_fit_results. It was previously subtracted unconditionally, which
+    # raised a TypeError on bkg_map=None and, when a raw unscaled map was passed,
+    # pushed the data curve below the model by a whole sky.
+    bkg = bkg_map
+    if isinstance(bkg, str):
+        bkg = load_fits_data(bkg)
+    if bkg is not None:
+        bkg = np.asarray(bkg, dtype=float)
+        if crop and box_size is not None:
+            bkg = bkg[xin:xen, yin:yen]
+        bkg_is_zero = not np.any(bkg)
+        bkg_is_flat = (not bkg_is_zero
+                       and np.allclose(bkg, bkg.flat[0], rtol=0, atol=0))
+    else:
+        bkg_is_zero = True
+        bkg_is_flat = False
+    bkg_label = ('bkg (not fitted)' if bkg_is_zero
+                 else (f'bkg (flat, $s_a$={bkg.flat[0]:.4g})' if bkg_is_flat
+                       else r'bkg ($s_a\cdot B$)'))
+
+
+    # Calculate statistics for display
+    if mad_std(data_2D) == 0:
+        std = data_2D.std()
+    else:
+        std = mad_std(data_2D)
+    
+    # Setup display parameters
+    vmin = vmin_factor * std
+    vmax = vmax_factor * data_2D.max()
+    
+    dx = data_2D.shape[0] / 2
+    
+    # Create figure with two main sections: left (plots) and right (parameters)
+    fig = plt.figure(figsize=figsize)
+    
+    # Main GridSpec: 1 row x 2 columns (left: plots, right: parameters)
+    gs_main = gridspec.GridSpec(1, 2, figure=fig, width_ratios=[2.5, 1],
+                               left=0.05, right=0.98, top=0.96, bottom=0.06,
+                               wspace=0.15)
+    
+    # Left section: nested GridSpec for 2x2 plot layout
+    gs_left = gridspec.GridSpecFromSubplotSpec(2, 2, subplot_spec=gs_main[0],
+                                               hspace=0.08, wspace=0.08)
+    
+    # ========================================================================
+    # LEFT SECTION: Image panels and radial profile
+    # ========================================================================
+    
+    # Normalization for images
+    norm_data = simple_norm(data_2D, vmin=vmin, vmax=vmax,
+                           stretch='asinh', asinh_a=0.05)
+    norm_model = simple_norm(model_2D, vmin=vmin, vmax=vmax,
+                            stretch='asinh', asinh_a=0.05)
+    norm_res = simple_norm(residual_2D, vmin=vmin, vmax=vmax,
+                          stretch='asinh', asinh_a=0.05)
+    
+    # Contour levels
+    levels_data = np.geomspace(3*data_2D.max(), 3*std, 6)
+    contour_palette = ['#000000', '#444444', '#666666', '#EEEEEE', '#EEEEEE', '#FFFFFF']
+    
+    # Panel 1: Data (upper left)
+    ax1 = fig.add_subplot(gs_left[0, 0])
+    ax1.imshow(data_2D, cmap=CM, origin='lower', extent=[-dx, dx, -dx, dx],
+               alpha=1.0, norm=norm_data)
+    if add_contours:
+        ax1.contour(data_2D, levels=levels_data[::-1], colors=contour_palette,
+                   linewidths=1.0, extent=[-dx, dx, -dx, dx], alpha=0.8)
+    ax1.set_title('Data', fontsize=11, pad=3)
+    ax1.set_ylabel('Offset [arcsec]' if observation_type == 'radio' else 'Offset [px]', 
+                   fontsize=9)
+    ax1.tick_params(labelsize=8)
+    ax1.set_xticklabels([])
+    
+    # Add component overlays (Sersic radii markers using Rn)
+    colors_overlay = ['lime', 'red', 'cyan', 'orange', 'magenta']
+    for i in range(ncomponents):
+        comp_params = result_mini.params
+        x0_key = f'f{i+1}_x0'
+        y0_key = f'f{i+1}_y0'
+        Rn_key = f'f{i+1}_Rn'
+        PA_key = f'f{i+1}_PA'
+        ell_key = f'f{i+1}_ell'
+        
+        if Rn_key in comp_params:
+            x0 = comp_params[x0_key].value - dx
+            y0 = comp_params[y0_key].value - dx
+            Rn = comp_params[Rn_key].value
+            PA = comp_params[PA_key].value+90 if PA_key in comp_params else 0
+            ell = comp_params[ell_key].value if ell_key in comp_params else 0
+            
+            # Draw ellipses at Rn and 2*Rn
+            # for radius_mult, linestyle in [(1.0, '-'), (2.0, '--')]:
+            for radius_mult, linestyle in [(1.0, '--')]:
+                ellipse = Ellipse((x0, y0), 
+                                2 * radius_mult * Rn * (1 - ell),
+                                2 * radius_mult * Rn,
+                                angle=PA, fill=False,
+                                edgecolor=colors_overlay[i % len(colors_overlay)],
+                                linestyle=linestyle, linewidth=1.5, alpha=0.8)
+                ax1.add_patch(ellipse)
+    
+    # Panel 2: Model (upper right)
+    ax2 = fig.add_subplot(gs_left[0, 1])
+    ax2.imshow(model_2D, cmap=CM, origin='lower', extent=[-dx, dx, -dx, dx],
+               alpha=1.0, norm=norm_model)
+    ax2.contour(model_2D, levels=levels_data[::-1], colors=contour_palette,
+               linewidths=1.0, extent=[-dx, dx, -dx, dx], alpha=0.8)
+    ax2.set_title('Model and PSF', fontsize=11, pad=3)
+    ax2.tick_params(labelsize=8)
+    ax2.set_xticklabels([])
+    ax2.set_yticklabels([])
+    
+    # Panel 3: Residual (lower left)
+    ax3 = fig.add_subplot(gs_left[1, 0])
+    ax3.imshow(residual_2D, origin='lower', cmap=CM, extent=[-dx, dx, -dx, dx],
+               alpha=1.0, norm=norm_res)
+    ax3.contour(residual_2D, levels=levels_data[::-1], colors=contour_palette,
+               linewidths=1.0, extent=[-dx, dx, -dx, dx], alpha=0.8)
+    # Add negative contours
+    levels_neg = np.asarray([-6 * std])
+    ax3.contour(residual_2D, levels=levels_neg[::-1], colors='k',
+               linewidths=0.8, extent=[-dx, dx, -dx, dx], alpha=0.8)
+    ax3.set_title('Residual', fontsize=11, pad=3)
+    ax3.set_xlabel('Offset [arcsec]' if observation_type == 'radio' else 'Offset [px]', 
+                   fontsize=9)
+    ax3.set_ylabel('Offset [arcsec]' if observation_type == 'radio' else 'Offset [px]', 
+                   fontsize=9)
+    ax3.tick_params(labelsize=8)
+    
+    # Panel 4: Radial Profile (lower right) - square layout
+    ax4 = fig.add_subplot(gs_left[1, 1])
+    
+    # Get radial profiles
+    if bkg is not None and not bkg_is_zero:
+        r_data, ir_data = get_profile(data_2D - bkg, center=center)
+        r_model_nobkg, ir_model_nobkg = get_profile(model_2D - bkg, center=center)
+        r_bkg, ir_bkg = get_profile(bkg, center=center)
+    else:
+        r_data, ir_data = get_profile(data_2D, center=center)
+        r_model_nobkg, ir_model_nobkg = None, None
+        r_bkg, ir_bkg = None, None
+    r_data_wbck, ir_data_wbck = get_profile(data_2D, center=center)
+    r_model, ir_model = get_profile(model_2D, center=center)
+    r_res, ir_res = get_profile(residual_2D, center=center)
+    
+    # Get component profiles
+    colors_comp = ['red', 'blue', 'teal', 'brown', 'cyan', 'orange']
+    for i in range(ncomponents):
+        if i < len(image_results_conv) - 2:  # Exclude total model and residual
+            comp_data = load_fits_data(image_results_conv[i])
+            if crop and box_size is not None:
+                comp_data = comp_data[xin:xen, yin:yen]
+            # Averaged about this component's own centre: about the global peak
+            # an off-centre component has no peak at all, only a shoulder.
+            comp_center = center
+            if (sources_photometries is not None
+                    and f'c{i+1}_x0c' in sources_photometries):
+                comp_center = (sources_photometries[f'c{i+1}_x0c'],
+                               sources_photometries[f'c{i+1}_y0c'])
+                if crop and box_size is not None:
+                    comp_center = (comp_center[0] - yin, comp_center[1] - xin)
+            r_comp, ir_comp = get_profile(comp_data, center=comp_center)
+            ax4.plot(r_comp * cell_size, ir_comp, '--',
+                    label=f'Comp {i+1}', color=colors_comp[i % len(colors_comp)],
+                    linewidth=1.5, alpha=0.7)
+    
+    # Plot data and model using symlog scale
+    ax4.set_yscale('symlog', linthresh=1e-6)
+    
+    ax4.plot(r_data[0:] * cell_size, ir_data[0:], '--.', ms=4, color='purple',
+             alpha=0.7, label='Data-bkg' if not bkg_is_zero else 'Data',
+             linewidth=1.2)
+    if not bkg_is_zero:
+        ax4.plot(r_data_wbck[0:] * cell_size, ir_data_wbck[0:], '--.', ms=6,
+                 color='gray', alpha=0.3, label='DATA w/ bkg')
+    ax4.plot(r_model * cell_size, ir_model, '-', color='limegreen',
+             label='Model', linewidth=3, alpha=0.8)
+    if ir_model_nobkg is not None:
+        ax4.plot(r_model_nobkg * cell_size, ir_model_nobkg, '--', color='orange',
+                 label='Model-bkg', linewidth=1.5, alpha=0.9)
+    if ir_bkg is not None:
+        ax4.plot(r_bkg * cell_size, ir_bkg, '--', color='brown',
+                 label=bkg_label, linewidth=1.2, alpha=0.9)
+    elif bkg is not None:
+        ax4.plot([], [], '--', color='brown', label=bkg_label)
+    if psf_exclusion_radius > 0:
+        ax4.axvspan(0, psf_exclusion_radius * cell_size, color='gray', alpha=0.15,
+                    zorder=0)
+        ax4.axvline(psf_exclusion_radius * cell_size, color='gray', linestyle=':',
+                    lw=1.2, label='PSF excl.')
+    ax4.plot(r_data[0:] * cell_size, ir_res[0:], '.-', color='black',
+             label='Residual', linewidth=1.2, alpha=0.6, markersize=2)
+    
+    # Set axis labels
+    if observation_type == 'radio':
+        ax4.set_xlabel(r'Radius $R$ [arcsec]', fontsize=9)
+        ax4.set_ylabel(r'$I(R)$ [Jy/beam]', fontsize=9)
+    else:
+        ax4.set_xlabel(r'Radius $R$ [px]', fontsize=9)
+        ax4.set_ylabel(r'$I(R)$', fontsize=9)
+    
+    ax4.tick_params(labelsize=8)
+    ax4.set_title('Azimuthal Profile', fontsize=11, pad=3)
+    
+    # Set limits
+    ax4.set_ylim(0.05*mad_std(ir_data, ignore_nan=True), 2*ir_data[0])
+    
+    # Limit x-axis to relevant region
+    if plotlim is None:
+        plotlim = min(len(r_data), data_2D.shape[0]//2)
+    ax4.set_xlim(0, plotlim * cell_size)
+    
+    # Add grid and legend
+    ax4.grid(True, alpha=0.5, linestyle=':', linewidth=0.5)
+    ax4.legend(loc='best', fontsize=7, framealpha=0.9, ncol=1,
+              handlelength=1.5, handletextpad=0.3, columnspacing=0.3,
+              borderaxespad=0.2)
+    
+    # ========================================================================
+    # RIGHT SECTION: Parameter text summary
+    # ========================================================================
+    
+    # Extract parameters and format them for display
+    params_text = []
+    
+    # Object name
+    import os
+    obj_name = os.path.basename(imagename).replace('.fits', '')
+    params_text.append(f"Object: {obj_name}\n")
+    
+    # Component parameters (1-indexed)
+    for i in range(ncomponents):
+        params_text.append(f"Component {i+1}:")
+        comp_params = result_mini.params
+        
+        # Position
+        x0_key = f'f{i+1}_x0'
+        y0_key = f'f{i+1}_y0'
+        if x0_key in comp_params:
+            x0 = comp_params[x0_key].value
+            y0 = comp_params[y0_key].value
+            x0_err = comp_params[x0_key].stderr if comp_params[x0_key].stderr else 0
+            y0_err = comp_params[y0_key].stderr if comp_params[y0_key].stderr else 0
+            params_text.append(f"  $(x_0,y_0)=({x0:.1f},{y0:.1f})$")
+            params_text.append(f"  $\\pm({x0_err:.1f},{y0_err:.1f})$")
+        
+        # Intensity In
+        In_key = f'f{i+1}_In'
+        if In_key in comp_params:
+            In = comp_params[In_key].value
+            In_err = comp_params[In_key].stderr if comp_params[In_key].stderr else 0
+            if observation_type == 'radio':
+                params_text.append(f"  $I_n = {In:.3e}\\pm {In_err:.2e}$")
+            else:
+                params_text.append(f"  $I_n = {In:.3f}\\pm {In_err:.3f}$")
+        
+        # Sersic parameters
+        Rn_key = f'f{i+1}_Rn'
+        n_key = f'f{i+1}_n'
+        if Rn_key in comp_params:
+            Rn = comp_params[Rn_key].value
+            Rn_err = comp_params[Rn_key].stderr if comp_params[Rn_key].stderr else 0
+            n = comp_params[n_key].value if n_key in comp_params else 1.0
+            n_err = comp_params[n_key].stderr if (n_key in comp_params and comp_params[n_key].stderr) else 0
+            
+            if observation_type == 'radio':
+                # params_text.append(f"  $R_n = {Rn:.2f}\\pm {Rn_err:.2f}$ px")
+                params_text.append(f"  $R_n = {Rn*cell_size:.3f}\\pm {Rn_err*cell_size:.3f}\"$")
+            else:
+                params_text.append(f"  $R_n = {Rn:.2f}\\pm {Rn_err:.2f}$ px")
+            
+            params_text.append(f"  $n = {n:.3f}\\pm {n_err:.3f}$")
+        
+        # Geometry
+        PA_key = f'f{i+1}_PA'
+        ell_key = f'f{i+1}_ell'
+        if PA_key in comp_params:
+            PA = comp_params[PA_key].value
+            PA_err = comp_params[PA_key].stderr if comp_params[PA_key].stderr else 0
+            ell = comp_params[ell_key].value if ell_key in comp_params else 0
+            ell_err = comp_params[ell_key].stderr if (ell_key in comp_params and comp_params[ell_key].stderr) else 0
+            
+            params_text.append(f"  PA $= {PA:.1f} \\pm {PA_err:.1f}^{{\\circ}}$")
+            params_text.append(f"  $e = {ell:.3f} \\pm {ell_err:.3f}$")
+        
+        # Core parameter cg if present
+        cg_key = f'f{i+1}_cg'
+        if cg_key in comp_params:
+            cg = comp_params[cg_key].value
+            cg_err = comp_params[cg_key].stderr if comp_params[cg_key].stderr else 0
+            params_text.append(f"  $c_g = {cg:.3f} \\pm {cg_err:.3f}$")
+        
+        #sky flat level 
+        s_a_key = 's_a'
+        if s_a_key in comp_params:
+            s_a = comp_params[s_a_key].value
+            s_a_err = comp_params[s_a_key].stderr if comp_params[s_a_key].stderr else 0
+            params_text.append(f"  $s_a = {s_a:.3f} \\pm {s_a_err:.3f}$")
+
+        
+        params_text.append("")  # Empty line between components
+    
+    # Fit quality metrics
+    params_text.append("Fit Quality:")
+    params_text.append(f"  $\\chi^2 = {result_mini.chisqr:.2e}$")
+    params_text.append(f"  $\\chi^2_\\nu = {result_mini.redchi:.3f}$")
+    params_text.append(f"  Ndata$ = {result_mini.ndata}$")
+    params_text.append(f"  Nfree$ = {result_mini.nfree}$")
+    if rms is not None:
+        params_text.append(f"  RMS$ = {rms:.2e}$")
+    
+    # Determine if we need multiple columns based on text length
+    lines_per_column = 35  # Approximate lines that fit in one column
+    n_text_columns = max(1, (len(params_text) + lines_per_column - 1) // lines_per_column)
+    
+    # Create nested GridSpec for parameter columns
+    gs_right = gridspec.GridSpecFromSubplotSpec(1, n_text_columns, 
+                                                subplot_spec=gs_main[1],
+                                                wspace=0.15)
+    
+    # Split text into columns
+    for col_idx in range(n_text_columns):
+        ax_text = fig.add_subplot(gs_right[0, col_idx])
+        ax_text.axis('off')
+        
+        # Get text for this column
+        start_idx = col_idx * lines_per_column
+        end_idx = min((col_idx + 1) * lines_per_column, len(params_text))
+        column_text = '\n'.join(params_text[start_idx:end_idx])
+        
+        # Display the text
+        ax_text.text(0.02, 0.98, column_text, transform=ax_text.transAxes,
+                    fontsize=8, verticalalignment='top', fontfamily='monospace',
+                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
+    
+    # ========================================================================
+    # SAVE AND SHOW
+    # ========================================================================
+    
+    if save_name is None:
+        save_name = image_results_conv[-2].replace('.fits', '_fitting_summary.png')
+    
+    plt.savefig(save_name, dpi=300, bbox_inches='tight')
+    # print(f"Fitting summary plot saved to: {save_name}")
+    
+    if show_figure:
+        plt.show()
+    else:
+        plt.close()
+    
+    return fig
 
 
 # plt.savefig(config_file.replace('params_imfit.csv','result_lmfit_py_IR.pdf'),dpi=300, bbox_inches='tight')
@@ -874,9 +1479,122 @@ def total_flux_faster(data2D,mask):
 def plot_decomp_results(imagename,compact,extended_model,data_2D_=None,
                         bkg_image = None,
                         vmax_factor=1.0,vmin_factor=1,rms=None,
-                        figsize=(13,13),nfunctions=None,
+                        figsize=(13,8.5),nfunctions=None,
                         obs_type = 'radio',
-                        special_name=''):
+                        special_name='',
+                        mask=None,
+                        result_mini=None,
+                        comp_ids=None,
+                        ext_ids=None,
+                        model_total=None,
+                        zeta_norm=None,
+                        psf_px_size=None,
+                        psfname=None,
+                        cell_size=None,
+                        flux_unit_label=None,
+                        systematic_error_fraction=0.05,
+                        text_fontsize=11,
+                        save_fits=None,
+                        save_name=None,
+                        show_figure=True):
+    """
+    Plot and quantify the compact/diffuse decomposition of a fitted source.
+
+    Works for both radio and optical data. The three maps (total, compact,
+    diffuse) and the image slice are unchanged in meaning from the original
+    version; what changed is the block of printed quantities, which used to
+    mix four different apertures and double-count the background.
+
+    Two families of numbers are returned:
+
+    - The eight legacy keys (`flux_data`, `flux_density_ext`,
+      `flux_density_ext_old`, `flux_density_ext_self_rms`,
+      `flux_density_extended_model`, `flux_density_compact`,
+      `flux_density_model`, `flux_density_res`) keep their original
+      definitions and values verbatim. Nothing about them moved.
+    - The `dec_*` keys are the corrected quantities, and they are what the
+      figure prints. Every one of them is measured over a SINGLE aperture,
+      with the fitted sky removed from each piece exactly once, so that
+
+          S_compact + S_diffuse_model + S_res == S_total
+
+      holds by construction. The legacy numbers do not satisfy this: they
+      were summed over four different masks (data at 6 sigma, the compact
+      model at 1 sigma of its own mad_std, the extended model at 6 sigma),
+      and both `compact` and `extended_model` carry a copy of the background,
+      so their sum double-counted the sky.
+
+    When only one component was fitted there is no diffuse model, so the
+    diffuse quantities are neither printed nor returned as numbers -- what
+    the single component failed to describe is already in `dec_S_res`.
+    `dec_has_diffuse` records which case this was.
+
+    Parameters
+    ----------
+    imagename : str
+        Path to the image being decomposed. Used for the header/beam, for the
+        default output names, and as the data source when `data_2D_` is None.
+    compact : np.ndarray
+        Convolved model of the compact components, INCLUDING the background
+        once (this is how `run_image_fitting` assembles it).
+    extended_model : np.ndarray or 0
+        Convolved model of the diffuse components, also including the
+        background once. Pass 0 (with `nfunctions=1`) when there are none.
+    data_2D_ : np.ndarray, optional
+        Image data. If given it is used for every panel, including the first
+        one, which otherwise re-reads `imagename` from disk.
+    bkg_image : str or np.ndarray, optional
+        The FITTED background, s_a*B. Path or array.
+    rms : float, optional
+        Noise level. Defaults to `mad_std` of the image.
+    nfunctions : int, optional
+        1 means "no diffuse components"; anything else means there are some.
+    obs_type : str, optional
+        'radio' (fluxes in mJy, per beam) or anything else (data units,
+        beam area 1).
+    mask : np.ndarray, optional
+        Aperture for the corrected quantities. Pass the mask the minimiser
+        used, so the printed fluxes refer to the region that was actually
+        fitted. Falls back to the 6-sigma data mask when not given.
+    result_mini : lmfit.MinimizerResult, optional
+        Used to print Rn, n and s_a with their uncertainties, and chi2.
+    comp_ids, ext_ids : list of str, optional
+        Component IDs assigned to the compact and diffuse sets.
+    model_total : np.ndarray, optional
+        The full convolved model. Only used to compute `zeta_norm` when it is
+        not supplied directly.
+    zeta_norm : float, optional
+        Pre-computed fit-quality metric (see `fit2D_norm_metric`).
+    psf_px_size : float, optional
+        PSF/beam RADIUS in pixels, for the unresolved flag.
+    psfname : str, optional
+        Path to the PSF image. Used to derive the PSF radius when
+        `psf_px_size` is not given and the header has no beam, which is the
+        normal optical case.
+    cell_size : float, optional
+        Pixel scale. Sizes are printed in arcsec for radio when available,
+        in pixels otherwise.
+    flux_unit_label : str, optional
+        Label for the flux block. Defaults to 'mJy' for radio, 'counts'
+        otherwise.
+    systematic_error_fraction : float, optional
+        Calibration term of the flux error, matching `compute_image_properties`.
+    text_fontsize : int, optional
+        Font size of the two printed columns.
+    save_fits : bool, optional
+        Write the compact and diffuse maps to FITS. Defaults to the original
+        behaviour, which was to write them only for non-radio data.
+    save_name : str, optional
+        Output figure path. Defaults to the original
+        `<imagename>_ext_vs_comp<special_name>.jpg`.
+    show_figure : bool, optional
+        When False the figure is closed instead of being left open.
+
+    Returns
+    -------
+    dict
+        The legacy keys plus the `dec_*` keys described above.
+    """
 
     decomp_results = {}
     if rms is None:
@@ -906,55 +1624,15 @@ def plot_decomp_results(imagename,compact,extended_model,data_2D_=None,
             bkg_image = load_fits_data(bkg_image)
         extended = extended + bkg_image
         residual_modeling = residual_modeling + bkg_image
-    fig = plt.figure(figsize=figsize)
-    ax1 = fig.add_subplot(3, 3, 1)
-    # ax.yaxis.set_ticks([])
-    ax1 = eimshow(imagename,ax=ax1,fig=fig,rms=rms,plot_title='Total Emission',
-                 vmax_factor=vmax_factor,vmin_factor=vmin_factor)
-    # cb = plt.colorbar(mappable=plt.gca().images[0],
-    #                           cax=fig.add_axes([0.9, 0.65, 0.02, 0.2]))
-    # ax.yaxis.set_ticks([])
-    ax1.axis('off')
-    ax2 = fig.add_subplot(3, 3, 2)
-    # ax.yaxis.set_ticks([])
-    ax2 = eimshow(compact,ax=ax2,fig=fig,rms=rms,
-                 plot_title='Compact Emission',
-                 vmax_factor=vmax_factor,vmin_factor=vmin_factor)
-    # ax.yaxis.set_ticks([])
-    ax2.axis('off')
 
-    ax3 = fig.add_subplot(3, 3, 3)
-    # ax.yaxis.set_ticks([])
-    ax3 = eimshow(extended,ax=ax3,fig=fig,rms=rms,
-                 plot_title='Diffuse Emission',vmax_factor=vmax_factor,
-                 vmin_factor=vmin_factor)
-    # ax.yaxis.set_ticks([])
-    # cb = plt.colorbar(mappable=plt.gca().images[0],
-    #                           cax=fig.add_axes([0.00, 0.65, 0.02, 0.2]))
-    ax3.axis('off')
-
-    ax4 = fig.add_subplot(3, 3, 4)
-    slice_ext = np.sqrt(np.mean(extended,axis=0)**2.0 + np.mean(extended,axis=1)**2.0)
-    if nfunctions == 1:
-        slice_ext_model = np.sqrt(
-            np.mean(residual_modeling, axis=0) ** 2.0 + np.mean(residual_modeling,
-                                                             axis=1) ** 2.0)
+    # The sky as an array, resolved once. `bkg_image` is already an array by
+    # this point if it was a path. Used only by the dec_* block below, which
+    # subtracts it from each piece exactly once -- unlike the legacy fluxes,
+    # where both `compact` and `extended_model` carry their own copy.
+    if bkg_image is None:
+        bkg2D = np.zeros(np.shape(data_2D), dtype=float)
     else:
-        slice_ext_model = np.sqrt(
-            np.mean(extended_model, axis=0) ** 2.0 + np.mean(extended_model,
-                                                             axis=1) ** 2.0)
-    slice_data = np.sqrt(np.mean(data_2D,axis=0)**2.0 + np.mean(data_2D,axis=1)**2.0)
-    ax4.plot(slice_ext,label='COMPACT SUB')
-    ax4.plot(slice_data,label='DATA')
-    ax4.plot(slice_ext_model, label='EXTENDED MODEL')
-    ax4.legend(prop={'size': 11})
-    xlimit = [data_2D.shape[0] / 2 - 0.15 * data_2D.shape[0],
-              data_2D.shape[0] / 2 + 0.15 * data_2D.shape[0]]
-    ax4.set_xlim(xlimit[0],xlimit[1])
-    # ax.semilogx()
-
-    ax5 = fig.add_subplot(3, 3, 5)
-    ax5.axis('off')
+        bkg2D = np.asarray(bkg_image, dtype=float)
 
     try:
         omaj, omin, _, _, _ = beam_shape(imagename)
@@ -963,9 +1641,9 @@ def plot_decomp_results(imagename,compact,extended_model,data_2D_=None,
     except:
         dilation_size = 10
 
-    _, mask_model_rms_self_compact = mask_dilation(compact,
-                                           sigma=1, dilation_size=dilation_size,
-                                           iterations=2,PLOT=False)
+    # NOTE: `mask_model_rms_self_compact` and
+    # `mask_model_rms_image_extended_model` used to be computed here and were
+    # never read by anything. Two dilations removed, no value changed.
     _, mask_data = mask_dilation(data_2D, rms=rms,
                                            sigma=6, dilation_size=dilation_size,
                                            iterations=2,PLOT=False)
@@ -981,16 +1659,6 @@ def plot_decomp_results(imagename,compact,extended_model,data_2D_=None,
                                             rms=rms,
                                             sigma=6, dilation_size=dilation_size,
                                             iterations=2,PLOT=False)
-    if nfunctions == 1:
-        _, mask_model_rms_image_extended_model = mask_dilation(residual_modeling,
-                                                rms=rms,
-                                                sigma=1, dilation_size=dilation_size,
-                                                iterations=2,PLOT=False)
-    else:
-        _, mask_model_rms_image_extended_model = mask_dilation(extended_model,
-                                                rms=rms,
-                                                sigma=1, dilation_size=dilation_size,
-                                                iterations=2,PLOT=False)
 
     try:
         beam_area_px = beam_area2(imagename)
@@ -1000,10 +1668,14 @@ def plot_decomp_results(imagename,compact,extended_model,data_2D_=None,
         flux_scale_factor = 1000
     else:
         flux_scale_factor = 1
-    # print('Flux on compact (self rms) = ',
-    #       1000*np.sum(compact*mask_model_rms_self_compact)/beam_area_px)
-    # print('Flux on compact (data rms) = ',
-    #       1000 * np.sum(compact * mask_model_rms_image_compact) / beam_area_px)
+
+    # ------------------------------------------------------------------
+    # LEGACY FLUXES -- preserved verbatim.
+    # These are the eight keys other code already reads. They are NOT
+    # self-consistent (four apertures, background counted twice in the model
+    # sum); the dec_* block below is. They stay only so that previously
+    # published numbers do not move.
+    # ------------------------------------------------------------------
     flux_density_compact = flux_scale_factor*np.sum(
         compact*mask_model_rms_image_compact)/beam_area_px
     if nfunctions == 1:
@@ -1029,13 +1701,6 @@ def plot_decomp_results(imagename,compact,extended_model,data_2D_=None,
         flux_res = flux_data - (
                     flux_density_extended_model + flux_density_compact)
 
-    # print('Flux on extended (self rms) = ',flux_density_ext_self_rms)
-    # print('Flux on extended (data rms) = ',flux_density_ext_old)
-    # print('Flux on extended2 (data rms) = ', flux_density_ext)
-    # print('Flux on extended model (data rms) = ', flux_density_extended_model)
-    # print('Flux on data = ', flux_data)
-    # print('Flux on residual = ', flux_res)
-
     decomp_results['flux_data'] = flux_data
     decomp_results['flux_density_ext_old'] = flux_density_ext_old
     decomp_results['flux_density_ext'] = flux_density_ext
@@ -1046,27 +1711,398 @@ def plot_decomp_results(imagename,compact,extended_model,data_2D_=None,
                                             flux_density_extended_model)
     decomp_results['flux_density_res'] = flux_res
 
+    # ------------------------------------------------------------------
+    # CORRECTED DECOMPOSITION -- one aperture, one sky, additive.
+    # ------------------------------------------------------------------
+    if mask is not None:
+        aperture = np.asarray(mask).astype(bool)
+        aperture_source = 'fit_mask'
+    else:
+        aperture = np.asarray(mask_data).astype(bool)
+        aperture_source = 'data_6sigma'
 
+    # `extended_model` is the literal int 0 when there are no diffuse
+    # components, so the emptiness test has to come before any arithmetic.
+    has_ext = (nfunctions != 1) and bool(np.any(np.asarray(extended_model) != 0))
 
-    # print('r_half_light (old vs new) = {:0.2f} vs {:0.2f}'.format(p.r_half_light, p_copy.r_half_light))
-    ax5.annotate(r"$S_\nu^{\rm core-comp}/S_\nu^{\rm total}=$"+'{:0.2f}'.format(flux_density_compact/flux_data),
-                (0.33, 0.32), xycoords='figure fraction', fontsize=18)
-    ax5.annotate(r"$S_\nu^{\rm ext}/S_\nu^{\rm total}\ \ \ =$"+'{:0.2f}'.format(flux_density_ext/flux_data),
-                (0.33, 0.29), xycoords='figure fraction', fontsize=18)
-    ax5.annotate(r"$S_\nu^{\rm ext \ model}/S_\nu^{\rm total}\ \ \ =$"+'{:0.2f}'.format(flux_density_extended_model/flux_data),
-                (0.33, 0.26), xycoords='figure fraction', fontsize=18)
-    ax5.annotate(r"$S_\nu^{\rm res}/S_\nu^{\rm total}\ \ \ =$"+'{:0.2f}'.format(flux_res/flux_data),
-                (0.33, 0.23), xycoords='figure fraction', fontsize=18)
-    
-    # plt.tight_layout()
-    plt.savefig(
-        imagename.replace('.fits', '_ext_vs_comp'+special_name+'.jpg'),
-        dpi=300,
-        bbox_inches='tight')
+    data_nb = np.asarray(data_2D, dtype=float) - bkg2D
+    compact_nb = np.asarray(compact, dtype=float) - bkg2D
+    if has_ext:
+        diffuse_model_nb = np.asarray(extended_model, dtype=float) - bkg2D
+    else:
+        diffuse_model_nb = np.zeros(np.shape(data_2D), dtype=float)
 
-    # save_data = True
-    # if save_data == True:
-    if obs_type != 'radio':
+    S_total = flux_scale_factor * np.nansum(data_nb * aperture) / beam_area_px
+    S_compact = flux_scale_factor * np.nansum(compact_nb * aperture) / beam_area_px
+    S_diffuse_model = (flux_scale_factor
+                       * np.nansum(diffuse_model_nb * aperture) / beam_area_px)
+    S_res = S_total - S_compact - S_diffuse_model
+    if has_ext:
+        S_diffuse_data = S_total - S_compact
+    else:
+        # With a single component `S_total - S_compact` IS the residual. Calling
+        # it a diffuse flux would report the same number twice under two names.
+        S_diffuse_data = np.nan
+
+    # Flux error, same three terms as compute_image_properties: a calibration
+    # fraction, the noise over the number of independent resolution elements
+    # in the aperture, and the residual flux. For optical, beam_area_px is 1
+    # and the noise term degrades to rms*sqrt(Npix), which is the right
+    # uncorrelated-pixel expression.
+    npix_aperture = float(np.nansum(aperture))
+    noise_term = flux_scale_factor * rms * np.sqrt(npix_aperture / beam_area_px)
+
+    def _flux_err(S):
+        if S is None or not np.isfinite(S):
+            return np.nan
+        return float(np.sqrt((systematic_error_fraction * S) ** 2
+                             + noise_term ** 2 + S_res ** 2))
+
+    S_total_err = _flux_err(S_total)
+    S_compact_err = _flux_err(S_compact)
+    S_diffuse_data_err = _flux_err(S_diffuse_data)
+    S_diffuse_model_err = _flux_err(S_diffuse_model) if has_ext else np.nan
+
+    def _safe_ratio(num, den):
+        """Ratios are printed, so a zero or non-finite denominator has to
+        come back as nan rather than raising inside the plotting code."""
+        try:
+            if den == 0 or not np.isfinite(den) or not np.isfinite(num):
+                return np.nan
+            return float(num) / float(den)
+        except Exception:
+            return np.nan
+
+    ratio_compact_to_total = _safe_ratio(S_compact, S_total)
+    ratio_diffuse_to_compact = _safe_ratio(S_diffuse_data, S_compact)
+    ratio_diffuse_data_to_total = _safe_ratio(S_diffuse_data, S_total)
+    ratio_diffuse_model_to_total = _safe_ratio(S_diffuse_model, S_total)
+    ratio_res_to_total = _safe_ratio(S_res, S_total)
+    ratio_diffuse_model_to_data = _safe_ratio(S_diffuse_model, S_diffuse_data)
+
+    # `beam_shape` falls back to Omaj = Omin = cell_size when the header has
+    # no beam, which is the normal optical case. That is a sentinel meaning
+    # "one pixel is one resolution element", not a PSF size, and turning it
+    # into a radius produced a meaningless 0.5 px. Prefer the PSF image when
+    # there is one, and report nothing rather than the sentinel.
+    if psf_px_size is None and psfname is not None:
+        try:
+            _psf_data = load_fits_data(psfname) if isinstance(psfname, str) else psfname
+            psf_px_size = 0.5 * float(psf_params(_psf_data))
+        except Exception:
+            psf_px_size = None
+    if psf_px_size is None:
+        try:
+            _omaj, _omin, _, _, _ = beam_shape(imagename)
+            _cs = get_cell_size(imagename)
+            if np.isclose(_omaj, _cs) and np.isclose(_omin, _cs):
+                psf_px_size = np.nan
+            else:
+                psf_px_size = 0.5 * np.sqrt(_omaj * _omin) / _cs
+        except:
+            psf_px_size = np.nan
+    psf_px_size = float(psf_px_size) if psf_px_size is not None else np.nan
+
+    def _rn_px(cid):
+        """Fitted Rn of one component, in pixels, or nan."""
+        if result_mini is None:
+            return np.nan
+        _k = 'f' + str(cid) + '_Rn'
+        if _k not in result_mini.params:
+            return np.nan
+        try:
+            return float(result_mini.params[_k].value)
+        except Exception:
+            return np.nan
+
+    # Was a comparison against a non-parametric R50 measured off the compact
+    # model image; that measurement is gone, so the test is now against the
+    # fitted Rn directly. True when ANY compact component sits inside the PSF.
+    compact_unresolved = False
+    if np.isfinite(psf_px_size) and comp_ids:
+        for _cid in comp_ids:
+            _rn = _rn_px(_cid)
+            if np.isfinite(_rn) and _rn < psf_px_size:
+                compact_unresolved = True
+                break
+
+    if zeta_norm is None and model_total is not None:
+        try:
+            zeta_norm = float(fit2D_norm_metric(
+                data=np.asarray(data_2D, dtype=float),
+                model=np.asarray(model_total, dtype=float),
+                mask_region=aperture,
+                background_level=rms))
+        except Exception:
+            zeta_norm = None
+
+    chisqr = getattr(result_mini, 'chisqr', None) if result_mini is not None else None
+    redchi = getattr(result_mini, 'redchi', None) if result_mini is not None else None
+
+    decomp_results['dec_S_total'] = S_total
+    decomp_results['dec_S_compact'] = S_compact
+    decomp_results['dec_S_diffuse_data'] = S_diffuse_data
+    decomp_results['dec_S_diffuse_model'] = S_diffuse_model
+    decomp_results['dec_S_res'] = S_res
+    decomp_results['dec_S_total_err'] = S_total_err
+    decomp_results['dec_S_compact_err'] = S_compact_err
+    decomp_results['dec_S_diffuse_data_err'] = S_diffuse_data_err
+    decomp_results['dec_S_diffuse_model_err'] = S_diffuse_model_err
+    decomp_results['dec_compact_to_total'] = ratio_compact_to_total
+    decomp_results['dec_diffuse_to_compact'] = ratio_diffuse_to_compact
+    decomp_results['dec_diffuse_data_to_total'] = ratio_diffuse_data_to_total
+    decomp_results['dec_diffuse_model_to_total'] = ratio_diffuse_model_to_total
+    decomp_results['dec_res_to_total'] = ratio_res_to_total
+    decomp_results['dec_diffuse_model_to_data'] = ratio_diffuse_model_to_data
+    decomp_results['dec_psf_px_size'] = psf_px_size
+    decomp_results['dec_compact_unresolved'] = compact_unresolved
+    decomp_results['dec_aperture_npix'] = npix_aperture
+    decomp_results['dec_aperture_source'] = aperture_source
+    decomp_results['dec_zeta_norm'] = zeta_norm
+    decomp_results['dec_chisqr'] = chisqr
+    decomp_results['dec_redchi'] = redchi
+    decomp_results['dec_has_diffuse'] = has_ext
+    decomp_results['dec_flux_scale_factor'] = flux_scale_factor
+
+    # ------------------------------------------------------------------
+    # FIGURE
+    # ------------------------------------------------------------------
+    if flux_unit_label is None:
+        flux_unit_label = 'mJy' if obs_type == 'radio' else 'counts'
+
+    if cell_size is None:
+        try:
+            cell_size = get_cell_size(imagename)
+        except:
+            cell_size = None
+    if obs_type == 'radio' and cell_size is not None:
+        radius_scale, radius_unit = float(cell_size), 'arcsec'
+    else:
+        radius_scale, radius_unit = 1.0, 'px'
+
+    fig = plt.figure(figsize=figsize)
+    # Two separate gridspecs rather than one with width_ratios: the maps are
+    # drawn with aspect=1, so a narrower column shrinks the panel's HEIGHT as
+    # well, which is what made the first panel come out smaller than the other
+    # two. The top row is therefore three equal columns, and only the text row
+    # below gets the uneven widths.
+    gs_top = gridspec.GridSpec(1, 3, figure=fig,
+                               left=0.02, right=0.99, top=0.97, bottom=0.51,
+                               wspace=0.05)
+    gs_bot = gridspec.GridSpec(1, 3, figure=fig, width_ratios=[1.0, 1.25, 1.25],
+                               left=0.05, right=0.99, top=0.47, bottom=0.03,
+                               wspace=0.16)
+
+    # Panel 1 used to re-read `imagename` from disk even when the caller had
+    # passed `data_2D_`, so the first panel could show different data from the
+    # other two. Feed it the array whenever we have one.
+    panel1_source = data_2D if data_2D_ is not None else imagename
+
+    ax1 = fig.add_subplot(gs_top[0, 0])
+    ax1 = eimshow(panel1_source,ax=ax1,fig=fig,rms=rms,plot_title='Total Emission',
+                 vmax_factor=vmax_factor,vmin_factor=vmin_factor)
+    ax1.axis('off')
+
+    ax2 = fig.add_subplot(gs_top[0, 1])
+    ax2 = eimshow(compact,ax=ax2,fig=fig,rms=rms,
+                 plot_title='Compact Emission',
+                 vmax_factor=vmax_factor,vmin_factor=vmin_factor)
+    ax2.axis('off')
+
+    ax3 = fig.add_subplot(gs_top[0, 2])
+    ax3 = eimshow(extended,ax=ax3,fig=fig,rms=rms,
+                 plot_title='Diffuse Emission',vmax_factor=vmax_factor,
+                 vmin_factor=vmin_factor)
+    ax3.axis('off')
+
+    # ---- image slice -------------------------------------------------
+    # The quadrature combination of the two collapsed profiles is kept as it
+    # was: it does not assume the source sits at the centre, which matters for
+    # off-centre components and for complex morphology. The curves keep the
+    # original plotting order and the default colour cycle, so the colours and
+    # line styles match the previous version; only the labels, the title and
+    # the axis decoration changed.
+    ax4 = fig.add_subplot(gs_bot[0, 0])
+    slice_ext = np.sqrt(np.mean(extended,axis=0)**2.0 + np.mean(extended,axis=1)**2.0)
+    if nfunctions == 1:
+        slice_ext_model = np.sqrt(
+            np.mean(residual_modeling, axis=0) ** 2.0 + np.mean(residual_modeling,
+                                                             axis=1) ** 2.0)
+    else:
+        slice_ext_model = np.sqrt(
+            np.mean(extended_model, axis=0) ** 2.0 + np.mean(extended_model,
+                                                             axis=1) ** 2.0)
+    slice_data = np.sqrt(np.mean(data_2D,axis=0)**2.0 + np.mean(data_2D,axis=1)**2.0)
+    slice_compact = np.sqrt(
+        np.mean(np.asarray(compact), axis=0) ** 2.0
+        + np.mean(np.asarray(compact), axis=1) ** 2.0)
+
+    # Same plotting order and the same three colours as the previous version
+    # (C0/C1/C2 of the default cycle); the compact curve is new and takes C3.
+    # The colours are pinned rather than left to the cycle so that dropping a
+    # curve does not shift the others.
+    if has_ext:
+        ax4.plot(slice_data, color='C1', label='Data')
+        ax4.plot(slice_ext, color='C0', label='Diffuse (data)')
+        ax4.plot(slice_ext_model, color='C2', label='Diffuse (model)')
+    else:
+        # With one component `extended` IS the residual, and `slice_ext_model`
+        # is the identical array -- drawing it twice under a "Diffuse (model)"
+        # label would contradict the text block, which says there is no
+        # diffuse model.
+        ax4.plot(slice_ext, color='C0', label='Residual')
+        ax4.plot(slice_data, color='C1', label='Data')
+    ax4.plot(slice_compact, color='C3', label='Compact')
+    ax4.set_yscale('log')
+    xlimit = [data_2D.shape[0] / 2 - 0.15 * data_2D.shape[0],
+              data_2D.shape[0] / 2 + 0.15 * data_2D.shape[0]]
+    ax4.set_xlim(xlimit[0],xlimit[1])
+
+    # Autoscaling looks at the whole array, including the frame edges that sit
+    # far outside xlimit, so the curves ended up squashed into the top of the
+    # panel. Take the range from the window actually drawn, and allow at most
+    # a factor of 4 of empty space below the lowest curve.
+    _lo = max(0, int(np.floor(xlimit[0])))
+    _hi = min(len(slice_data), int(np.ceil(xlimit[1])) + 1)
+    _visible = [c[_lo:_hi] for c in (slice_data, slice_compact, slice_ext)]
+    if has_ext:
+        _visible.append(slice_ext_model[_lo:_hi])
+    _visible = np.concatenate([np.asarray(c, dtype=float) for c in _visible])
+    _visible = _visible[np.isfinite(_visible) & (_visible > 0)]
+    if _visible.size:
+        _ymin = max(0.6 * float(rms), 0.25 * float(_visible.min()))
+        ax4.set_ylim(_ymin, 2.0 * float(_visible.max()))
+    else:
+        _ymin = 0.6 * float(rms)
+
+    # The rms line is drawn only when it falls inside the range the curves
+    # set. When the whole slice sits far above the noise it would otherwise
+    # stretch the panel over an empty decade; rms is in the text block anyway.
+    if rms >= _ymin:
+        ax4.axhline(rms, color='gray', ls=':', lw=1.2, label='rms')
+
+    ax4.legend(prop={'size': text_fontsize - 2}, frameon=False)
+    ax4.set_title('Image slice', fontsize=text_fontsize + 1)
+    # The axes carry no units the reader can use -- the x axis is a pixel
+    # index and the y axis a quadrature-combined mean of the two collapsed
+    # profiles -- so the ticks are dropped.
+    ax4.set_xticks([])
+    ax4.set_yticks([])
+
+    # ---- printed quantities ------------------------------------------
+    def _fmt(value, fmt='{:0.2f}'):
+        try:
+            if value is None or not np.isfinite(value):
+                return 'n/a'
+            return fmt.format(value)
+        except Exception:
+            return 'n/a'
+
+    def _pm(value, err, fmt='{:0.3g}', efmt='{:0.2g}'):
+        if value is None or not np.isfinite(value):
+            return 'n/a'
+        if err is None or not np.isfinite(err):
+            return _fmt(value, fmt)
+        return _fmt(value, fmt) + ' +/- ' + _fmt(err, efmt)
+
+    left_text = []
+    left_text.append('Decomposition')
+    left_text.append('  S_compact  / S_total   = ' + _fmt(ratio_compact_to_total))
+    if has_ext:
+        left_text.append('  S_diffuse  / S_compact = ' + _fmt(ratio_diffuse_to_compact))
+        left_text.append('  S_diffuse  / S_total   = ' + _fmt(ratio_diffuse_data_to_total))
+        left_text.append('  S_diffmod  / S_total   = ' + _fmt(ratio_diffuse_model_to_total))
+        left_text.append('  S_diffmod  / S_diffuse = ' + _fmt(ratio_diffuse_model_to_data))
+    left_text.append('  S_res      / S_total   = ' + _fmt(ratio_res_to_total))
+    left_text.append('')
+    left_text.append('Fluxes [' + str(flux_unit_label) + ']')
+    left_text.append('  S_total    = ' + _pm(S_total, S_total_err))
+    left_text.append('  S_compact  = ' + _pm(S_compact, S_compact_err))
+    if has_ext:
+        left_text.append('  S_diffuse  = ' + _pm(S_diffuse_data, S_diffuse_data_err))
+        left_text.append('  S_diffmod  = ' + _pm(S_diffuse_model, S_diffuse_model_err))
+    left_text.append('  S_res      = ' + _fmt(S_res, '{:0.3g}'))
+    left_text.append('')
+    # if has_ext:
+    #     left_text.append('  S_diffuse = data - compact model.')
+    #     left_text.append('  S_diffmod / S_diffuse is how much of it')
+    #     left_text.append('  the diffuse model actually captured.')
+    # else:
+    #     left_text.append('  Single component: no diffuse model, so')
+    #     left_text.append('  what it failed to describe is in S_res.')
+
+    right_text = []
+    right_text.append('Components [Rn in ' + radius_unit + ']')
+    right_text.append('  PSF radius = ' + _fmt(psf_px_size * radius_scale, '{:0.3g}'))
+    right_text.append('')
+
+    if result_mini is not None:
+        params = result_mini.params
+        for set_label, ids in (('compact', comp_ids),
+                               ('diffuse', ext_ids if has_ext else None)):
+            if not ids:
+                continue
+            right_text.append(set_label + ': ' + ','.join([str(i) for i in ids]))
+            for cid in ids:
+                Rn_key = 'f' + str(cid) + '_Rn'
+                n_key = 'f' + str(cid) + '_n'
+                In_key = 'f' + str(cid) + '_In'
+                if Rn_key not in params:
+                    continue
+                Rn = params[Rn_key].value * radius_scale
+                Rn_err = ((params[Rn_key].stderr or 0.0) * radius_scale)
+                # line = '  f' + str(cid) + ' Rn = ' + _pm(Rn, Rn_err)
+                line = ' Rn = ' + _pm(Rn, Rn_err)
+                if n_key in params:
+                    line = (line + ',  n = '
+                            + _pm(params[n_key].value, params[n_key].stderr or 0.0,
+                                  '{:0.2f}', '{:0.2f}'))
+                # The unresolved tag sits on the size line because that is what
+                # it is about: the fitted Rn is smaller than the PSF radius.
+                _rn_raw = params[Rn_key].value
+                # if (np.isfinite(psf_px_size) and set_label == 'compact'
+                #         and np.isfinite(_rn_raw) and _rn_raw < psf_px_size):
+                    # line = line + '  [UNRESOLVED]'
+                right_text.append(line)
+                if In_key in params:
+                    right_text.append(
+                        ' In = ' + _pm(params[In_key].value,
+                                             params[In_key].stderr or 0.0))
+            right_text.append('')
+
+    right_text.append('Quality')
+    right_text.append('  zeta_norm = ' + (_fmt(zeta_norm) if zeta_norm is not None
+                                          else 'n/a'))
+    right_text.append('  chi2      = ' + (_fmt(chisqr, '{:0.4g}') if chisqr is not None
+                                          else 'n/a'))
+    right_text.append('  chi2_red  = ' + (_fmt(redchi, '{:0.4g}') if redchi is not None
+                                          else 'n/a'))
+    if result_mini is not None and 's_a' in result_mini.params:
+        _sa = result_mini.params['s_a']
+        right_text.append('  s_a       = ' + _pm(_sa.value, _sa.stderr or 0.0))
+    right_text.append('  rms       = ' + _fmt(rms, '{:0.3g}'))
+    right_text.append('  aperture  = ' + aperture_source
+                      + ', ' + _fmt(npix_aperture, '{:0.0f}') + ' px')
+
+    for _ax_slot, _lines in ((gs_bot[0, 1], left_text), (gs_bot[0, 2], right_text)):
+        _ax_text = fig.add_subplot(_ax_slot)
+        _ax_text.axis('off')
+        _ax_text.text(0.0, 1.0, '\n'.join(_lines),
+                      transform=_ax_text.transAxes,
+                      fontsize=text_fontsize, verticalalignment='top',
+                      fontfamily='monospace')
+
+    if save_name is None:
+        save_name = imagename.replace('.fits',
+                                      '_ext_vs_comp'+special_name+'.jpg')
+    plt.savefig(save_name, dpi=300, bbox_inches='tight')
+    decomp_results['dec_figure_name'] = save_name
+
+    # Was `if obs_type != 'radio'` unconditionally; that default is preserved
+    # when the caller does not say otherwise.
+    if save_fits is None:
+        save_fits = (obs_type != 'radio')
+    if save_fits:
         exteded_file_name = imagename.replace('.fits', '') + \
                             special_name + '_extended.fits'
         pf.writeto(exteded_file_name,extended,overwrite=True)
@@ -1077,10 +2113,11 @@ def plot_decomp_results(imagename,compact,extended_model,data_2D_=None,
         copy_header(imagename,compact_file_name)
         decomp_results['compact_model_image'] = compact_file_name
         decomp_results['extended_model_image'] = exteded_file_name
-    
+
+    if not show_figure:
+        plt.close(fig)
 
     return(decomp_results)
-
 
 
 def plot_interferometric_decomposition(imagename0, imagename,
@@ -1205,9 +2242,9 @@ def plot_interferometric_decomposition(imagename0, imagename,
     #     norm = simple_norm(g,stretch='asinh',asinh_a=0.01)#,vmin=vmin,vmax=vmax)
     norm = visualization.simple_norm(g, stretch='linear',
                                      max_percent=max_percent_lowlevel)
-    norm0 = simple_norm(abs(I1), min_cut=0.5 * np.std(I1), max_cut=vmax,
+    norm0 = simple_norm(abs(I1), vmin=0.5 * np.std(I1), vmax=vmax,
                         stretch='sqrt')  # , max_percent=max_percent_highlevel)
-    norm2 = simple_norm(abs(g), min_cut=vmin, max_cut=vmax,
+    norm2 = simple_norm(abs(g), vmin=vmin, vmax=vmax,
                         stretch='asinh',asinh_a=0.02)  # , max_percent=max_percent_highlevel)
     CM = 'magma_r'
     ax = fig.add_subplot(1, 4, 1)
@@ -1315,7 +2352,7 @@ def plot_interferometric_decomposition(imagename0, imagename,
 
 
     ax = plt.subplot(1, 4, 4)
-    norm_re = simple_norm(r, min_cut=vmin, max_cut=vmax, stretch='sqrt')  # , max_percent=max_percent_highlevel)
+    norm_re = simple_norm(r, vmin=vmin, vmax=vmax, stretch='sqrt')  # , max_percent=max_percent_highlevel)
     #     norm = simple_norm(r,stretch='asinh',asinh_a=0.01)#,vmin=vmin,vmax=vmax)
     #     ax.imshow(r,origin='lower',cmap='magma_r',alpha=1.0,vmax=vmax_r, vmin=vmin)#norm=norm
     ax.imshow(r, origin='lower',extent=[-dx,dx,-dx,dx],
@@ -1430,9 +2467,9 @@ def fast_plot(imagename0, imagename, modelname, residualname, crop=False, box_si
 
     #     norm = simple_norm(g,stretch='asinh',asinh_a=0.01)#,vmin=vmin,vmax=vmax)
     norm = visualization.simple_norm(g, stretch='linear', max_percent=max_percent_lowlevel)
-    norm0 = simple_norm(abs(I1), min_cut=0.5 * np.std(I1), max_cut=vmax,
+    norm0 = simple_norm(abs(I1), vmin=0.5 * np.std(I1), vmax=vmax,
                         stretch='sqrt')  # , max_percent=max_percent_highlevel)
-    norm2 = simple_norm(abs(g), min_cut=vmin, max_cut=vmax, stretch='sqrt')  # , max_percent=max_percent_highlevel)
+    norm2 = simple_norm(abs(g), vmin=vmin, vmax=vmax, stretch='sqrt')  # , max_percent=max_percent_highlevel)
     CM = 'magma_r'
     ax = fig.add_subplot(1, 4, 1)
 
@@ -1472,7 +2509,7 @@ def fast_plot(imagename0, imagename, modelname, residualname, crop=False, box_si
     #     cb=plt.colorbar(mappable=plt.gca().images[0], cax=fig.add_axes([-0.08,0.3,0.02,0.4]))#,format=ticker.FuncFormatter(fmt))#cax=fig.add_axes([0.01,0.7,0.5,0.05]))#, orientation='horizontal')
 
     ax = plt.subplot(1, 4, 4)
-    norm_re = simple_norm(r, min_cut=vmin, max_cut=vmax, stretch='sqrt')  # , max_percent=max_percent_highlevel)
+    norm_re = simple_norm(r, vmin=vmin, vmax=vmax, stretch='sqrt')  # , max_percent=max_percent_highlevel)
     #     norm = simple_norm(r,stretch='asinh',asinh_a=0.01)#,vmin=vmin,vmax=vmax)
     #     ax.imshow(r,origin='lower',cmap='magma_r',alpha=1.0,vmax=vmax_r, vmin=vmin)#norm=norm
     ax.imshow(r, origin='lower', cmap='magma_r', alpha=1.0, norm=norm2)
@@ -1497,12 +2534,13 @@ def fast_plot(imagename0, imagename, modelname, residualname, crop=False, box_si
             plt.close()
 
 
-def plot_data_model_res(imagename, modelname, residualname, reference_image,
+def plot_data_model_res(imagename, model_dict, reference_image,
                         crop=False,box_size=512, NAME=None, CM='magma_r',
                         vmin_factor=3.0,vmax_factor=0.1,
                         max_percent_lowlevel=99.0, max_percent_highlevel=99.9999,
-                        obs_type = 'radio',
-                        ext='.pdf', show_figure=True):
+                        obs_type = 'radio', mask_region = None,
+                        sources_photometries = None,result_mini = None,
+                        ext='.png', show_figure=True):
     """
     Plots fitting results: image <> model <> residual images.
 
@@ -1510,8 +2548,8 @@ def plot_data_model_res(imagename, modelname, residualname, reference_image,
     ----------
     imagename : str
         Path to the image.
-    modelname : str
-        Path to the model.
+    model_dict : dict
+        Dictionary containing model data.
     residualname : str
         Path to the residual.
     reference_image : str
@@ -1539,7 +2577,10 @@ def plot_data_model_res(imagename, modelname, residualname, reference_image,
     show_figure : bool, optional
         Show the figure. The default is True.
     """
-    fig = plt.figure(figsize=(12, 12))
+    fig = plt.figure(figsize=(15, 15))
+    fig.subplots_adjust(wspace=0.1, hspace=0.1)
+    modelname = model_dict['model_total_conv']
+    residualname = model_dict['best_residual_conv']
     try:
         try:
             g = pf.getdata(imagename)
@@ -1571,27 +2612,30 @@ def plot_data_model_res(imagename, modelname, residualname, reference_image,
 
     if residualname is not None:
         if mad_std(r) == 0:
-            std_r = r.std()
+            std_r = np.nanstd(r)
         else:
-            std_r = mad_std(r)
+            std_r = mad_std(r,ignore_nan=True)
     else:
         std_r = std
 
     if mad_std(m) == 0:
-        std_m = m.std()
+        std_m = np.nanstd(m)
     else:
-        std_m = mad_std(m)
+        std_m = mad_std(m,ignore_nan=True)
 
     dx = g.shape[0]/2
-    try:
-        cell_size = get_cell_size(reference_image)
-        axis_units_label = r'Offset [arcsec]'
-    except:
-        print('No cell or pixel size information in the image wcs/header. '
-              'Setting cell/pixel size = 1.')
+    if obs_type == 'radio':
+        try:
+            cell_size = get_cell_size(reference_image)
+            axis_units_label = r'Offset [arcsec]'
+        except:
+            print('No cell or pixel size information in the image wcs/header. '
+                'Setting cell/pixel size = 1.')
+            cell_size = 1
+            axis_units_label = r'Offset [px]'
+    else:
         cell_size = 1
         axis_units_label = r'Offset [px]'
-
     #     print(I1)
     vmin = vmin_factor * std  # 0.5*g.min()#
     vmax = vmax_factor * g.max()
@@ -1600,19 +2644,19 @@ def plot_data_model_res(imagename, modelname, residualname, reference_image,
     vmin_m = vmin  # 1*mad_std(m)#vmin#0.01*std_m#0.5*m.min()#
     vmax_m = vmax  # 0.5*m.max()#vmax#0.5*m.max()
 
-    levels_g = np.geomspace(3*g.max(), 3 * std, 6)
-    levels_m = np.geomspace(3*m.max(), 10 * std_m, 6)
-    levels_r = np.geomspace(3*r.max(), 3 * std_r, 6)
+    levels_g = np.geomspace(3*np.nanmax(g), 3 * std, 6)
+    levels_m = np.geomspace(3*np.nanmax(m), 10 * std_m, 6)
+    levels_r = np.geomspace(3*np.nanmax(r), 3 * std_r, 6)
 
     #     norm = simple_norm(g,stretch='asinh',asinh_a=0.01)#,vmin=vmin,vmax=vmax)
     norm = visualization.simple_norm(g, stretch='linear',
                                      max_percent=max_percent_lowlevel)
     ax = fig.add_subplot(1, 3, 1)
     try:
-        norm2 = simple_norm(g, min_cut=vmin, max_cut=vmax,
+        norm2 = simple_norm(g, vmin=vmin, vmax=vmax,
                             stretch='asinh',asinh_a=0.1)  # , max_percent=max_percent_highlevel)
     except:
-        norm2 = simple_norm(abs(g), min_cut=vmin, max_cut=vmax,
+        norm2 = simple_norm(abs(g), vmin=vmin, vmax=vmax,
                             stretch='asinh',asinh_a=0.1)  # , max_percent=max_percent_highlevel)
 
 
@@ -1625,6 +2669,79 @@ def plot_data_model_res(imagename, modelname, residualname, reference_image,
 
     ax = add_beam_to_image(imagename=reference_image, ax=ax,
                            dx=dx,cell_size=cell_size)
+    # Overplot petrosial region
+    if sources_photometries is not None:
+        ### 2 Rp
+        NRp = 2
+        # centre must be shifted to accout the offset in the axes plot
+        centre = (np.array(g.shape) / 2) - np.array([sources_photometries['cg_y0c'],
+                                                  sources_photometries['cg_x0c']])
+        ### Ellipse parameters
+        Ea = 2 * NRp * sources_photometries['cg_Rp']
+        Eb = 2 * NRp * sources_photometries['cg_q'] * sources_photometries['cg_Rp']
+        ElipsePetro = Ellipse(
+            xy=(centre[1], centre[0]),
+            width=Ea,
+            height=Eb,
+            angle=sources_photometries['cg_PA'],
+            facecolor="none",
+            edgecolor="#B41FFF", ##660099
+            ls="dashed",
+            lw=3.0,
+        )
+        ElipsePetro2 = Ellipse(
+            xy=(centre[1], centre[0]),
+            width=Ea,
+            height=Eb,
+            angle=sources_photometries['cg_PA'],
+            facecolor="none",
+            edgecolor="#B41FFF", ##660099
+            ls="dashed",
+            lw=3.0,
+        )
+        ElipsePetro3 = Ellipse(
+            xy=(centre[1], centre[0]),
+            width=Ea,
+            height=Eb,
+            angle=sources_photometries['cg_PA'],
+            facecolor="none",
+            edgecolor="#B41FFF", ##660099
+            ls="dashed",
+            lw=3.0,
+        )
+        ax.add_artist(ElipsePetro)
+
+
+    if sources_photometries is not None and result_mini is not None:
+        # Add component overlays (Sersic radii markers using Rn)
+        colors_overlay = ['lime','cyan', 'pink', 'navy', 'orange', 'magenta']
+        for i in range(sources_photometries['ncomps']):
+            comp_params = result_mini.params
+            x0_key = f'f{i+1}_x0'
+            y0_key = f'f{i+1}_y0'
+            Rn_key = f'f{i+1}_Rn'
+            PA_key = f'f{i+1}_PA'
+            ell_key = f'f{i+1}_ell'
+            
+            if Rn_key in comp_params:
+                x0 = comp_params[x0_key].value - dx
+                y0 = comp_params[y0_key].value - dx
+                Rn = comp_params[Rn_key].value
+                PA = comp_params[PA_key].value+90 if PA_key in comp_params else 0
+                ell = comp_params[ell_key].value if ell_key in comp_params else 0
+                
+                # Draw ellipses at Rn and 2*Rn
+                # for radius_mult, linestyle in [(1.0, '-'), (2.0, '--')]:
+                for radius_mult, linestyle in [(1.0, '--')]:
+                    ellipse = Ellipse((x0, y0), 
+                                    2 * radius_mult * Rn * (1 - ell),
+                                    2 * radius_mult * Rn,
+                                    angle=PA, fill=False,
+                                    edgecolor=colors_overlay[i % len(colors_overlay)],
+                                    linestyle=linestyle, linewidth=3.0, alpha=0.8,
+                                    zorder=99
+                                    )
+                    ax.add_patch(ellipse)
 
     ax.set_title(r'Data')
 
@@ -1634,24 +2751,24 @@ def plot_data_model_res(imagename, modelname, residualname, reference_image,
     ax.contour(g, levels=levels_g[::-1], colors=contour_palette,
                linewidths=1.2,extent=[-dx, dx, -dx, dx],
                alpha=1.0)  # cmap='Reds', linewidths=0.75)
-    cb1 = plt.colorbar(mappable=plt.gca().images[0],
-                       cax=fig.add_axes([0.91, 0.40, 0.02, 0.19]))
-    if obs_type == 'radio':
-        cb1.formatter = CustomFormatter(factor=int(1000/vmax_factor), 
-                                        useMathText=True)
-        cb1.update_ticks()
-        cb1.set_label(r'Flux Density [mJy/beam]', labelpad=1)
-        cb1.ax.xaxis.set_tick_params(pad=1)
-        cb1.ax.tick_params(labelsize=12)
-        cb1.outline.set_linewidth(1)
-    else:
-        cb1.formatter = CustomFormatter(factor=int(1/vmax_factor), 
-                                        useMathText=True)
-        cb1.update_ticks()
-        cb1.set_label(r'Pixel Intensity]', labelpad=1)
-        cb1.ax.xaxis.set_tick_params(pad=1)
-        cb1.ax.tick_params(labelsize=12)
-        cb1.outline.set_linewidth(1)
+    # cb1 = plt.colorbar(mappable=plt.gca().images[0],
+    #                    cax=fig.add_axes([0.91, 0.40, 0.02, 0.19]))
+    # if obs_type == 'radio':
+    #     cb1.formatter = CustomFormatter(factor=int(1000/vmax_factor), 
+    #                                     useMathText=True)
+    #     cb1.update_ticks()
+    #     cb1.set_label(r'Flux Density [mJy/beam]', labelpad=1)
+    #     cb1.ax.xaxis.set_tick_params(pad=1)
+    #     cb1.ax.tick_params(labelsize=12)
+    #     cb1.outline.set_linewidth(1)
+    # else:
+    #     cb1.formatter = CustomFormatter(factor=int(1/vmax_factor), 
+    #                                     useMathText=True)
+    #     cb1.update_ticks()
+    #     cb1.set_label(r'Pixel Intensity]', labelpad=1)
+    #     cb1.ax.xaxis.set_tick_params(pad=1)
+    #     cb1.ax.tick_params(labelsize=12)
+    #     cb1.outline.set_linewidth(1)
         
     """
     # No need for this additional colorbar.
@@ -1666,8 +2783,8 @@ def plot_data_model_res(imagename, modelname, residualname, reference_image,
     cb.outline.set_linewidth(1)
     # cb.dividers.set_color('none')
     """
-    xticks = np.linspace(-dx, dx, 4)
-    xticklabels = np.linspace(-dx*cell_size, +dx*cell_size, 4)
+    xticks = np.linspace(-dx, dx, 5)
+    xticklabels = np.linspace(-dx*cell_size, +dx*cell_size, 5)
     xticklabels = ['{:.2f}'.format(xtick) for xtick in xticklabels]
     ax.set_yticks(xticks,xticklabels)
     ax.set_xticks(xticks,xticklabels)
@@ -1677,9 +2794,10 @@ def plot_data_model_res(imagename, modelname, residualname, reference_image,
 
 
     ax = plt.subplot(1, 3, 2)
+    
 
     #     im_plot = ax.imshow(m, cmap='magma_r',origin='lower',alpha=1.0,vmax=vmax_m, vmin=vmin_m)#norm=norm
-    norm_mod = simple_norm(m, min_cut=vmin, max_cut=vmax,
+    norm_mod = simple_norm(m, vmin=vmin, vmax=vmax,
                            stretch='asinh',asinh_a=0.05)  # , max_percent=max_percent_highlevel)
 
     im_plot = ax.imshow(m, cmap=CM,
@@ -1695,34 +2813,111 @@ def plot_data_model_res(imagename, modelname, residualname, reference_image,
     ax.set_yticks(xticks,xticklabels)
     ax.set_xticks(xticks,xticklabels)
     ax.set_xlabel(axis_units_label)
+    if sources_photometries is not None:
+        ax.add_artist(ElipsePetro2)
     # ax.set_yticks([])
     ax.set_yticklabels([])
 
     ax = plt.subplot(1, 3, 3)
-    norm_re = simple_norm(r, min_cut=vmin, max_cut=vmax,
-                          stretch='asinh',asinh_a=0.05)  # , max_percent=max_percent_highlevel)
-    #     norm = simple_norm(r,stretch='asinh',asinh_a=0.01)#,vmin=vmin,vmax=vmax)
-    #     ax.imshow(r,origin='lower',cmap='magma_r',alpha=1.0,vmax=vmax_r, vmin=vmin)#norm=norm
-    ax.imshow(r, origin='lower',extent=[-dx, dx, -dx, dx],
-              cmap=CM, alpha=1.0, norm=norm_re)
+    # if obs_type == 'radio':
+    #     norm_re = simple_norm(r, vmin=vmin, vmax=vmax,
+    #                         stretch='asinh',asinh_a=0.05)  # , max_percent=max_percent_highlevel)
+    #     #     norm = simple_norm(r,stretch='asinh',asinh_a=0.01)#,vmin=vmin,vmax=vmax)
+    #     # ax.imshow(r,origin='lower',cmap='magma_r',alpha=1.0,vmax=vmax, vmin=vmin)#norm=norm
+    #     ax.imshow(r, origin='lower',extent=[-dx, dx, -dx, dx],
+    #             cmap='magma', alpha=1.0, 
+    #             # vmax=vmax, vmin=vmin,
+    #             norm=norm_re
+    #             )
+    # else:
+    if obs_type == 'radio':
+        _, mask = t_mask_dilation(imagename, 
+                                    sigma=6, 
+                                    dilation_size=None,
+                                    iterations=2, 
+                                    show_figure=False,PLOT=False,
+                                    rms=std)
+    else:
+        _, mask = t_mask_dilation(imagename, 
+                                    sigma=8, 
+                                    dilation_size=6,
+                                    iterations=6, 
+                                    show_figure=False,PLOT=False,
+                                    rms=std)
+    # norm_re = simple_norm(mask * (r/g), vmin=-0.1, vmax=0.1,
+    #                     stretch='asinh',asinh_a=0.05)
+    # ax.imshow(mask * (100 * r/g), origin='lower',extent=[-dx, dx, -dx, dx],
+    #         #   cmap='Pastel1', 
+    #             cmap='magma',
+    #         alpha=1.0, vmin=-10, vmax=10)
+    
+    # cb1 = plt.colorbar(mappable=plt.gca().images[0],
+    #                    cax=fig.add_axes([0.91, 0.40, 0.02, 0.19]))    
+    # cb1.set_label(r'$\%$', labelpad=1)
+    if mask_region is None:
+        mask_region = 1.0
+
+    norm_re = simple_norm((r/std_r)*mask_region, 
+                        vmax = np.percentile((r/std_r)*mask_region,99.96),
+                        vmin = -np.percentile(-(r/std_r)*mask_region,99.96),
+                        #   vmin=-10*np.nanstd(r/std_r), 
+                        #   vmax=10*np.nanstd(r/std_r),
+                        #   vmin=-25*mad_std(r/std_r,ignore_nan=True), 
+                        #   vmax=25*mad_std(r/std_r,ignore_nan=True),
+                        # vmax = 3*np.percentile(r/std_r,99.9),
+                        # vmin = -3*np.percentile(-r/std_r,99.9),
+                        stretch='linear',asinh_a=0.15)
+    ax.imshow((r/std_r), 
+              origin='lower',
+              extent=[-dx, dx, -dx, dx],
+              norm=norm_re,
+            #   cmap='Pastel1', 
+              cmap='Greys_r',
+              alpha=1.0, 
+            # vmin=-3*std_r, 
+            # vmax=np.percentile(r/std_r,99.9)
+            )
+    
+    cb1 = plt.colorbar(mappable=plt.gca().images[0],
+                       cax=fig.add_axes([0.91, 0.40, 0.02, 0.19]))    
+    cb1.set_label(r'$\mathcal{R} / \sigma_{\mathrm{rms}}$', labelpad=1)
     #     ax.imshow(r, cmap='magma_r',norm=norm,alpha=0.3,origin='lower')
 
-    ax.contour(r, levels=levels_g[::-1],
-               extent=[-dx, dx, -dx, dx],
-               colors=contour_palette, linewidths=1.2,
-               alpha=1.0)  # cmap='Reds', linewidths=0.75)
-    levels_neg = np.asarray([-6 * std])
+    # zeta_metric = fit2D_norm_metric(
+    #     data = g,
+    #     model = m,
+    #     mask_region = mask_region,
+    #     background_level = std
+    # )
+    try:
+        ax.text(0.05, 0.9,
+                r'$\zeta_{{\mathrm{{norm}}}} = {0:.2f}$'.format(model_dict['zeta_norm']),
+                transform=ax.transAxes,
+                fontsize=14,
+                color='white',
+                bbox=dict(facecolor='black', alpha=0.5, pad=5.0)
+            )
+    except:
+        pass
 
-    ax.contour(r, levels=levels_neg[::-1],
-               extent=[-dx, dx, -dx, dx],
-               colors='k', linewidths=1.0,
-               alpha=1.0)
+    # ax.contour(r, levels=levels_g[::-1],
+    #            extent=[-dx, dx, -dx, dx],
+    #            colors=contour_palette, linewidths=1.2,
+    #            alpha=1.0)  # cmap='Reds', linewidths=0.75)
+    # levels_neg = np.asarray([-3 * std])
+
+    # ax.contour(r, levels=levels_neg[::-1],
+    #            extent=[-dx, dx, -dx, dx],
+    #            colors='k', linewidths=1.0,
+    #            alpha=1.0)
     ax.set_yticks(xticks, xticklabels)
     ax.set_xticks(xticks, xticklabels)
     ax.set_xlabel(axis_units_label)
+    if sources_photometries is not None:
+        ax.add_artist(ElipsePetro3)
     # ax.set_yticks([])
     ax.set_yticklabels([])
-    ax.set_title(r'Residual')
+    ax.set_title(r'Sigma Residual')
     # cb1.dividers.set_color('none')
     if NAME != None:
         plt.savefig(NAME + ext, dpi=300, bbox_inches='tight')
@@ -1796,7 +2991,7 @@ def plot_image_model_res(imagename, modelname, residualname, reference_image, cr
     #     norm = simple_norm(g,stretch='asinh',asinh_a=0.01)#,vmin=vmin,vmax=vmax)
     norm = visualization.simple_norm(g, stretch='linear',
                                      max_percent=max_percent_lowlevel)
-    norm2 = simple_norm(abs(g), min_cut=vmin, max_cut=vmax,
+    norm2 = simple_norm(abs(g), vmin=vmin, vmax=vmax,
                         stretch='asinh',asinh_a=0.05)  # , max_percent=max_percent_highlevel)
 
     ax = fig.add_subplot(2, 3, 1)
@@ -1822,7 +3017,7 @@ def plot_image_model_res(imagename, modelname, residualname, reference_image, cr
     ax = plt.subplot(2, 3, 2)
 
     #     im_plot = ax.imshow(m, cmap='magma_r',origin='lower',alpha=1.0,vmax=vmax_m, vmin=vmin_m)#norm=norm
-    norm_mod = simple_norm(m, min_cut=vmin, max_cut=vmax,
+    norm_mod = simple_norm(m, vmin=vmin, vmax=vmax,
                            stretch='asinh',asinh_a=0.05)  # , max_percent=max_percent_highlevel)
 
     im_plot = ax.imshow(m, cmap=CM, origin='lower', alpha=1.0,
@@ -1833,7 +3028,7 @@ def plot_image_model_res(imagename, modelname, residualname, reference_image, cr
     #     cb=plt.colorbar(mappable=plt.gca().images[0], cax=fig.add_axes([-0.08,0.3,0.02,0.4]))#,format=ticker.FuncFormatter(fmt))#cax=fig.add_axes([0.01,0.7,0.5,0.05]))#, orientation='horizontal')
 
     ax = plt.subplot(2, 3, 3)
-    norm_re = simple_norm(r, min_cut=vmin, max_cut=vmax,
+    norm_re = simple_norm(r, vmin=vmin, vmax=vmax,
                           stretch='asinh',asinh_a=0.05)  # , max_percent=max_percent_highlevel)
     #     norm = simple_norm(r,stretch='asinh',asinh_a=0.01)#,vmin=vmin,vmax=vmax)
     #     ax.imshow(r,origin='lower',cmap='magma_r',alpha=1.0,vmax=vmax_r, vmin=vmin)#norm=norm
@@ -2163,8 +3358,8 @@ def eimshow_old(imagename, crop=False, box_size=128, center=None, with_wcs=True,
     from matplotlib.colors import PowerNorm
 
     norm0 = simple_norm(g, stretch='linear', max_percent=99.0)
-    norm = simple_norm(g, stretch='asinh', asinh_a=0.02, min_cut=vmin,
-                       max_cut=vmax)
+    norm = simple_norm(g, stretch='asinh', asinh_a=0.02, vmin=vmin,
+                       vmax=vmax)
     # norm = LogNorm(vmin=vmin, vmax=vmax, clip=True)
     # norm = CustomLogNorm(vmin=vmin, vmax=vmax, log_factor=50.0,clip=True)
     # norm = PowerNorm(gamma=0.7, vmin=vmin, vmax=vmax)
@@ -2335,7 +3530,7 @@ def eimshow_old(imagename, crop=False, box_size=128, center=None, with_wcs=True,
                 cb.formatter = CustomFormatter(factor=3.631e-3, useMathText=True)
                 cb.update_ticks()
             if flux_units == 'mJy/px':
-                cb.set_label(r"Intensity [mJy/px] (from e/s)", labelpad=10, 
+                cb.set_label(r"Intensity [mJy/px]", labelpad=10, 
                             #  fontsize=14
                              )
                 cb.formatter = CustomFormatter(factor=flux_conversion_factor, useMathText=True)
@@ -2976,8 +4171,8 @@ def eimshow_v2(imagename, crop=False, box_size=128, center=None, with_wcs=True,
     from matplotlib.colors import PowerNorm
 
     norm0 = simple_norm(g, stretch='linear', max_percent=99.0)
-    norm = simple_norm(g, stretch='asinh', asinh_a=0.02, min_cut=vmin,
-                       max_cut=vmax)
+    norm = simple_norm(g, stretch='asinh', asinh_a=0.02, vmin=vmin,
+                       vmax=vmax)
 
     if no_show:
         # # plot the first normalization (low level, transparent)
@@ -3120,7 +4315,7 @@ def eimshow_v2(imagename, crop=False, box_size=128, center=None, with_wcs=True,
                 cb.formatter = CustomFormatter(factor=3.631e-3, useMathText=True)
                 cb.update_ticks()
             elif flux_units == 'mJy/px':
-                cb.set_label(r"Intensity [mJy/px] (from e/s)", labelpad=10, fontsize=14)
+                cb.set_label(r"Intensity [mJy/px]", labelpad=10, fontsize=14)
                 cb.formatter = CustomFormatter(factor=flux_conversion_factor, useMathText=True)
                 cb.update_ticks()
             elif flux_units == 'any':
@@ -3170,7 +4365,7 @@ def eimshow_v2(imagename, crop=False, box_size=128, center=None, with_wcs=True,
                     cb.formatter = CustomFormatter(factor=3.631e-3, useMathText=True)
                     cb.update_ticks()
                 if flux_units == 'mJy/px':
-                    cb.set_label(r"Intensity [mJy/px] (from e/s)", labelpad=10, fontsize=14)
+                    cb.set_label(r"Intensity [mJy/px]", labelpad=10, fontsize=14)
                     cb.formatter = CustomFormatter(factor=flux_conversion_factor, useMathText=True)
                     cb.update_ticks()
                 if flux_units == 'any':
@@ -3322,15 +4517,73 @@ def eimshow_v2(imagename, crop=False, box_size=128, center=None, with_wcs=True,
     else:
         return ax
 
+def clear_figure(fig_or_ax=None, show=False, dpi=100, close_all=False):
+    """
+    Free the memory held by a figure, optionally displaying it first.
+
+    A matplotlib figure keeps a reference to every array handed to
+    `imshow`/`contour`, and `plt.figure()` additionally registers the figure in
+    pyplot's global figure manager -- so nothing is garbage collected while the
+    figure exists. For large images this is what fills the memory after a few
+    plotting calls in a notebook.
+
+    With `show=True` the figure is first rasterised into a PNG and that PNG is
+    displayed, so the panel remains visible in the notebook after the figure
+    itself (and the image data it holds) has been released. This is the same
+    approach used in `compute_image_properties`.
+
+    Parameters
+    ----------
+    fig_or_ax : matplotlib figure or axis, optional
+        Figure to be released, or an axis living in it. The default is None
+        (use the current figure).
+    show : bool, optional
+        Display the figure as a static PNG before releasing it.
+        The default is False.
+    dpi : int, optional
+        Resolution of that PNG. The default is 100.
+    close_all : bool, optional
+        Also close every other figure still registered with pyplot.
+        The default is False.
+
+    Examples
+    --------
+    >>> ax = mlibs.eimshow(input_data.filename, ...)
+    >>> mlibs.clear_figure(ax)              # done with the panel, free it
+    """
+    fig = getattr(fig_or_ax, 'figure', fig_or_ax)
+    if fig is None:
+        fig = plt.gcf()
+
+    if show:
+        try:
+            buf = io.BytesIO()
+            fig.savefig(buf, format='png', dpi=dpi, bbox_inches='tight')
+            buf.seek(0)
+            display(Image(data=buf.read()))
+            buf.close()
+        except Exception as e:
+            print(f"Error displaying figure: {e}")
+
+    try:
+        fig.clf()
+    except Exception:
+        pass
+    plt.close(fig)
+    if close_all:
+        plt.close('all')
+    gc.collect()
+
+
 def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
             vmax=None,fig=None,
             dx_shift = 0,
             dy_shift = 0,
-            vmax_factor=0.5, neg_levels=np.asarray([-3]), CM='magma_r',
+            vmax_factor=0.5, neg_levels=np.asarray([-4]), CM='magma_r',
             cmap_cont='magma_r', stretch='asinh', asinh_a=0.075,
             rms=None, plot_title=None, apply_mask=False,
-            add_contours=True, extent=None, projection='offset', add_beam=False,
-            vmin_factor=3, plot_colorbar=False, add_cbar_label=True,
+            add_contours=True, extent=None, projection='offset', add_beam=True,
+            vmin_factor=3, vmin=None, plot_colorbar=False, add_cbar_label=True,
             cbar_orientation=None,pad=-0.2,
             figsize=(5, 5), aspect=None,n_pts_labels = 5,cbar_n_points=6,num_contours=6,
             show_axis='on',
@@ -3344,6 +4597,7 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
             text_annotation=None, 
             # text_position='upper left',
             text_position=(0.03, 0.97),textsize=18,rms_text_size = 14, global_label_pad = 3,
+            free_memory=False, free_memory_dpi=100,
             verbose = 0):
     """
     Customised imshow function for plotting images. It includes the option to
@@ -3409,6 +4663,20 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
         Name of the output file. The default is None.
     special_name : str, optional
         Special name for the output file. The default is ''.
+    free_memory : bool, optional
+        Display the plot as a static PNG and then release the figure, instead
+        of returning a live axis. Use this for large images: an axis returned
+        by this function keeps its figure alive, and the figure holds a copy
+        of the image data for every `imshow`/`contour` drawn on it, so a few
+        calls on e.g. 8k x 8k images are enough to fill the memory of the
+        machine. With `free_memory=True` nothing is kept alive after the call
+        and `None` is returned in place of the axis -- so nothing can be
+        overplotted on it afterwards. Keep the default when you still need to
+        draw on the axis, and call `clear_figure(ax)` once you are done with
+        it. The default is False.
+    free_memory_dpi : int, optional
+        Resolution of the PNG displayed when `free_memory=True`.
+        The default is 100.
     """
     from matplotlib.offsetbox import AnchoredText
     from matplotlib.patches import Ellipse
@@ -3453,11 +4721,11 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
             hdu = pf.open(imagename)
             # Find the best extension with science data and WCS
             sci_ext, data, ww = find_sci_extension(hdu)
-            
+
             # If we found a valid extension, use it
             if sci_ext is not None:
                 g = data
-                
+
                 # Handle different data dimensions
                 if g is not None:
                     if len(g.shape) == 4:  # [polarization, frequency, y, x]
@@ -3483,7 +4751,7 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
             yin, yen, xin, xen = do_cutout(imagename, box_size=box_size,
                                            center=center, return_='box')
             g = g[xin:xen, yin:yen]
-            
+
             # Update the WCS to match the cropped region if using celestial projection
             if with_wcs and isinstance(imagename, str):
                 try:
@@ -3498,9 +4766,9 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
                     print(f"Warning: Could not update WCS for cropped region: {e}")
                     print("Celestial projection may not accurately reflect the cropped data.")
             # crop = False
-        
+
         g = np.nan_to_num(g,nan=0)
-    
+
     else:
         g = np.nan_to_num(imagename,nan=0)
         mask_d = 1
@@ -3619,8 +4887,8 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
             ax.grid()
 
 
-
-    vmin = vmin_factor * std
+    if vmin is None:
+        vmin = vmin_factor * std
     if extent is None:
         extent = [-dx+dx_shift, dx+dx_shift, -dy+dy_shift, dy+dy_shift]
     #     print(g)
@@ -3639,8 +4907,8 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
 
 
     norm0 = simple_norm(g, stretch='linear', max_percent=99.0)
-    norm = simple_norm(g, stretch=stretch, asinh_a=asinh_a, min_cut=vmin,
-                       max_cut=vmax)
+    norm = simple_norm(g, stretch=stretch, asinh_a=asinh_a, vmin=vmin,
+                       vmax=vmax)
     # from matplotlib.colors import PowerNorm
 
     # Power < 1 emphasizes faint features, Power > 1 emphasizes bright features
@@ -3677,7 +4945,7 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
         try:
             levels_g = np.geomspace(0.9 * np.nanmax(g), 6 * std, num_contours)
             # levels_low = np.asarray([5 * std, 3 * std])
-            levels_low = np.asarray([3 * std])
+            levels_low = np.asarray([4 * std])
             levels_black = np.geomspace(vmin_factor * std + 0.00001, 2.5 * np.nanmax(g), num_contours)
             levels_neg = neg_levels * std
             levels_white = np.geomspace(np.nanmax(g), 0.1 * np.nanmax(g), num_contours)
@@ -3827,8 +5095,8 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
             at = AnchoredText(frequency, 
                             prop=dict(size=14, color='red'),
                             frameon=True,
-                            loc='upper right',  # This uses a fixed position like 'upper right'
-                            bbox_to_anchor=(1.0, 1.0),
+                            loc='upper left',  # This uses a fixed position like 'upper right'
+                            bbox_to_anchor=(0.00, 1.0),
                             bbox_transform=ax.transAxes,
                             pad = 0.2,
                             borderpad=0.5)
@@ -3843,56 +5111,65 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
     if plot_colorbar:
         # Modified colorbar handling for celestial projection
         if use_celestial:
-            # Create a new axis for the colorbar that doesn't overlap with the image
-            # Position [left, bottom, width, height] in figure coordinates
-            # Adjust position to be outside the main plot
-            
-            # Get the position of the main axis
-            pos = ax.get_position()
-            
-            # Calculate colorbar position to be right of the main plot
-            # with a small gap and using the full height
-            # Increased width from 0.02 to 0.04 for better visibility
-            cbar_ax = fig.add_axes([pos.x1 + 0.02, pos.y0, 0.04, pos.height])
-            
-            # Create the colorbar
-            cb = fig.colorbar(im_plot, cax=cbar_ax)
-            
-            # Set the colorbar label depending on flux units
-            if flux_units == 'Jy':
-                cb.set_label(r"Flux Density [Jy/Beam]", labelpad=10)
-                cb.formatter = CustomFormatter(factor=1, useMathText=True)
-                cb.update_ticks()
-            elif flux_units == 'mJy':
-                cb.set_label(r"Flux Density [mJy/Beam]", labelpad=10)
-                cb.formatter = CustomFormatter(factor=1*1000, useMathText=True)
-                cb.update_ticks()
-            elif flux_units == 'nanomaggies':
-                cb.set_label(r"Intensity [mJy/px] (from nanomaggies)", labelpad=10)
-                cb.formatter = CustomFormatter(factor=3.631e-3, useMathText=True)
-                cb.update_ticks()
-            elif flux_units == 'mJy/px':
-                cb.set_label(r"Intensity [mJy/px] (from e/s)", labelpad=10)
-                cb.formatter = CustomFormatter(factor=flux_conversion_factor, useMathText=True)
-                cb.update_ticks()
-            elif flux_units == 'any':
-                cb.set_label(r"Pixel Intensity", labelpad=10)
-                cb.formatter = CustomFormatter(factor=1, useMathText=True)
-                cb.update_ticks()
-            elif flux_units == 'sfr':
-                cb.set_label(r"${\rm M}_{\rm \odot} \ {\rm yr^{-1}} \ {\rm beam^{-1}}$", labelpad=10)
-                cb.formatter = CustomFormatter(factor=1, useMathText=True)
-                cb.update_ticks()
-            elif flux_units == 'K':
-                cb.set_label(r"$T_{\mathrm{b}}~\mathrm{[\times 10^5~K]}$", labelpad=10)
-                cb.formatter = CustomFormatter(factor=1, useMathText=True)
-                cb.update_ticks()
-            # Set custom ticks
-            levels_colorbar2 = np.geomspace(0.9 * vmax, 6 * std, cbar_n_points)
-            cb.set_ticks(levels_colorbar2)
-            cb.ax.tick_params(labelsize=12)
-            cb.outline.set_linewidth(1)
-            
+            try:
+                # Create a new axis for the colorbar that doesn't overlap with the image
+                # Position [left, bottom, width, height] in figure coordinates
+                # Adjust position to be outside the main plot
+
+                # Get the position of the main axis
+                pos = ax.get_position()
+
+                # Calculate colorbar position to be right of the main plot
+                # with a small gap and using the full height
+                # Increased width from 0.02 to 0.04 for better visibility
+                cbar_ax = fig.add_axes([pos.x1 + 0.02, pos.y0, 0.04, pos.height])
+
+                # Create the colorbar
+                cb = fig.colorbar(im_plot, cax=cbar_ax)
+
+                # Set the colorbar label depending on flux units
+                if flux_units == 'Jy':
+                    cb.set_label(r"Flux Density [Jy/Beam]", labelpad=10)
+                    cb.formatter = CustomFormatter(factor=1, useMathText=True)
+                    cb.update_ticks()
+                elif flux_units == 'mJy':
+                    cb.set_label(r"Flux Density [mJy/Beam]", labelpad=10)
+                    cb.formatter = CustomFormatter(factor=1*1000, useMathText=True)
+                    cb.update_ticks()
+                elif flux_units == 'nanomaggies':
+                    cb.set_label(r"Intensity [mJy/px] (from nanomaggies)", labelpad=10)
+                    cb.formatter = CustomFormatter(factor=3.631e-3, useMathText=True)
+                    cb.update_ticks()
+                elif flux_units == 'mJy/px':
+                    cb.set_label(r"Intensity [mJy/px]", labelpad=10)
+                    cb.formatter = CustomFormatter(factor=flux_conversion_factor, useMathText=True)
+                    cb.update_ticks()
+                elif flux_units == 'any':
+                    cb.set_label(r"Pixel Intensity", labelpad=10)
+                    cb.formatter = CustomFormatter(factor=1, useMathText=True)
+                    cb.update_ticks()
+                elif flux_units == 'sfr':
+                    cb.set_label(r"${\rm M}_{\rm \odot} \ {\rm yr^{-1}} \ {\rm beam^{-1}}$", labelpad=10)
+                    cb.formatter = CustomFormatter(factor=1, useMathText=True)
+                    cb.update_ticks()
+                elif flux_units == 'K':
+                    cb.set_label(r"$T_{\mathrm{b}}~\mathrm{[\times 10^5~K]}$", labelpad=10)
+                    cb.formatter = CustomFormatter(factor=1, useMathText=True)
+                    cb.update_ticks()
+                else:
+                    print(f"Warning: unrecognised flux_units={flux_units!r}, falling back "
+                          f"to a generic pixel-intensity colorbar label.")
+                    cb.set_label(r"Pixel Intensity", labelpad=10)
+                    cb.formatter = CustomFormatter(factor=1, useMathText=True)
+                    cb.update_ticks()
+                # Set custom ticks
+                levels_colorbar2 = np.geomspace(0.9 * vmax, 6 * std, cbar_n_points)
+                cb.set_ticks(levels_colorbar2)
+                cb.ax.tick_params(labelsize=12)
+                cb.outline.set_linewidth(1)
+            except Exception as e:
+                print(f"Error creating colorbar: {e}")
+
         else:
             # Original colorbar code for non-celestial projections
             divider = make_axes_locatable(ax)
@@ -3912,40 +5189,46 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
 
                 if flux_units == 'Jy':
                     cbar_label = r"Flux Density [Jy/Beam]"
-                    cb.formatter = CustomFormatter(factor=1, 
+                    cb.formatter = CustomFormatter(factor=1,
                                                 useMathText=True)
                     cb.update_ticks()
-                if flux_units == 'mJy':
+                elif flux_units == 'mJy':
                     cbar_label = r"Flux Density [mJy/Beam]"
                     # cb.set_label(r"Flux Density [mJy/Beam]", labelpad=10, fontsize=12)
-                    cb.formatter = CustomFormatter(factor=1*1000, 
+                    cb.formatter = CustomFormatter(factor=1*1000,
                                                 useMathText=True)
                     cb.update_ticks()
-                if flux_units == 'nanomaggies':
+                elif flux_units == 'nanomaggies':
                     cbar_label = r"Intensity [mJy/px] (from nanomaggies)"
                     # cb.set_label(r"Intensity [mJy/px] (from nanomaggies)", labelpad=10, fontsize=12)
                     cb.formatter = CustomFormatter(factor=3.631e-3, useMathText=True)
                     cb.update_ticks()
-                if flux_units == 'mJy/px':
-                    cbar_label = r"Intensity [mJy/px] (from e/s)"
-                    # cb.set_label(r"Intensity [mJy/px] (from e/s)", labelpad=10, fontsize=12)
+                elif flux_units == 'mJy/px':
+                    cbar_label = r"Intensity [mJy/px]"
+                    # cb.set_label(r"Intensity [mJy/px]", labelpad=10, fontsize=12)
                     cb.formatter = CustomFormatter(factor=flux_conversion_factor, useMathText=True)
                     cb.update_ticks()
-                if flux_units == 'any':
+                elif flux_units == 'any':
                     cbar_label = r"Pixel Intensity"
                     # cb.set_label(r"Pixel Intensity", labelpad=10, fontsize=12)
-                    cb.formatter = CustomFormatter(factor=1, 
+                    cb.formatter = CustomFormatter(factor=1,
                                                 useMathText=True)
                     cb.update_ticks()
-                if flux_units == 'sfr':
+                elif flux_units == 'sfr':
                     cbar_label = r"$[\mathrm{M}_{\odot}~\mathrm{yr^{-1}~beam^{-1}}]$"
                     # cb.set_label(r"${\rm M}_{\rm \odot} \ {\rm yr^{-1}} \ {\rm beam^{-1}}$", labelpad=10, fontsize=12)
-                    cb.formatter = CustomFormatter(factor=1, 
+                    cb.formatter = CustomFormatter(factor=1,
                                                 useMathText=True)
                     cb.update_ticks()
-                if flux_units == 'K':
+                elif flux_units == 'K':
                     cbar_label = r"$T_{\mathrm{b}}~\mathrm{[\times 10^5~K]}$"
                     # cb.set_label(r"$T_{\mathrm{b}}~\mathrm{[\times 10^5~K]}$", labelpad=10, fontsize=12)
+                    cb.formatter = CustomFormatter(factor=1, useMathText=True)
+                    cb.update_ticks()
+                else:
+                    print(f"Warning: unrecognised flux_units={flux_units!r}, falling back "
+                          f"to a generic pixel-intensity colorbar label.")
+                    cbar_label = r"Pixel Intensity"
                     cb.formatter = CustomFormatter(factor=1, useMathText=True)
                     cb.update_ticks()
 
@@ -3959,6 +5242,7 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
                 cb.ax.yaxis.set_tick_params(labelleft=True, labelright=False,
                                             tick1On=False, tick2On=False)
                 cb.ax.yaxis.tick_right()
+                # cb.ax.yaxis.tick_left()
 
                 cb.ax.tick_params(labelsize=12)
                 cb.outline.set_linewidth(1)
@@ -3980,6 +5264,11 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
                     cb.ax.xaxis.set_label_position('top')
             except Exception as e:
                 print(f"Error creating colorbar: {e}")
+        
+        # cb.ax.yaxis.tick_right()
+        # cb.ax.yaxis.tick_left()
+        # cb.ax.xaxis.tick_right()
+        # cb.ax.xaxis.tick_left()
 
 
     if plot_title is not None:
@@ -3990,16 +5279,17 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
     if plot_rms:
         if rms is not None:
             sigma_range = f"{levels_g.min()/std:.0f}$\sigma$ - {levels_g.max()/std:.0f}$\sigma$"
-            line1 = r"$S_{\mathrm{p}}" + f" = {(np.nanmax(g)*1e3):.2f}$ mJy/B"
-            line2 = f"$\\sigma = {(rms*1e6):.2f}~\\mu$Jy/B"
+            line1, line2 = flux_peak_rms_labels(np.nanmax(g), rms, flux_units, flux_conversion_factor)
             # line3 = f"Geometric"
             # line4 = r"$0.9 \times S_{\mathrm{p}} ~ \to ~ 6\sigma$"
             # text_content = f"{line1}\n{line2}\n{line3}\n{line4}"
             text_content = f"{line1}\n{line2}"
 
             text_box = AnchoredText(text_content,
-                        loc='upper left',
-                        bbox_to_anchor=(0.0, 1.00),  # Fine-tune position (right side, near bottom)
+                        loc='upper right',
+                        bbox_to_anchor=(1.0, 1.0),  # Fine-tune position (right side, near bottom)
+                        # loc='upper left',
+                        # bbox_to_anchor=(0.0, 1.00),  # Fine-tune position (right side, near bottom)
                         bbox_transform=ax.transAxes,
                         frameon=True,
                         prop=dict(
@@ -4038,11 +5328,15 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
                 # Create the ellipse based on projection mode
                 if projection == 'px':
                     el = Ellipse((-(dx-dx_shift) * 0.85, -(dy-dy_shift) * 0.85), 
-                                b, a, angle=pa, facecolor='black', alpha=1.0)
+                                b, a, angle=pa, 
+                                facecolor='black' if '_r' in CM else 'white', 
+                                alpha=1.0)
                 else:
                     el = Ellipse((-(dx-dx_shift) * 0.85, -(dy-dy_shift) * 0.85), 
                                 b / cell_size, a / cell_size,
-                                angle=pa, facecolor='black', alpha=1.0)
+                                angle=pa, 
+                                facecolor='black' if '_r' in CM else 'white', 
+                                alpha=1.0)
 
                 # Add the ellipse to the axes
                 ax.add_artist(el)
@@ -4077,7 +5371,8 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
                 # Ensure the ellipse is properly clipped
                 el.set_clip_box(ax.bbox)
             except:
-                print('Error adding beam.')
+                # print('Error adding beam.')
+                pass
 
     if source_distance is not None:
         from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
@@ -4113,7 +5408,7 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
             frameon=False,                     # No frame around the scalebar
             size_vertical=thickness_data_units,# Thickness of the bar
             # linewidth=4,
-            color='black',                     # Color of the bar
+            color='black' if '_r' in CM else 'white',                     # Color of the bar
             fontproperties=fontprops,          # Font properties for the label
             label_top=True                     # Label above the bar (changed to True for upper position)
         )
@@ -4182,18 +5477,115 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
 
     if save_name != None:
     #         if not os.path.exists(save_name+special_name+'.jpg'):
-        plt.savefig(save_name + special_name + '.pdf', dpi=600,
+        plt.savefig(save_name + special_name + '.jpg', dpi=600,
                     bbox_inches='tight')
         # plt.savefig(save_name + special_name + '.pdf', dpi=600,
         #             bbox_inches='tight')
     # if no_show:
     #     plt.clf()
     #     plt.close()
+
+    if free_memory:
+        # show the plot as a static PNG and release the figure: the image data
+        # held by the imshow/contour artists go with it, so nothing from this
+        # call survives in memory. The figure is taken from `ax`, which is the
+        # one the plot actually lives on whether it was created here or passed
+        # in by the caller.
+        clear_figure(ax, show=(not no_show), dpi=free_memory_dpi)
+        ax = None
+        gc.collect()
+
     if return_extent:
         return ax,extent
     else:
         return ax
 
+
+def mark_sn_coords(ax, imagename, sn_ra_dec, center=None,
+                   arm_length=4.0, gap=1.5, linewidth=1.5, color='black',
+                   marker_style='crosshair',
+                   labels=None, label_offset=(0.2, 0.2),
+                   label_fontsize=11, label_color=None):
+
+    if label_color is None:
+        label_color = color
+
+    with fits.open(imagename) as hdul:
+        header = hdul[0].header
+        wcs_full = WCS(header).celestial
+
+    # cell size in arcsec/pixel - needed to convert arcsec offsets → pixel data coords
+    try:
+        cell_size = abs(wcs_full.pixel_scale_matrix[1, 1]) * 3600.0
+    except Exception:
+        cell_size = abs(wcs_full.wcs.cdelt[1]) * 3600.0
+
+    if center is None:
+        nx = header.get('NAXIS1', wcs_full.array_shape[-1])
+        ny = header.get('NAXIS2', wcs_full.array_shape[-2])
+        x0, y0 = nx / 2.0, ny / 2.0
+    else:
+        x0, y0 = float(center[0]), float(center[1])
+
+    _c = wcs_full.pixel_to_world(x0, y0)
+    center_sky = SkyCoord(ra=_c.ra, dec=_c.dec, frame='icrs')
+
+    for i, coord_str in enumerate(sn_ra_dec):
+        ra_str, dec_str = coord_str.split()
+        sn_sky = SkyCoord(ra=ra_str, dec=dec_str,
+                          unit=(u.hourangle, u.deg), frame='icrs')
+
+        dra, ddec = center_sky.spherical_offsets_to(sn_sky)
+
+        # arcsec offsets → pixel data coordinates (eimshow extent is in pixels)
+        cx = -dra.to(u.arcsec).value / cell_size
+        cy =  ddec.to(u.arcsec).value / cell_size
+
+        # arm_length and gap are given in arcsec → also convert to pixels
+        arm_px = arm_length / cell_size
+        gap_px = gap / cell_size
+
+        if marker_style == 'crosshair':
+            outer = gap_px + arm_px
+            ax.plot([cx - outer, cx - gap_px], [cy, cy],
+                    color=color, linewidth=linewidth,
+                    solid_capstyle='butt', zorder=10)
+            ax.plot([cx + gap_px, cx + outer], [cy, cy],
+                    color=color, linewidth=linewidth,
+                    solid_capstyle='butt', zorder=10)
+            ax.plot([cx, cx], [cy - outer, cy - gap_px],
+                    color=color, linewidth=linewidth,
+                    solid_capstyle='butt', zorder=10)
+            ax.plot([cx, cx], [cy + gap_px, cy + outer],
+                    color=color, linewidth=linewidth,
+                    solid_capstyle='butt', zorder=10)
+
+        elif marker_style == 'cross':
+            ax.plot([cx - arm_px, cx + arm_px], [cy, cy],
+                    color=color, linewidth=linewidth,
+                    solid_capstyle='butt', zorder=10)
+            ax.plot([cx, cx], [cy - arm_px, cy + arm_px],
+                    color=color, linewidth=linewidth,
+                    solid_capstyle='butt', zorder=10)
+
+        elif marker_style == 'circle':
+            circle = plt.Circle((cx, cy), radius=gap_px,
+                                 fill=False, edgecolor=color,
+                                 linewidth=linewidth, zorder=10)
+            ax.add_patch(circle)
+
+        elif marker_style == 'dot':
+            ax.plot(cx, cy, marker='o', markersize=6,
+                    color=color, linestyle='none', zorder=10)
+
+        if labels is not None and i < len(labels):
+            label_dx = label_offset[0] / cell_size
+            label_dy = label_offset[1] / cell_size
+            ax.annotate(labels[i],
+                        xy=(cx, cy),
+                        xytext=(cx + label_dx, cy + label_dy),
+                        fontsize=label_fontsize, color=label_color,
+                        fontweight='bold', zorder=11)
 
 
 def plot_alpha_map(alphaimage,radio_map,frequencies,
@@ -4333,17 +5725,17 @@ def plot_alpha_map(alphaimage,radio_map,frequencies,
 
 
 
-    contour = ax.contour(_g, levels=levels_g[::-1],
-                         colors=contour_palette,
-                          origin='lower', 
-                        #   cmap='Greys',
-                         # aspect=aspect,
-                         linewidths=1.2, extent=extent,
-                         alpha=1.0)
-    low_contours = ax.contour(_g, levels=levels_low[::-1],
-                        colors='brown',
-                        linewidths=1.0, extent=extent,
-                        alpha=1.0)
+    # contour = ax.contour(_g, levels=levels_g[::-1],
+    #                      colors=contour_palette,
+    #                       origin='lower', 
+    #                     #   cmap='Greys',
+    #                      # aspect=aspect,
+    #                      linewidths=1.2, extent=extent,
+    #                      alpha=1.0)
+    # low_contours = ax.contour(_g, levels=levels_low[::-1],
+    #                     colors='brown',
+    #                     linewidths=1.0, extent=extent,
+    #                     alpha=1.0)
 
     if plot_alpha_error_points and _alphaimage_error is not None:
         # Downsample the data for scatter plot
@@ -4390,8 +5782,10 @@ def plot_alpha_map(alphaimage,radio_map,frequencies,
     #                     label=label_colorbar)
     ax.grid(which='both', axis='both', color='gray', linewidth=0.6,
                 alpha=0.7)
-    
-    ax.set_title(f"{plot_title} ({len(frequencies)} images)")
+    ax.set_xlabel('')
+    ax.set_ylabel('')
+    ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+    # ax.set_title(f"{plot_title} ({len(frequencies)} images)")
     if text_annotation:
         anchored_text = AnchoredText(text_annotation,
                                     loc='upper left',
@@ -4448,7 +5842,8 @@ def add_beam_to_image(imagename, ax, dx, cell_size):
 
             el.set_clip_box(ax.bbox)
         except:
-            print('Error adding beam.')
+            # print('Error adding beam.')
+            pass
     return ax
 
 
@@ -4538,8 +5933,8 @@ def plot_image(image, residual_name=None, box_size=200, box_size_inset=60,
 
     # set second normalization
     norm2 = simple_norm(abs(hdu[0].data.squeeze())[xin:xen, yin:yen] * scalling,
-                        min_cut=vmin,
-                        max_cut=vmax, stretch='asinh',
+                        vmin=vmin,
+                        vmax=vmax, stretch='asinh',
                         asinh_a=0.05)  # , max_percent=max_percent_highlevel)
     norm2.vmin = vmin
 
@@ -4722,8 +6117,8 @@ def plot_image(image, residual_name=None, box_size=200, box_size_inset=60,
         imre = axins_re.imshow(residual_data, origin='lower',
                                cmap=CM, norm=norm_re, alpha=0.2, extent=extent)
 
-        norm_re2 = simple_norm(residual_data * scalling, min_cut=vmin_re,
-                               max_cut=vmax_re, stretch='linear',
+        norm_re2 = simple_norm(residual_data * scalling, vmin=vmin_re,
+                               vmax=vmax_re, stretch='linear',
                                asinh_a=0.05)  # , max_percent=max_percent_highlevel)
 
         imre2 = axins_re.imshow(residual_data * scalling, origin='lower',
@@ -4770,8 +6165,8 @@ def plot_image(image, residual_name=None, box_size=200, box_size_inset=60,
         norm_inset = visualization.simple_norm(Z2, stretch='linear',
                                                max_percent=max_percent_lowlevel)
 
-        norm2_inset = simple_norm(abs(Z2), min_cut=vmin,
-                                  max_cut=vmax_inset, stretch='asinh',
+        norm2_inset = simple_norm(abs(Z2), vmin=vmin,
+                                  vmax=vmax_inset, stretch='asinh',
                                   asinh_a=0.008)  # , max_percent=max_percent_highlevel)
         norm2_inset.vmin = vmin
 
@@ -4889,8 +6284,8 @@ def plot_image(image, residual_name=None, box_size=200, box_size_inset=60,
         norm_inset = visualization.simple_norm(Z2, stretch='linear',
                                                max_percent=max_percent_lowlevel)
 
-        norm2_inset = simple_norm(abs(Z2), min_cut=vmin,
-                                  max_cut=vmax_inset, stretch='asinh',
+        norm2_inset = simple_norm(abs(Z2), vmin=vmin,
+                                  vmax=vmax_inset, stretch='asinh',
                                   asinh_a=0.05)  # , max_percent=max_percent_highlevel)
         norm2_inset.vmin = vmin
 
@@ -5284,9 +6679,9 @@ def plot_galaxy_sed(combined_df, df_data, source_name='', special_name='',
     -----------
     combined_deconv_df : DataFrame
         DataFrame containing component data with 'comp_ID', 'freq', 'total_flux_mask', 
-        and 'flux_error_res_3' columns.
+        and 'total_flux_error' columns.
     df_data : DataFrame
-        DataFrame containing total data with 'freq', 'total_flux_mask', and 'flux_error_res_3' columns.
+        DataFrame containing total data with 'freq', 'total_flux_mask', and 'total_flux_error' columns.
     source_name : str, optional
         Name of the source for the plot title.
     special_name : str, optional
@@ -5342,7 +6737,7 @@ def plot_galaxy_sed(combined_df, df_data, source_name='', special_name='',
     for i, comp_id in enumerate(unique_comps):
         df_component = combined_df[combined_df['comp_ID'] == comp_id]
         Snu_component = df_component['total_flux_mask'].values * 1000
-        Snu_component_err = df_component['flux_error_res_3'].values * 1000
+        Snu_component_err = df_component['total_flux_error'].values * 1000
         sum_flux.append(Snu_component)
         
         # Set the label
@@ -5379,7 +6774,7 @@ def plot_galaxy_sed(combined_df, df_data, source_name='', special_name='',
     if show_total:
         plt.errorbar(
             (df_data['freq'] / 1e9), (df_data['total_flux_mask'] * 1000),
-            yerr=df_data['flux_error_res_3'] * 1000,
+            yerr=df_data['total_flux_error'] * 1000,
             linestyle='',
             linewidth=0.5, 
             markersize=markersize,
@@ -5393,7 +6788,7 @@ def plot_galaxy_sed(combined_df, df_data, source_name='', special_name='',
         )
         plt.errorbar(
             (df_data['freq'] / 1e9), residual_flux,
-            # yerr=df_data['flux_error_res_3'] * 1000,
+            # yerr=df_data['total_flux_error'] * 1000,
             linestyle='',
             linewidth=0.5, 
             markersize=markersize,
@@ -5465,9 +6860,9 @@ def plot_galaxy_sed_v2(combined_df, df_data, source_name='', special_name='',
     -----------
     combined_deconv_df : DataFrame
         DataFrame containing component data with 'comp_ID', 'freq', 'total_flux_mask', 
-        and 'flux_error_res_3' columns.
+        and 'total_flux_error' columns.
     df_data : DataFrame
-        DataFrame containing total data with 'freq', 'total_flux_mask', and 'flux_error_res_3' columns.
+        DataFrame containing total data with 'freq', 'total_flux_mask', and 'total_flux_error' columns.
     source_name : str, optional
         Name of the source for the plot title.
     special_name : str, optional
@@ -5527,7 +6922,7 @@ def plot_galaxy_sed_v2(combined_df, df_data, source_name='', special_name='',
     for i, comp_id in enumerate(unique_comps):
         df_component = combined_df[combined_df['comp_ID'] == comp_id]
         Snu_component = df_component['total_flux_mask'].values * 1000
-        Snu_component_err = df_component['flux_error_res_3'].values * 1000
+        Snu_component_err = df_component['total_flux_error'].values * 1000
         sum_flux.append(Snu_component)
         
         # Set the label
@@ -5561,16 +6956,16 @@ def plot_galaxy_sed_v2(combined_df, df_data, source_name='', special_name='',
     #We need to add the flux error back since the flux error is already included in both data and models.
     residual_flux = (1000 * df_data['total_flux_mask'].values 
         - np.nansum(sum_flux,axis=0) 
-        + df_data['flux_error_res_3'].values * 1000)
+        + df_data['total_flux_error'].values * 1000)
     normalised_residual_flux = residual_flux / (df_data['total_flux_mask'].values * 1000)
     # print(residual_flux)
     
     if ext_ids is not None:
         df_component = combined_df[combined_df['comp_ID'] == ext_ids]
         Snu_component = df_component['total_flux_mask'].values * 1000
-        Snu_component_err = df_component['flux_error_res_3'].values * 1000
+        Snu_component_err = df_component['total_flux_error'].values * 1000
         Snu_component_ext_corrected = Snu_component + residual_flux
-        Snu_component_ext_corrected_err = np.sqrt(Snu_component_err**2.0 + (df_data['flux_error_res_3'].values * 1000)**2.0)
+        Snu_component_ext_corrected_err = np.sqrt(Snu_component_err**2.0 + (df_data['total_flux_error'].values * 1000)**2.0)
         ax1.errorbar(
             (df_component['freq'] / 1e9), (Snu_component_ext_corrected),
             yerr=Snu_component_ext_corrected_err,
@@ -5590,7 +6985,7 @@ def plot_galaxy_sed_v2(combined_df, df_data, source_name='', special_name='',
     if show_total:
         ax1.errorbar(
             (df_data['freq'] / 1e9), (df_data['total_flux_mask'] * 1000),
-            yerr=df_data['flux_error_res_3'] * 1000,
+            yerr=df_data['total_flux_error'] * 1000,
             linestyle='',
             linewidth=0.5, 
             markersize=markersize,
@@ -5606,7 +7001,7 @@ def plot_galaxy_sed_v2(combined_df, df_data, source_name='', special_name='',
         # Plot residuals on bottom subplot
         ax2.errorbar(
             (df_data['freq'] / 1e9), normalised_residual_flux,
-            # yerr=df_data['flux_error_res_3'] * 1000,
+            # yerr=df_data['total_flux_error'] * 1000,
             linestyle='',
             linewidth=0.5, 
             markersize=markersize,
@@ -6104,3 +7499,240 @@ def make_plot_m_v2(x_value,
         
     return ax  # Return the axis object for further customization
 
+
+
+
+def make_plot_m_v3(x_value,
+              y_value,
+              x_error,
+              y_error,
+              color_indicator = None,
+              color_scale = 1.0,
+              classes = None,
+              x_label = None,
+              y_label = None,
+              log_x = False,
+              log_y = False,
+              add_legend = False,
+              plot_tau_K = False,
+              plot_one_to_one = False,
+              cmap_indicator = 'Greys',
+              class_color = 'black',
+              cb_label = None,
+              figsize = (3.0,4.0),
+              x_lim = (None,None),
+              y_lim = (None,None),
+              fontsize = 14,
+              label_font_size = 13,
+              ncol=1,
+              loc = 'best',
+              colours = ['grey','black','orange','limegreen'],
+              color = 'black',
+              marker = '.',markersize = 10,
+              marker_list = ['d', 's', 'o', '*', 'v', '.',r'$\bigcirc$'],
+              class_names = ['Class 1', 'Class 2', 'Class 3', 'Class 4'],
+              label = None,
+              plot_list=False,
+              list_labels = None,
+              savename = None,
+              fig = None,
+              ax = None,
+              show_colorbar = True,  # New parameter to control colorbar display
+              colorbar_location = 'right',  # New parameter for colorbar position
+              colorbar_pad = 0.02,  # New parameter for colorbar spacing
+              colorbar_fontsize = None  # New parameter for colorbar label size
+             ):
+    
+    def _format_errors(errors, selection=None):
+        """
+        Format errors for matplotlib errorbar function.
+        Handles both symmetric (numpy array) and asymmetric (list of two arrays) errors.
+        
+        Args:
+            errors: numpy array or list of [lower_errors, upper_errors]
+            selection: index, slice, or boolean mask to apply
+        
+        Returns:
+            Properly formatted errors for matplotlib errorbar
+        """
+        if isinstance(errors, (list, tuple)) and len(errors) == 2:
+            # Asymmetric errors: [lower_errors, upper_errors]
+            lower, upper = errors
+            if selection is not None:
+                lower = lower[selection]
+                upper = upper[selection]
+            return [lower, upper]
+        else:
+            # Symmetric errors: single numpy array
+            if selection is not None:
+                return errors[selection]
+            return errors
+    
+    # Create figure and axes if not provided
+    if fig is None or ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    
+    # Initialize colorbar variable
+    cbar = None
+    
+    # Plot data using ax instead of plt
+    if classes is None:
+        if plot_list:
+            x_tau_list_data = []
+            y_tau_list_data = []
+            for kk in range(len(x_value)):
+                eb = ax.errorbar(
+                    x=x_value[kk],
+                    y=y_value[kk],
+                    xerr=_format_errors(x_error, kk),
+                    yerr=_format_errors(y_error, kk),
+                    linestyle='', linewidth=1.5, markersize=10, color=colours[kk], 
+                    marker=marker_list[kk], capsize=2,
+                    markerfacecolor=(0.9, 0.9, 0.9, 0.1),
+                    markeredgecolor=colours[kk], 
+                    markeredgewidth=2,
+                    label=list_labels[kk]
+                )
+                x_tau_list_data.extend(x_value[kk])
+                y_tau_list_data.extend(y_value[kk])
+                # Set different alpha values in one-liners
+                eb[0].set_alpha(0.7)  # Points
+                [cap.set_alpha(0.4) for cap in eb[1]]  # Caps
+                [bar.set_alpha(0.4) for bar in eb[2]]  # Bars
+        else:
+            if color_indicator is not None:
+                _label = None
+            else:
+                _label = label
+            eb = ax.errorbar(
+                x=x_value,
+                y=y_value,
+                xerr=_format_errors(x_error),
+                yerr=_format_errors(y_error),
+                linestyle='',linewidth=1.0, markersize=markersize,color=color, 
+                marker=marker,
+                label = _label,
+                markerfacecolor=(0.9, 0.9, 0.9, 0.1),
+                markeredgecolor=color, 
+                markeredgewidth=2,
+                capsize=2,
+            )
+            # Set different alpha values in one-liners
+            eb[0].set_alpha(0.7)  # Points
+            [cap.set_alpha(0.3) for cap in eb[1]]  # Caps
+            [bar.set_alpha(0.3) for bar in eb[2]]  # Bars
+            
+    if classes is not None:
+        # Plot errorbars per class
+        for cls in np.unique(classes):
+            mask = classes == cls
+            eb = ax.errorbar(
+                x=x_value[mask],
+                y=y_value[mask],
+                xerr=_format_errors(x_error, mask),
+                yerr=_format_errors(y_error, mask),
+                marker=marker_list[cls], linestyle='', 
+                linewidth=2, markersize=15,
+                alpha = 0.5,
+                color=class_color,
+                label=class_names[cls], capsize=3
+            )
+        
+            # Set different alpha values in one-liners
+            eb[0].set_alpha(0.5)  # Points
+            [cap.set_alpha(0.4) for cap in eb[1]]  # Caps
+            [bar.set_alpha(0.4) for bar in eb[2]]  # Bars
+            
+    if color_indicator is not None:    
+        cmap = plt.cm.get_cmap(cmap_indicator)
+        norm = plt.Normalize(vmin=np.nanmin(color_indicator), 
+                           vmax=np.nanmax(color_indicator))
+        colors = cmap(norm(color_indicator))
+        
+        sizes = 1.0 * color_indicator
+        sc = ax.scatter(x_value, 
+                        y_value, 
+                        s=sizes, linestyle='',linewidth=2,
+                        alpha=0.5,
+                        cmap=cmap_indicator,
+                        label=label,
+                        c=color_scale,
+                        marker='o')
+        
+        # Add colorbar if requested
+        if show_colorbar:
+            # Use fig.colorbar to ensure proper integration with subplots
+            cbar = fig.colorbar(sc, ax=ax, location=colorbar_location, pad=colorbar_pad)
+            
+            # Set colorbar label if provided
+            if cb_label is not None:
+                cbar_label_size = colorbar_fontsize if colorbar_fontsize is not None else label_font_size
+                cbar.set_label(cb_label, fontsize=cbar_label_size)
+
+    if plot_list:
+        tau, tau_uncertainty, p_value, n_valid = kendall_tau(
+            x_data = x_tau_list_data, 
+            y_data = y_tau_list_data, 
+            n_bootstrap = 10000)
+    else:
+        tau, tau_uncertainty, p_value, n_valid = kendall_tau(
+            x_data = x_value, 
+            y_data = y_value, 
+            n_bootstrap = 10000)
+    print(f"tau = {tau}+/-{tau_uncertainty}")
+    print(f"p_value = {p_value}")
+
+    if plot_tau_K:
+        tau_str = r"$\tau_{\mathrm{K}}=$" + f"${tau:.2f}+/-{tau_uncertainty:.2f}$; "
+        p_str = r"$p=$" + f"${p_value:.2f}$"
+        ax.annotate(tau_str + p_str, 
+            xy=(0.1, 0.1),
+            xytext=(0.50, 1.04),
+            xycoords='axes fraction',
+            textcoords='axes fraction',
+            ha='center',
+            bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.8),
+        )
+
+    if add_legend:
+        legend = ax.legend(
+            framealpha=0.9,
+            ncol=ncol,
+            loc=loc,
+            fontsize=label_font_size,
+            handlelength=1,
+            handletextpad=0.5,
+            columnspacing=0.5,
+            borderaxespad=0.1
+        )
+    
+    if log_x:
+        ax.set_xscale('log')
+    if log_y:
+        ax.set_yscale('log')
+
+    ax.set_xlim(x_lim)
+    ax.set_ylim(y_lim)
+
+    if plot_one_to_one:
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+        min_val = min(xlim[0], ylim[0])
+        max_val = max(xlim[1], ylim[1])
+        line_range = np.linspace(min_val, max_val, 100)
+        ax.plot(line_range, line_range, color='grey',ls='--', lw=4, alpha=0.7)
+
+    if x_label is not None:
+        ax.set_xlabel(x_label,labelpad=0)
+    else:
+        ax.tick_params(axis='x', labelbottom=False)
+        
+    if y_label is not None:
+        ax.set_ylabel(y_label,labelpad=0)
+    else:
+        ax.tick_params(axis='y', labelleft=False)
+        
+    if savename is not None:
+        fig.savefig(savename, dpi=300, bbox_inches='tight')
+        
+    return ax, cbar  # Return both axis and colorbar for further customization
