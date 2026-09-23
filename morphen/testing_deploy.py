@@ -1,337 +1,3 @@
-"""
-#Background and Source Extraction
-"""
-
-# def adaptive_box_size(data_shape, min_boxes=20):
-#     """Determine appropriate box size based on image dimensions."""
-#     # Aim for at least min_boxes in each dimension
-#     h, w = data_shape
-#     bh = max(32, h // min_boxes)
-#     bw = max(32, w // min_boxes)
-#     # Ensure box size is reasonable
-#     return bw, bh
-
-# def improved_masking(data, nsigma=6, min_area=100, iterations=2):
-#     """Create a more robust source mask using sigma-clipping and segmentation."""
-#     from photutils.segmentation import detect_sources
-#     from astropy.stats import sigma_clipped_stats
-    
-#     # Estimate background using sigma-clipping
-#     mean, median, std = sigma_clipped_stats(data, sigma=3.0)
-#     threshold = median + (nsigma * std)
-    
-#     # Detect sources
-#     segm = detect_sources(data, threshold, npixels=min_area)
-#     if segm is None:
-#         return np.zeros(data.shape, dtype=bool)
-        
-#     # Create initial mask
-#     mask = segm.data > 0
-    
-#     # Dilate mask if requested
-#     if iterations > 0:
-#         from scipy.ndimage import binary_dilation
-#         mask = binary_dilation(mask, iterations=iterations)
-        
-#     return mask
-
-
-# def multi_method_background(data, mask=None):
-#     """Estimate background using multiple methods and compare results."""
-#     from astropy.stats import SigmaClip, biweight_location
-#     from photutils import Background2D, MedianBackground, SExtractorBackground
-    
-#     sigma_clip = SigmaClip(sigma=3.0)
-    
-#     # Method 1: SEP (your current method)
-#     import sep
-#     bkg_sep = sep.Background(data, mask=mask, bw=64, bh=64, fw=3, fh=3)
-#     bkg_sep_image = bkg_sep.back()
-    
-#     # Method 2: photutils with median background
-#     bkg_median = Background2D(data, box_size=64, filter_size=3, 
-#                              sigma_clip=sigma_clip, mask=mask,
-#                              bkg_estimator=MedianBackground())
-    
-#     # Method 3: photutils with SExtractor-like background
-#     bkg_sextractor = Background2D(data, box_size=64, filter_size=3,
-#                                  sigma_clip=sigma_clip, mask=mask,
-#                                  bkg_estimator=SExtractorBackground())
-    
-#     # Compare results
-#     methods = {
-#         'SEP': bkg_sep_image,
-#         'Median': bkg_median.background,
-#         'SExtractor': bkg_sextractor.background
-#     }
-    
-#     # Calculate agreement metrics
-#     agreements = {}
-#     for name1, bkg1 in methods.items():
-#         for name2, bkg2 in methods.items():
-#             if name1 >= name2:
-#                 continue
-#             diff = np.abs(bkg1 - bkg2)
-#             agreements[f"{name1}-{name2}"] = {
-#                 'mean_diff': np.mean(diff),
-#                 'max_diff': np.max(diff),
-#                 'relative_diff': np.mean(diff) / np.mean(bkg1)
-#             }
-    
-#     return methods, agreements
-
-
-# def visualize_background_mesh(data, box_size=64):
-#     """Visualize data averaged in background estimation boxes."""
-#     import matplotlib.pyplot as plt
-#     from matplotlib.patches import Rectangle
-    
-#     h, w = data.shape
-#     num_boxes_y = h // box_size
-#     num_boxes_x = w // box_size
-    
-#     mesh_values = np.zeros((num_boxes_y, num_boxes_x))
-    
-#     for i in range(num_boxes_y):
-#         for j in range(num_boxes_x):
-#             y_slice = slice(i*box_size, min((i+1)*box_size, h))
-#             x_slice = slice(j*box_size, min((j+1)*box_size, w))
-#             mesh_values[i, j] = np.median(data[y_slice, x_slice])
-    
-#     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-    
-#     # Original image
-#     im1 = ax1.imshow(data, origin='lower', cmap='viridis')
-#     plt.colorbar(im1, ax=ax1)
-#     ax1.set_title('Original Image')
-    
-#     # Draw box grid
-#     for i in range(num_boxes_y):
-#         for j in range(num_boxes_x):
-#             rect = Rectangle((j*box_size, i*box_size), box_size, box_size, 
-#                            fill=False, edgecolor='white', linewidth=0.5)
-#             ax1.add_patch(rect)
-    
-#     # Mesh values
-#     im2 = ax2.imshow(mesh_values, origin='lower', cmap='viridis', 
-#                     extent=[0, w, 0, h])
-#     plt.colorbar(im2, ax=ax2)
-#     ax2.set_title('Background Mesh Values')
-    
-#     plt.tight_layout()
-#     return fig
-
-
-# def improved_background(imagename, method='sep', mask=None, apply_mask=True, 
-#                        show_map=False, box_size=64, filter_size=3):
-#     """
-#     Enhanced background estimation with multiple methods.
-    
-#     Parameters
-#     ----------
-#     imagename : str
-#         Path to the image.
-#     method : str
-#         Method to use ('sep', 'photutils', 'iterative', 'wavelet').
-#     mask : array, optional
-#         Mask to be applied to the image.
-#     apply_mask : bool
-#         If True, calculate the mask from the image.
-#     show_map : bool
-#         If True, show the background map.
-#     box_size : int or tuple
-#         Box size for background estimation.
-#     filter_size : int or tuple
-#         Filter size for smoothing the background.
-        
-#     Returns
-#     -------
-#     background : ndarray
-#         Estimated background.
-#     background_rms : ndarray
-#         Estimated background RMS.
-#     """
-#     # Read data
-#     import fitsio
-#     data = fitsio.read(imagename)
-#     if len(data.shape) == 4:
-#         data = data[0][0]
-    
-#     # Handle NaNs
-#     data_no_nan = np.copy(data)
-#     nan_mask = np.isnan(data)
-#     if nan_mask.any():
-#         data_no_nan[nan_mask] = 0
-    
-#     # Create or apply mask
-#     if mask is None and apply_mask:
-#         mask = improved_masking(data_no_nan)
-    
-#     # Apply selected method
-#     if method == 'sep':
-#         import sep
-#         if isinstance(box_size, int):
-#             bw = bh = box_size
-#         else:
-#             bw, bh = box_size
-            
-#         if isinstance(filter_size, int):
-#             fw = fh = filter_size
-#         else:
-#             fw, fh = filter_size
-            
-#         bkg = sep.Background(data_no_nan, mask=mask, bw=bw, bh=bh, fw=fw, fh=fh)
-#         background = bkg.back()
-#         background_rms = bkg.rms()
-        
-#     elif method == 'photutils':
-#         from photutils import Background2D, MedianBackground
-#         from astropy.stats import SigmaClip
-        
-#         sigma_clip = SigmaClip(sigma=3.0)
-#         bkg = Background2D(data_no_nan, box_size, filter_size=filter_size,
-#                           sigma_clip=sigma_clip, bkg_estimator=MedianBackground(),
-#                           mask=mask, edge_method='pad')
-#         background = bkg.background
-#         background_rms = bkg.background_rms
-        
-#     elif method == 'iterative':
-#         background, background_rms = iterative_background(data_no_nan)
-        
-#     elif method == 'wavelet':
-#         background = wavelet_background(data_no_nan)
-#         # For RMS, use local standard deviation
-#         from scipy.ndimage import uniform_filter
-#         from astropy.stats import sigma_clipped_stats
-        
-#         # Compute local standard deviation
-#         mean, median, std = sigma_clipped_stats(data_no_nan - background, sigma=3.0)
-#         background_rms = np.ones_like(background) * std
-    
-#     # Restore NaN values
-#     if nan_mask.any():
-#         background[nan_mask] = np.nan
-#         background_rms[nan_mask] = np.nan
-    
-#     # Visualization
-#     if show_map:
-#         import matplotlib.pyplot as plt
-        
-#         fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 5))
-        
-#         # Original data
-#         im1 = ax1.imshow(np.arcsinh(data), origin='lower',cmap='magma_r')
-#         plt.colorbar(im1, ax=ax1)
-#         ax1.set_title('Original Data')
-        
-#         # Background
-#         im2 = ax2.imshow(np.arcsinh(background), origin='lower',cmap='magma_r')
-#         plt.colorbar(im2, ax=ax2)
-#         ax2.set_title(f'Background ({method})')
-        
-#         # Background-subtracted
-#         im3 = ax3.imshow(np.arcsinh(data - background), origin='lower',cmap='magma_r')
-#         plt.colorbar(im3, ax=ax3)
-#         ax3.set_title('Background Subtracted')
-        
-#         plt.tight_layout()
-#         plt.show()
-    
-#     return background, background_rms
-
-
-
-
-# def photutils_background(imagename, box_size=64, filter_size=3, mask=None):
-#     """
-#     Estimate background using photutils Background2D.
-#     """
-#     from astropy.io import fits
-#     from astropy.stats import SigmaClip
-#     from photutils import Background2D, MedianBackground
-    
-#     # Read data
-#     data = fits.getdata(imagename)
-#     if len(data.shape) == 4:
-#         data = data[0][0]
-    
-#     # Create mask if not provided
-#     if mask is None:
-#         from astropy.stats import sigma_clip
-#         from scipy.ndimage import binary_dilation
-        
-#         clipped_data = sigma_clip(data, sigma=3)
-#         mask = clipped_data.mask
-#         if mask.sum() > 0:  # Only dilate if mask is not empty
-#             mask = binary_dilation(mask, iterations=2)
-    
-#     # Sigma clipping for outlier rejection
-#     sigma_clip = SigmaClip(sigma=3.0)
-    
-#     # Estimate background
-#     bkg_estimator = MedianBackground()
-#     bkg = Background2D(data, box_size, filter_size=filter_size, 
-#                       sigma_clip=sigma_clip, bkg_estimator=bkg_estimator,
-#                       mask=mask, edge_method='pad')
-    
-#     return bkg
-
-
-# def iterative_background(data, n_iterations=5, sigma=3.0):
-#     """
-#     Estimate background through iterative sigma clipping.
-#     """
-#     from astropy.stats import sigma_clipped_stats
-    
-#     # Create working copy
-#     working_data = data.copy()
-    
-#     for i in range(n_iterations):
-#         # Calculate statistics with sigma clipping
-#         mean, median, std = sigma_clipped_stats(working_data, sigma=sigma)
-        
-#         # Create mask for values significantly above background
-#         mask = working_data > (median + sigma * std)
-        
-#         # Replace masked values with median for next iteration
-#         working_data[mask] = median
-    
-#     # Final background estimate
-#     background = np.ones_like(data) * median
-#     background_rms = np.ones_like(data) * std
-    
-#     return background, background_rms
-
-# def wavelet_background(data, level=4):
-#     """
-#     Estimate background using wavelet decomposition.
-#     """
-#     import pywt
-    
-#     # Perform wavelet decomposition
-#     coeffs = pywt.wavedec2(data, 'haar', level=level)
-    
-#     # Extract approximation coefficients (lowest frequency)
-#     cA = coeffs[0]
-    
-#     # Reconstruct using only approximation coefficients
-#     new_coeffs = [cA] + [None] * level
-#     background = pywt.waverec2(new_coeffs, 'haar')
-    
-#     # Ensure same shape as input
-#     background = background[:data.shape[0], :data.shape[1]]
-    
-#     return background
-
-
-
-
-
-
-
-
-################
-
 def adaptive_box_size(data_shape, min_boxes=20, max_box_size=256, min_box_size=32):
     """
     Determine appropriate box size based on image dimensions.
@@ -587,7 +253,7 @@ def improved_background(imagename, method='sep', mask=None, apply_mask=True,
         try:
             bkg = Background2D(data_no_nan, box_size, filter_size=filter_size,
                               sigma_clip=sigma_clip, bkg_estimator=MedianBackground(),
-                              mask=mask, edge_method='pad')
+                              mask=mask)
             background = bkg.background
             background_rms = bkg.background_rms
         except Exception as e:
@@ -741,13 +407,6 @@ def improved_background(imagename, method='sep', mask=None, apply_mask=True,
     
     return background, background_rms
 
-
-
-
-
-
-
-
 """
 #Data download.
 """
@@ -762,7 +421,7 @@ import astropy.units as u
 import os
 from difflib import get_close_matches
 
-def make_hst_cutout(downloaded_files, coord, size_arcsec, output_filename=None, source_name=None, band=None):
+def make_hst_cutout(downloaded_files, coord, size_arcsec, output_filename=None, source_name=None, band=None, ref_coordinate=None):
     """
     Create a cutout from downloaded HST FITS files with complete header preservation.
     
@@ -771,7 +430,7 @@ def make_hst_cutout(downloaded_files, coord, size_arcsec, output_filename=None, 
     downloaded_files : list
         List of paths to downloaded HST FITS files.
     coord : SkyCoord
-        Center coordinates for the cutout.
+        Center coordinates for the cutout (used as reference for offset calculation).
     size_arcsec : float
         Size of the cutout in arcseconds.
     output_filename : str, optional
@@ -780,6 +439,13 @@ def make_hst_cutout(downloaded_files, coord, size_arcsec, output_filename=None, 
         Name of the source (used for automatic filename generation).
     band : str, optional
         Filter band (used for automatic filename generation).
+    ref_coordinate : tuple of floats, optional
+        Reference pixel coordinates (x, y) to use as the actual center of the cutout.
+        If provided, the cutout will be centered on this pixel position relative to 
+        the original image. This is useful for merger systems where the cataloged 
+        coordinates point to one galaxy, but you want to center on a different 
+        component. The function will compute the offset from coord to ref_coordinate
+        and apply it to center the cutout appropriately.
         
     Returns
     -------
@@ -815,7 +481,7 @@ def make_hst_cutout(downloaded_files, coord, size_arcsec, output_filename=None, 
                 if sci_ext is not None:
                     best_file = file_path
                     best_ext = sci_ext
-                    print(f"[✓] Using science data from extension {sci_ext} ({hdul[sci_ext].name}) in {file_path}")
+                    print(f"[+>] Using science data from extension {sci_ext} ({hdul[sci_ext].name}) in {file_path}")
                     break
         except Exception as e:
             print(f"[Warning] Error opening {file_path}: {e}")
@@ -844,14 +510,35 @@ def make_hst_cutout(downloaded_files, coord, size_arcsec, output_filename=None, 
                 # Try to determine from the WCS
                 pixscale = wcs.proj_plane_pixel_scales()[0].to(u.arcsec).value
                 
-            print(f"[✓] Pixel scale: {pixscale:.4f} arcsec/pixel")
+            print(f"[+>] Pixel scale: {pixscale:.4f} arcsec/pixel")
             
             # Compute cutout size in pixels
             size_pixels = int(size_arcsec / pixscale)
-            print(f"[✓] Cutout size: {size_pixels}x{size_pixels} pixels")
+            print(f"[+>] Cutout size: {size_pixels}x{size_pixels} pixels")
             
-            # Make the cutout
-            cutout = Cutout2D(sci_data, position=coord, size=(size_pixels, size_pixels), wcs=wcs)
+            # Determine the actual center position for the cutout
+            if ref_coordinate is not None:
+                # Convert coord (SkyCoord) to pixel coordinates in the original image
+                coord_pixel_x, coord_pixel_y = wcs.world_to_pixel(coord)
+                
+                # Calculate the offset between coord and ref_coordinate (in pixels)
+                offset_x = ref_coordinate[0] - coord_pixel_x
+                offset_y = ref_coordinate[1] - coord_pixel_y
+                
+                # Create a new SkyCoord for the actual cutout center
+                # We do this by converting ref_coordinate back to sky coordinates
+                cutout_center = wcs.pixel_to_world(ref_coordinate[0], ref_coordinate[1])
+                
+                print(f"[+>] Original coord pixel position: ({coord_pixel_x:.2f}, {coord_pixel_y:.2f})")
+                print(f"[+>] Reference coordinate: ({ref_coordinate[0]:.2f}, {ref_coordinate[1]:.2f})")
+                print(f"[+>] Offset from coord: ({offset_x:.2f}, {offset_y:.2f}) pixels")
+                print(f"[+>] Using reference coordinate as cutout center")
+            else:
+                # Use the original coord as the cutout center
+                cutout_center = coord
+            
+            # Make the cutout using the determined center position
+            cutout = Cutout2D(sci_data, position=cutout_center, size=(size_pixels, size_pixels), wcs=wcs)
             
             # Update the science header with the new WCS information
             sci_header.update(cutout.wcs.to_header())
@@ -888,7 +575,7 @@ def make_hst_cutout(downloaded_files, coord, size_arcsec, output_filename=None, 
                     try:
                         ext_wcs = WCS(hdu.header)
                         if ext_wcs.has_celestial:
-                            ext_cutout = Cutout2D(hdu.data, position=coord, 
+                            ext_cutout = Cutout2D(hdu.data, position=cutout_center, 
                                                  size=(size_pixels, size_pixels), wcs=ext_wcs)
                             new_ext_header = hdu.header.copy()
                             new_ext_header.update(ext_cutout.wcs.to_header())
@@ -914,7 +601,7 @@ def make_hst_cutout(downloaded_files, coord, size_arcsec, output_filename=None, 
             
             # Write the cutout to disk
             cutout_hdul.writeto(output_filename, overwrite=True)
-            print(f"[✓] Cutout saved as '{output_filename}' with {len(cutout_hdul)} extensions")
+            print(f"[+>] Cutout saved as '{output_filename}' with {len(cutout_hdul)} extensions")
             return output_filename
             
     except Exception as e:
@@ -923,14 +610,6 @@ def make_hst_cutout(downloaded_files, coord, size_arcsec, output_filename=None, 
         traceback.print_exc()
         return None
 
-
-# def find_z_NED(source_name):
-#     result_table = Ned.query_object(source_name)
-#     redshift_NED = result_table['Redshift'].data.data
-#     if redshift_NED.shape[0] == 0:
-#         return None
-#     else:
-#         return redshift_NED[0]
 
 def _fuzzy_select(prompt_text, options, user_input):
     if user_input is None or user_input.upper() not in map(str.upper, options):
@@ -1030,7 +709,7 @@ def hst_cutout_mast(source_name, band=None, instrument=None, output_filename=Non
     downloaded_files = [f for f in manifest['Local Path'] if f is not None]
     downloaded_files = np.unique(downloaded_files)
     # downloaded_files = list(set(downloaded_files))  # Remove duplicates
-    print(f"[✓] Downloaded {len(downloaded_files)} FITS files.")
+    print(f"[+>] Downloaded {len(downloaded_files)} FITS files.")
 
     return downloaded_files, coord, band, instrument
 
@@ -1038,7 +717,7 @@ def hst_cutout_mast(source_name, band=None, instrument=None, output_filename=Non
 import requests
 def get_source_coordinates(source_name):
     """
-    Get the coordinates of a source using NED.
+    Get the coordinates of a source by name (NED / SIMBAD / Sesame).
     
     Parameters
     ----------
@@ -1050,6 +729,16 @@ def get_source_coordinates(source_name):
     SkyCoord object
         The coordinates of the source.
     """
+    # cosmo.resolve_source_coordinates goes through NED ObjectLookup / SIMBAD
+    # TAP / Sesame (~0.5 s); Ned.query_object below is the legacy CGI path and
+    # is only reached if all of those fail.
+    try:
+        coords = resolve_source_coordinates(source_name)
+        if coords is not None:
+            return coords
+    except Exception as e:
+        print(f"Fast resolver failed for {source_name}: {e}")
+
     try:
         result_table = Ned.query_object(source_name)
         ra = result_table['RA'][0]
@@ -1163,7 +852,809 @@ def legacy_survey_cutout(source_name,
     except Exception as e:
         print(f"Error downloading or saving cutout: {e}")
         return None
+
+
+"""
+PanSTARRS cutout function with corrected WCS handling
+"""
+
+import requests
+import numpy as np
+import os
+from astropy.io import fits
+from astropy.coordinates import SkyCoord
+from astropy.wcs import WCS
+from astroquery.ipac.ned import Ned
+import astropy.units as u
+
+
+def get_source_coordinates(source_name):
+    """
+    Get the coordinates of a source using NED.
     
+    Parameters
+    ----------
+    source_name : str
+        Source name.
+        
+    Returns
+    -------
+    SkyCoord object
+        The coordinates of the source.
+    """
+    try:
+        result_table = Ned.query_object(source_name)
+        ra = result_table['RA'][0]
+        dec = result_table['DEC'][0]
+        coords = SkyCoord(ra, dec, unit=(u.deg, u.deg))
+        print(f"[+>] Found coordinates for {source_name}: RA={ra:.5f}, Dec={dec:.5f}")
+        return coords
+    except Exception as e:
+        print(f"[Error] Could not get coordinates for {source_name}: {e}")
+        return None
+
+def panstarrs_cutout(source_name, 
+                     size_arcsec, 
+                     band='i',
+                     pixel_scale=0.25,  # PanSTARRS native pixel scale in arcsec/pixel
+                     output_filename=None,
+                     output_path=None,
+                     data_release='dr2'):
+    """
+    Get a cutout from PanSTARRS (PS1) using their cutout service.
+    Saves as a simple FITS file with corrected WCS information.
+    
+    Parameters
+    ----------
+    source_name : str
+        Source name (will be resolved using NED).
+    size_arcsec : float
+        Size of the cutout in arcseconds.
+    band : str
+        Band to retrieve ('g', 'r', 'i', 'z', 'y'). Default is 'i'.
+    pixel_scale : float
+        Pixel scale in arcsec/pixel. Default is 0.25 (PanSTARRS native).
+    output_filename : str, optional
+        Name of the output FITS file. If None, auto-generates based on source/band.
+    output_path : str, optional
+        Directory path for output file. Created if doesn't exist.
+    data_release : str
+        PanSTARRS data release ('dr1' or 'dr2'). Default is 'dr2'.
+        
+    Returns
+    -------
+    str or None
+        Path to the saved cutout file if successful, None otherwise.
+    """
+    
+    # Validate band
+    valid_bands = ['g', 'r', 'i', 'z', 'y']
+    if band not in valid_bands:
+        print(f"[Error] Invalid band '{band}'. Must be one of: {valid_bands}")
+        return None
+    
+    # Get source coordinates using existing function
+    coords = get_source_coordinates(source_name)
+    if coords is None:
+        print(f"[Error] Could not find coordinates for {source_name}")
+        return None
+    
+    # Calculate size in pixels
+    size_pixels = int(np.ceil(size_arcsec / pixel_scale))
+    print(f"[+>] Cutout size: {size_pixels}x{size_pixels} pixels ({size_arcsec} arcsec)")
+    
+    # Create output filename if not provided
+    if output_filename is None:
+        # Clean source name for filename
+        safe_name = source_name.replace(" ", "_").replace("/", "_")
+        output_filename = f"{safe_name}_ps1_{band}_{size_arcsec}arcsec.fits"
+        
+        if output_path is not None:
+            if not os.path.exists(output_path):
+                os.makedirs(output_path)
+                print(f"[+>] Created output directory: {output_path}")
+            output_filename = os.path.join(output_path, output_filename)
+    
+    # Extract RA/Dec
+    ra = coords.ra.deg
+    dec = coords.dec.deg
+    
+    # Create temporary filename for download
+    temp_filename = output_filename + '.temp'
+    
+    # Try primary endpoint first
+    print(f"[+>] Requesting PanSTARRS {data_release.upper()} {band}-band cutout...")
+    
+    # Primary cutout service URL
+    base_url = "https://ps1images.stsci.edu/cgi-bin/fitscut.cgi"
+    
+    # Build query parameters - note the size parameter is diameter in pixels
+    params = {
+        'ra': ra,
+        'dec': dec,
+        'size': size_pixels,  # This is the diameter of the cutout
+        'format': 'fits',
+        'filters': band,
+        'output_size': size_pixels  # Ensure output matches requested size
+    }
+    
+    # For DR2, specify stack type
+    if data_release == 'dr2':
+        params['type'] = 'stack'
+    
+    try:
+        # Make the request
+        response = requests.get(base_url, params=params, timeout=30)
+        
+        # If primary endpoint fails, try alternative approach
+        if response.status_code != 200:
+            print(f"[Warning] Primary endpoint returned HTTP {response.status_code}")
+            print("[!] Trying alternative PanSTARRS endpoint...")
+            
+            # Alternative approach: Get the direct image URL first
+            alt_url = "https://ps1images.stsci.edu/cgi-bin/ps1filenames.py"
+            alt_params = {
+                'ra': ra,
+                'dec': dec,
+                'size': size_pixels,
+                'format': 'fits',
+                'filters': band,
+                'type': 'stack'
+            }
+            
+            # Get the filename/URL info
+            filename_response = requests.get(alt_url, params=alt_params, timeout=30)
+            
+            if filename_response.status_code == 200:
+                # Parse the response to get the actual image URL
+                lines = filename_response.text.strip().split('\n')
+                if len(lines) > 1:  # Skip header line
+                    # The response format includes multiple fields
+                    fields = lines[1].split()
+                    if len(fields) >= 8:
+                        # Extract the URL (usually the last field)
+                        image_url = fields[7]
+                        
+                        # Build complete cutout URL with size parameters
+                        if 'rings.v3.skycell' in image_url:
+                            # Construct fitscut URL from the filename
+                            base_filename = image_url.split('/')[-1]
+                            cutout_url = (f"https://ps1images.stsci.edu/cgi-bin/fitscut.cgi?"
+                                        f"red={base_filename}&ra={ra}&dec={dec}&size={size_pixels}&"
+                                        f"output_size={size_pixels}&format=fits")
+                        else:
+                            # Direct cutout URL
+                            cutout_url = (f"https://ps1images.stsci.edu/cgi-bin/fitscut.cgi?"
+                                        f"ra={ra}&dec={dec}&size={size_pixels}&format=fits&"
+                                        f"filters={band}&output_size={size_pixels}")
+                        
+                        print(f"[+>] Found image, requesting cutout...")
+                        response = requests.get(cutout_url, timeout=30)
+                        
+                        if response.status_code != 200:
+                            print(f"[Error] Alternative endpoint also failed: HTTP {response.status_code}")
+                            return None
+                    else:
+                        print(f"[Error] Could not parse filename service response")
+                        return None
+                else:
+                    print(f"[Error] No results from filename service")
+                    return None
+            else:
+                print(f"[Error] Filename service failed: HTTP {filename_response.status_code}")
+                return None
+        
+        # Check if we got valid FITS data
+        if len(response.content) < 1000:  # Basic size check
+            print(f"[Error] Response too small ({len(response.content)} bytes), likely not valid FITS data")
+            return None
+        
+        # Save the temporary file
+        with open(temp_filename, 'wb') as f:
+            f.write(response.content)
+        
+        # Read the downloaded file and correct the WCS
+        with fits.open(temp_filename) as hdul:
+            if len(hdul) == 0:
+                print(f"[Error] Invalid FITS file received")
+                os.remove(temp_filename)
+                return None
+            
+            # Find the HDU with actual image data
+            image_data = None
+            image_header = None
+            
+            # Check all HDUs for image data
+            for i, hdu in enumerate(hdul):
+                if hdu.data is not None and len(hdu.data.shape) == 2:
+                    print(f"[+>] Found image data in HDU {i} (shape: {hdu.data.shape})")
+                    image_data = hdu.data
+                    image_header = hdu.header.copy()
+                    break
+            
+            # If no image data found in extensions, check primary
+            if image_data is None and hdul[0].data is not None:
+                image_data = hdul[0].data
+                image_header = hdul[0].header.copy()
+                print(f"[+>] Found image data in primary HDU (shape: {image_data.shape})")
+            
+            if image_data is None:
+                print(f"[Error] No image data found in FITS file")
+                os.remove(temp_filename)
+                return None
+            
+            # CRITICAL FIX: Always use Cutout2D to ensure correct WCS
+            # This fixes the issue where PanSTARRS returns cutouts with incorrect CRPIX values
+            print(f"[+>] Correcting WCS information using Cutout2D...")
+            from astropy.nddata import Cutout2D
+            
+            # Get WCS from the header
+            try:
+                wcs = WCS(image_header)
+            except Exception as e:
+                print(f"[Error] Could not parse WCS from header: {e}")
+                os.remove(temp_filename)
+                return None
+            
+            # Use Cutout2D centered on our requested coordinates
+            # This ensures CRPIX is correctly set relative to the cutout
+            try:
+                cutout = Cutout2D(image_data, position=coords, 
+                                size=(size_pixels, size_pixels), 
+                                wcs=wcs, mode='partial', fill_value=0.0)
+                
+                image_data = cutout.data
+                corrected_wcs = cutout.wcs
+                print(f"[+>] WCS corrected, final cutout size: {image_data.shape}")
+                
+            except Exception as e:
+                print(f"[Warning] Cutout2D failed: {e}")
+                print(f"[!] Attempting manual WCS correction...")
+                
+                # Fallback: manually correct the WCS
+                # Calculate where the requested coordinates fall in pixel space
+                try:
+                    x_pixel, y_pixel = wcs.world_to_pixel(coords)
+                    
+                    # Calculate new CRPIX values
+                    # CRPIX should point to where CRVAL is located in the cutout
+                    center_x = image_data.shape[1] / 2.0
+                    center_y = image_data.shape[0] / 2.0
+                    
+                    # Offset from actual coordinate position to image center
+                    dx = center_x - x_pixel
+                    dy = center_y - y_pixel
+                    
+                    # Update CRPIX
+                    if 'CRPIX1' in image_header:
+                        image_header['CRPIX1'] = image_header['CRPIX1'] + dx
+                    else:
+                        image_header['CRPIX1'] = center_x
+                        
+                    if 'CRPIX2' in image_header:
+                        image_header['CRPIX2'] = image_header['CRPIX2'] + dy
+                    else:
+                        image_header['CRPIX2'] = center_y
+                    
+                    # Update CRVAL to point to our requested coordinates
+                    image_header['CRVAL1'] = ra
+                    image_header['CRVAL2'] = dec
+                    
+                    corrected_wcs = WCS(image_header)
+                    print(f"[+>] Manual WCS correction applied")
+                    
+                except Exception as e2:
+                    print(f"[Error] Manual WCS correction failed: {e2}")
+                    os.remove(temp_filename)
+                    return None
+            
+            # Create a new simple FITS file with corrected WCS
+            new_hdu = fits.PrimaryHDU(data=image_data)
+            
+            # Start with the corrected WCS header
+            wcs_header = corrected_wcs.to_header()
+            for key in wcs_header:
+                new_hdu.header[key] = wcs_header[key]
+            
+            # Add metadata
+            new_hdu.header['OBJECT'] = source_name
+            new_hdu.header['BAND'] = (band, 'Filter band')
+            new_hdu.header['FILTER'] = (band, 'Filter band')
+            new_hdu.header['PIXSCALE'] = (pixel_scale, 'Pixel scale in arcsec/pixel')
+            new_hdu.header['CUTSIZE'] = (size_arcsec, 'Requested cutout size in arcsec')
+            new_hdu.header['DATASRC'] = f'PanSTARRS {data_release.upper()}'
+            
+            # Add target coordinates (the coordinates we requested)
+            new_hdu.header['RA'] = (ra, 'Right ascension in degrees')
+            new_hdu.header['DEC'] = (dec, 'Declination in degrees')
+            new_hdu.header['EPOCH'] = (2000.0, 'Epoch of coordinates')
+            new_hdu.header['EQUINOX'] = (2000.0, 'Equinox of coordinates')
+            
+            # Ensure we have NAXIS keywords with correct values
+            new_hdu.header['NAXIS'] = 2
+            new_hdu.header['NAXIS1'] = image_data.shape[1]
+            new_hdu.header['NAXIS2'] = image_data.shape[0]
+            
+            # Add units and other useful keywords
+            if 'BUNIT' in image_header:
+                new_hdu.header['BUNIT'] = image_header['BUNIT']
+            else:
+                new_hdu.header['BUNIT'] = ('nanomaggies', 'Pixel units')
+            
+            new_hdu.header['ORIGIN'] = 'STScI/PanSTARRS'
+            new_hdu.header['TELESCOP'] = 'PanSTARRS'
+            new_hdu.header['INSTRUME'] = 'GPC1'
+            
+            # Try to add redshift from NED
+            try:
+                result_table = Ned.query_object(source_name)
+                if 'Redshift' in result_table.colnames:
+                    redshift = result_table['Redshift'][0]
+                    if not np.isnan(redshift):
+                        new_hdu.header['REDSHIFT'] = (redshift, 'Source redshift from NED')
+            except:
+                pass
+            
+            # Add history
+            new_hdu.header.add_history(f'PanSTARRS {data_release.upper()} cutout')
+            new_hdu.header.add_history(f'Created using ps1images.stsci.edu cutout service')
+            new_hdu.header.add_history(f'WCS corrected using astropy Cutout2D')
+            new_hdu.header.add_history(f'Filter: {band}, Size: {size_arcsec} arcsec')
+            new_hdu.header.add_history(f'Target: RA={ra:.5f}, Dec={dec:.5f}')
+            
+            # Save the simple FITS file
+            new_hdu.writeto(output_filename, overwrite=True)
+            
+            # Clean up temporary file
+            os.remove(temp_filename)
+            
+            print(f"[+>] Successfully saved PanSTARRS cutout to {output_filename}")
+            print(f"[+>] Final image size: {image_data.shape[1]}x{image_data.shape[0]} pixels")
+            print(f"[+>] WCS reference pixel (CRPIX): ({new_hdu.header['CRPIX1']:.1f}, {new_hdu.header['CRPIX2']:.1f})")
+            print(f"[+>] WCS reference coord (CRVAL): ({new_hdu.header['CRVAL1']:.5f}, {new_hdu.header['CRVAL2']:.5f})")
+            
+        return output_filename
+    
+    except requests.Timeout:
+        print(f"[Error] Request timed out after 30 seconds")
+        if os.path.exists(temp_filename):
+            os.remove(temp_filename)
+        return None
+    except requests.RequestException as e:
+        print(f"[Error] Request failed: {e}")
+        if os.path.exists(temp_filename):
+            os.remove(temp_filename)
+        return None
+    except Exception as e:
+        print(f"[Error] Unexpected error: {e}")
+        import traceback
+        traceback.print_exc()
+        if os.path.exists(temp_filename):
+            os.remove(temp_filename)
+        if os.path.exists(output_filename):
+            os.remove(output_filename)
+        return None
+
+#!/usr/bin/env python
+"""
+Enhanced overlay function that handles WCS alignment between optical and radio images.
+This addresses common issues when overlaying PanSTARRS and radio data.
+"""
+
+# def overlay_radio_optical_enhanced
+def overlay_radio_optical_enhanced(hst_cutout_filename, radio_filename, output_filename=None, 
+                         rms_rad=None,
+                         figsize=(6, 6),
+                         cutout_size=(1024, 1024), 
+                         optical_stretch='asinh',
+                         vmin_factor=0.1, 
+                         vmax_factor=0.1, 
+                         vmin_opt=3.0, 
+                         optical_contour_color='black', 
+                         radio_color='#EE7733', 
+                         optical_cmap='Greys',
+                         title=None):
+    """
+    Create an overlay of radio contours on optical image.
+    Works with HST, Legacy Survey, and PanSTARRS data.
+    
+    Parameters
+    ----------
+    hst_cutout_filename : str
+        Path to the optical FITS file (HST, Legacy Survey, or PanSTARRS)
+    radio_filename : str
+        Path to the radio FITS file
+    output_filename : str, optional
+        Path where to save the figure. If None, will not save.
+    rms_rad : float, optional
+        Radio RMS noise level. If None, will be calculated from data.
+    figsize : tuple, optional
+        Size of the figure (width, height) in inches
+    cutout_size : tuple, optional
+        Size of the cutout in pixels (y, x)
+    optical_stretch : str, optional
+        Stretch function for optical image ('linear', 'log', 'sqrt', 'asinh')
+    vmin_factor : float, optional
+        Factor to multiply optical std for vmin
+    vmax_factor : float, optional
+        Factor to multiply optical max for vmax
+    vmin_opt : float, optional
+        Sigma level for optical contour minimum
+    optical_contour_color : str, optional
+        Color for optical contours
+    radio_color : str, optional
+        Color for radio contours
+    optical_cmap : str, optional
+        Colormap for optical image
+    title : str, optional
+        Title for the plot. If None, no title is added.
+    
+    Returns
+    -------
+    fig, ax : matplotlib Figure and Axes objects
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from astropy.io import fits
+    from astropy.wcs import WCS
+    from astropy.visualization import simple_norm
+    from astropy.stats import mad_std
+    from reproject import reproject_interp
+    from astropy.nddata import Cutout2D
+    import warnings
+    warnings.filterwarnings('ignore')
+
+    # Load the optical FITS image
+    with fits.open(hst_cutout_filename) as optical_fits:
+        optical_data = optical_fits[0].data
+        optical_header = optical_fits[0].header
+        optical_wcs = WCS(optical_header)
+
+    # Load the radio data
+    with fits.open(radio_filename) as radio_fits:
+        radio_data = radio_fits[0].data
+        radio_header = radio_fits[0].header
+        radio_wcs = WCS(radio_header)
+        
+        # Extract the 2D slice from potentially higher-dimensional radio data
+        # and properly drop the extra WCS axes
+        if len(radio_data.shape) == 4:
+            radio_data_2d = radio_data[0, 0, :, :]
+            radio_wcs_2d = radio_wcs.dropaxis(3).dropaxis(2)
+        elif len(radio_data.shape) == 3:
+            radio_data_2d = radio_data[0, :, :]
+            radio_wcs_2d = radio_wcs.dropaxis(2)
+        else:
+            radio_data_2d = radio_data
+            radio_wcs_2d = radio_wcs
+
+    # Determine the center coordinates for the cutout
+    # First priority: use RA and DEC from header if available
+    if 'RA' in optical_header and 'DEC' in optical_header:
+        from astropy.coordinates import SkyCoord
+        import astropy.units as u
+        cutout_center = SkyCoord(optical_header['RA']*u.deg, optical_header['DEC']*u.deg)
+        print(f"Using header coordinates: RA={optical_header['RA']:.5f}, DEC={optical_header['DEC']:.5f}")
+    elif 'CRVAL1' in optical_header and 'CRVAL2' in optical_header:
+        # Fall back to WCS reference coordinates
+        from astropy.coordinates import SkyCoord
+        import astropy.units as u
+        cutout_center = SkyCoord(optical_header['CRVAL1']*u.deg, optical_header['CRVAL2']*u.deg)
+        print(f"Using CRVAL coordinates: RA={optical_header['CRVAL1']:.5f}, DEC={optical_header['CRVAL2']:.5f}")
+    else:
+        # Last resort: use the geometric center of the optical image
+        center_x = optical_data.shape[1] / 2.0
+        center_y = optical_data.shape[0] / 2.0
+        cutout_center = optical_wcs.pixel_to_world(center_x, center_y)
+        print(f"Using geometric center of image at pixel ({center_x:.1f}, {center_y:.1f})")
+        print(f"Converted to sky coordinates: RA={cutout_center.ra.deg:.5f}, DEC={cutout_center.dec.deg:.5f}")
+
+    # Create a cutout of the optical data
+    optical_cutout = Cutout2D(optical_data, cutout_center, cutout_size, wcs=optical_wcs)
+    
+    # Reproject radio data to match optical cutout
+    radio_cutout_data, footprint = reproject_interp(
+        (radio_data_2d, radio_wcs_2d), 
+        optical_cutout.wcs, 
+        shape_out=optical_cutout.shape
+    )
+
+    # Handle NaN values in radio data
+    radio_mask = ~np.isnan(radio_cutout_data)
+    radio_cutout_data[~radio_mask] = 0
+
+    # Calculate statistics for radio contour levels
+    radio_peak = np.nanmax(radio_cutout_data)
+    
+    if rms_rad is not None:
+        radio_std = rms_rad
+    else:
+        radio_std = mad_std(radio_cutout_data[radio_mask], ignore_nan=True)
+    
+    if radio_std == 0 or np.isnan(radio_std):
+        radio_std = np.nanstd(radio_cutout_data)
+    
+    print(f"Radio peak: {radio_peak}, Radio std: {radio_std}")
+    
+    # Set contour levels
+    contour_levels = np.geomspace(5.0 * radio_std, 2.0 * radio_peak, 6)
+
+    # Create a figure and axes with WCS projection for the cutout
+    fig = plt.figure(figsize=figsize)
+    ax = fig.add_subplot(111, projection=optical_cutout.wcs)
+
+    # Calculate vmin and vmax for optical image
+    vmin = vmin_factor * mad_std(optical_cutout.data[optical_cutout.data > 0])
+    vmax = np.nanmax(optical_cutout.data)
+
+    # Apply the appropriate stretch to the optical data
+    norm = simple_norm(optical_cutout.data, stretch=optical_stretch, 
+                      asinh_a=0.015, vmin=vmin, vmax=vmax * vmax_factor)
+
+    # Plot the optical cutout image
+    ax.imshow(optical_cutout.data, cmap=optical_cmap, origin='lower', norm=norm)
+
+    # Add optical contours
+    opt_peak = np.nanmax(optical_cutout.data)
+    opt_std = mad_std(optical_cutout.data[optical_cutout.data > 0])
+    
+    contour_levels_opt = np.geomspace(1.0 * opt_peak, vmin_opt * opt_std, 6)
+    print(contour_levels)
+    print(contour_levels_opt[::-1])
+    
+    ax.contour(optical_cutout.data, levels=contour_levels_opt[::-1], 
+              colors=optical_contour_color, linewidths=1.5, alpha=0.5)
+
+    # Overlay radio contours on the optical cutout
+    ax.contour(radio_cutout_data, levels=contour_levels, 
+              colors=radio_color, linewidths=1.5, alpha=0.7)
+
+    # Set axis labels
+    ax.set_xlabel('RA (J2000)', fontsize=12)
+    ax.set_ylabel('Dec (J2000)', fontsize=12)
+    
+    # Add title if provided
+    if title:
+        ax.text(0.05, 0.95, title, transform=ax.transAxes, 
+               color='white', fontsize=14, weight='bold', 
+               ha='left', va='top', bbox=dict(facecolor='black', alpha=0.7))
+
+    # Add grid
+    ax.grid(color='black', linestyle='--', linewidth=0.5, alpha=0.3)
+    
+    # Tight layout
+    # plt.tight_layout()
+    
+    # Save the figure if an output filename is provided
+    if output_filename:
+        plt.savefig(output_filename, dpi=300, bbox_inches='tight')
+        print(f"Figure saved as {output_filename}")
+        
+    return fig, ax
+
+
+# def find_sci_extension(hdul):
+#     """Find the science extension with valid data in a FITS file."""
+#     # First, try to find SCI extension which is standard for HST
+#     for i, hdu in enumerate(hdul):
+#         if hasattr(hdu, 'name') and hdu.name == 'SCI' and hdu.data is not None:
+#             try:
+#                 wcs = WCS(hdu.header, naxis=2)
+#                 if wcs.has_celestial:
+#                     return i, hdu.data, wcs
+#             except Exception:
+#                 pass
+    
+#     # If no SCI extension found, try any extension with data and valid WCS
+#     for i, hdu in enumerate(hdul):
+#         if hdu.data is not None:
+#             try:
+#                 wcs = WCS(hdu.header, naxis=2)
+#                 if wcs.has_celestial:
+#                     return i, hdu.data, wcs
+#             except Exception:
+#                 pass
+    
+#     # Fall back to primary HDU
+#     try:
+#         wcs = WCS(hdul[0].header, naxis=2)
+#         return 0, hdul[0].data, wcs
+#     except Exception:
+#         return 0, hdul[0].data, None
+
+
+
+def overlay_radio_optical(hst_cutout_filename, radio_filename, output_filename=None, 
+                         rms_rad = None,
+                         rms_opt = None,
+                         figsize=(6, 6),
+                         cutout_size=(1024, 1024), optical_stretch='asinh',
+                         vmin_factor=0.1, vmax_factor=0.1, vmin_opt=3.0, opt_c_levels=6,
+                         #optical_contour_color='grey', radio_color='limegreen',optical_cmap='magma_r',
+                         optical_contour_color='black', radio_color='#EE7733', optical_cmap='Greys',
+                         title=None, title_position='top'):
+    """
+    Create an overlay of radio contours on HST optical image.
+    
+    Parameters
+    ----------
+    hst_cutout_filename : str
+        Path to the HST FITS file
+    radio_filename : str
+        Path to the radio FITS file
+    output_filename : str, optional
+        Path where to save the figure. If None, will not save.
+    cutout_size : tuple, optional
+        Size of the cutout in pixels (y, x)
+    optical_stretch : str, optional
+        Stretch function for optical image ('linear', 'log', 'sqrt', 'asinh')
+    radio_color : str, optional
+        Color for radio contours
+    optical_cmap : str, optional
+        Colormap for optical image
+    optical_contour_color : str, optional
+        Color for optical contours
+    title : str, optional
+        Title for the plot. If None, no title is added.
+    
+    Returns
+    -------
+    fig, ax : matplotlib Figure and Axes objects
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from astropy.io import fits
+    from astropy.wcs import WCS
+    from astropy.visualization import ZScaleInterval, simple_norm
+    from reproject import reproject_interp
+    from astropy.nddata import Cutout2D
+    from astropy.stats import mad_std
+    # Load the optical FITS image (HST)
+    with fits.open(hst_cutout_filename) as optical_fits:
+        # Find the science extension in the HST data
+        sci_ext, optical_data, optical_wcs = find_sci_extension(optical_fits)
+        
+        if optical_data is None:
+            raise ValueError("Could not find valid data in the HST file")
+        
+        # If we found a WCS but not in the primary header, we need to merge it with primary metadata
+        primary_header = optical_fits[0].header.copy()
+        if sci_ext > 0:
+            # We found data in a SCI extension, get all WCS keywords
+            wcs_header = optical_wcs.to_header()
+            # Update primary header with WCS info
+            for key in wcs_header:
+                primary_header[key] = wcs_header[key]
+        
+        optical_header = primary_header
+
+    # Load the radio contour data
+    with fits.open(radio_filename) as radio_fits:
+        radio_data = radio_fits[0].data
+        radio_header = radio_fits[0].header
+        
+        # Extract the 2D slice from potentially higher-dimensional radio data
+        if len(radio_data.shape) == 4:  # [polarization, frequency, y, x]
+            radio_data_2d = radio_data[0, 0, :, :]
+        elif len(radio_data.shape) == 3:  # [frequency, y, x] or [polarization, y, x]
+            radio_data_2d = radio_data[0, :, :]
+        else:
+            radio_data_2d = radio_data
+        
+        # Create a WCS object for the 2D radio data
+        radio_wcs_2d = WCS(radio_header, naxis=2)
+
+    # Determine the center of the cutout (use optical peak if not provided)
+    optical_peak_coords = np.unravel_index(np.argmax(optical_data), optical_data.shape)
+    cutout_center = optical_wcs.pixel_to_world(optical_peak_coords[1], optical_peak_coords[0])
+
+    # Create a cutout of both optical and radio data
+    optical_cutout = Cutout2D(optical_data, cutout_center, cutout_size, wcs=optical_wcs)
+    
+    # Reproject radio data to match optical cutout
+    radio_cutout_data, footprint = reproject_interp(
+        (radio_data_2d, radio_wcs_2d), 
+        optical_cutout.wcs, 
+        shape_out=optical_cutout.shape
+    )
+
+    # Handle NaN values in radio data
+    radio_mask = ~np.isnan(radio_cutout_data)
+    radio_cutout_data[~radio_mask] = 0
+    # plt.figure()
+    # plt.imshow(radio_cutout_data)
+    # plt.show()
+    # Calculate statistics for contour levels
+    radio_peak = np.nanmax(radio_cutout_data)    
+    if rms_rad is not None:
+        radio_std = rms_rad
+    else:
+        radio_std = mad_std(radio_cutout_data[radio_mask],ignore_nan=True)
+    if radio_std == 0 or np.isnan(radio_std):
+        radio_std = np.nanstd(radio_cutout_data)
+    print(f"Radio peak: {radio_peak}, Radio std: {radio_std}")
+    # Set contour levels (ensure they don't include zero)
+    contour_levels = np.geomspace(5.0 * radio_std, 2.0 * radio_peak, 6)
+    
+    # Create a figure and axes with WCS projection for the cutout
+    fig = plt.figure(figsize=figsize)
+    ax = fig.add_subplot(111, projection=optical_cutout.wcs)
+
+    # Plot the optical cutout image
+    if rms_opt is not None:
+        vmin = vmin_factor * rms_opt
+    else:
+        vmin = vmin_factor * mad_std(optical_cutout.data[optical_cutout.data > 0])
+    vmax = np.nanmax(optical_cutout.data)
+
+    # Apply the appropriate stretch to the optical data
+    norm = simple_norm(optical_cutout.data, stretch=optical_stretch, 
+                      asinh_a=0.015, vmin=vmin, vmax=vmax * vmax_factor)
+
+    ax.imshow(optical_cutout.data, cmap=optical_cmap, origin='lower', norm=norm)
+
+    
+
+    
+    # try:
+    # Add optical contours if desired
+    opt_peak = np.nanmax(optical_cutout.data)
+    if rms_opt is not None:
+        opt_std = rms_opt
+    else:
+        opt_std = mad_std(optical_cutout.data[optical_cutout.data > 0])
+    # opt_std = np.nanstd(optical_cutout.data[optical_cutout.data > 0])
+    contour_levels_opt = np.geomspace(1.0 * opt_peak, vmin_opt * opt_std, opt_c_levels)
+    print(contour_levels)
+    print(contour_levels_opt[::-1])
+    ax.contour(optical_cutout.data, levels=contour_levels_opt[::-1], 
+            colors=optical_contour_color, linewidths=1.5, alpha=0.5,
+            #   linestyles='dashdot'
+            )
+    # except Exception as e:
+    #     print(f"Could not plot optical contours: {e}")
+
+    # Overlay radio contours on the optical cutout
+    ax.contour(radio_cutout_data, levels=contour_levels, 
+              colors=radio_color, linewidths=1.5, alpha=0.7)
+
+    # Set axis labels
+    ax.set_xlabel('RA (J2000)', fontsize=12)
+    ax.set_ylabel('Dec (J2000)', fontsize=12)
+    
+    # Add title if provided
+    if title:
+        if title_position == 'top':
+            ax.text(0.05, 0.95, title, transform=ax.transAxes, 
+               color='white', fontsize=14, weight='bold', 
+               ha='left', va='top', bbox=dict(facecolor='black', alpha=0.7))
+        elif title_position == 'bottom':
+            ax.text(0.05, 0.08, title, transform=ax.transAxes, 
+                   color='white', fontsize=14, weight='bold', 
+                   ha='left', va='top', bbox=dict(facecolor='black', alpha=0.7))
+        else:
+            ax.text(0.05, 0.08, title, transform=ax.transAxes, 
+                   color='white', fontsize=14, weight='bold', 
+                   ha='left', va='top', bbox=dict(facecolor='black', alpha=0.7))
+
+    # Add grid
+    # ax.grid(color='black', linestyle='--', linewidth=0.5, alpha=0.3)
+    
+    # Tight layout
+    # plt.tight_layout()
+    
+    # Save the figure if an output filename is provided
+    if output_filename:
+        plt.savefig(output_filename, dpi=300, bbox_inches='tight')
+        print(f"Figure saved as {output_filename}")
+        
+    return fig, ax
+
+
+
+
+
+
 """
 #Cosmo
 """
@@ -1237,53 +1728,6 @@ def int_Lum_old(z,S_nu0_sy,S_nu0_ff,
     LR  = (4 * np.pi * (DL_cm**2) / ((1+z)**(alpha_sy+1))) * (synchrotron_luminosity + freefree_luminosity) * lum_conversion_factor
     LR_err  = (4 * np.pi * (DL_cm**2) / ((1+z)**(alpha_sy+1))) * (int_luminosity_err) * lum_conversion_factor
     return(LR,LR_err)
-
-# def int_Lum(z,S_nu0_sy,S_nu0_ff, 
-#             S_nu0_sy_err=None,S_nu0_ff_err=None, 
-#             nu_0=6e9, 
-#             nu_t=0.01e9,nu_1=1.0e9,nu_2=35.0e9,alpha_sy=-0.85):
-#     dist_conversion_factor = 3.08567758128 * 1e24  # m #3.08567758128*(10**24) #cm
-#     lum_conversion_factor = 1e-23
-#     DL_Mpc = luminosity_distance_cosmo(z=z)
-#     DL_cm = DL_Mpc * dist_conversion_factor  # Convert Mpc to cm
-    
-#     # synchrotron_luminosity, synchrotron_luminosity_err = \
-#     #     quad(synchrotron_integrand, nu_1, nu_2, args=(nu_0, nu_t, alpha_sy, S_nu0_sy),
-#     #          epsrel=1e-12, limit=10000)
-#     # freefree_luminosity, freefree_luminosity_err = \
-#     #     quad(freefree_integrand, nu_1, nu_2, args=(nu_0, nu_t, S_nu0_ff),
-#     #          epsrel=1e-12, limit=10000)
-#     synchrotron_luminosity, _ = \
-#         quad(synchrotron_integrand, nu_1, nu_2, args=(nu_0, nu_t, alpha_sy, S_nu0_sy),
-#              epsrel=1e-6, limit=10000
-#             )
-#     freefree_luminosity, _ = \
-#         quad(freefree_integrand, nu_1, nu_2, args=(nu_0, nu_t, S_nu0_ff),
-#              epsrel=1e-6, limit=10000
-#             )
-
-#     synchrotron_luminosity_err = 0.0
-#     freefree_luminosity_err = 0.0
-#     int_luminosity_err = 0.0
-#     LR_err = 0.0
-#     if S_nu0_sy_err is not None:
-#         synchrotron_luminosity_err, _ = \
-#             quad(synchrotron_integrand, nu_1, nu_2, args=(nu_0, nu_t, alpha_sy, S_nu0_sy_err),
-#                  epsrel=1e-6, limit=10000
-#                 )
-#         freefree_luminosity_err, _ = \
-#             quad(freefree_integrand, nu_1, nu_2, args=(nu_0, nu_t, S_nu0_ff_err),
-#                  epsrel=1e-6, limit=10000
-#                 )
-        
-#         # print(freefree_luminosity)
-#         # print(synchrotron_luminosity)
-#         int_luminosity_err = np.sqrt(synchrotron_luminosity_err**2 + freefree_luminosity_err**2.0)
-#         LR_err  = (4 * np.pi * (DL_cm**2) / ((1+z)**(alpha_sy+1))) * (int_luminosity_err) * lum_conversion_factor
-
-    
-#     LR  = (4 * np.pi * (DL_cm**2) / ((1+z)**(alpha_sy+1))) * (synchrotron_luminosity + freefree_luminosity) * lum_conversion_factor
-#     return(LR,LR_err)
 
 
 def int_Lum(z,S_nu0_sy,S_nu0_ff, 
@@ -1403,600 +1847,6 @@ def d_stats_basic(data, confidence=99.7, percentile_range=(15, 85)):
 '''
 Radio SED
 '''
-# def do_fit_spec_SY_FF_map(freqs,fluxes,fluxes_err,nu0=None,
-#                           fix_alpha_nt=False,
-#                           verbose=0):
-#     x = freqs
-#     y = fluxes
-#     yerr = fluxes_err
-#     if nu0 is None:
-#         nu0 = np.mean(x)
-
-#     epsilon = 1e-8
-    
-#     def min_func(params):
-#         A_sy = params['A_sy']
-#         A_ff = params['A_ff']
-#         alpha_nt = params['alpha_nt']
-#         model = RC_function_SY_FF(x, A_sy, A_ff, alpha_nt,nu0)
-#         log_weights = 1.0 / (1.0 + np.log1p(yerr / np.median(yerr)))
-#         return (y - model) * log_weights
-
-
-
-#     fit_params = lmfit.Parameters()
-#     fit_params.add("A_sy", value=1.0, min=1.0e-6, max=1000)
-#     fit_params.add("A_ff", value=0.1, min=1.0e-6, max=100)
-#     if fix_alpha_nt == True:
-#         fit_params.add("alpha_nt", value=-0.85, min=-2.0, max=0.0, vary=False)
-#     else:
-#         fit_params.add("alpha_nt", value=-0.85, min=-3.0, max=3.0)
-    
-
-#     mini = lmfit.Minimizer(min_func, fit_params, max_nfev=15000,
-#                            nan_policy='omit', reduce_fcn='neglogcauchy')
-
-#     result_1 = mini.minimize(method='least_squares',
-#                              max_nfev=200000,  # f_scale = 1.0,
-#                              loss="cauchy",
-#                              tr_solver="exact",
-#                              ftol=1e-12, xtol=1e-12, gtol=1e-12,
-#                              verbose=verbose
-#                              )
-#     second_run_params = result_1.params
-
-#     result = mini.minimize(method='least_squares',
-#                            params=second_run_params,
-#                            max_nfev=200000,  # f_scale = 1.0,
-#                         #    loss="huber", 
-#                            loss="cauchy",
-#                            tr_solver="exact",
-#                            ftol=1e-12, xtol=1e-12, gtol=1e-12,
-#                            verbose=verbose
-#                            )
-    
-#     return result
-
-
-# import numpy as np
-# from astropy.modeling import Fittable1DModel, Parameter
-# from astropy.modeling.fitting import LevMarLSQFitter, FittingWithOutlierRemoval
-# from astropy.stats import sigma_clip
-# from scipy.optimize import least_squares
-# import warnings
-
-
-# class RC_SY_FF_Model(Fittable1DModel):
-#     """
-#     Custom astropy model for RC_function_SY_FF fitting
-#     """
-#     A_sy = Parameter(default=1.0, bounds=(1.0e-6, 1000))
-#     A_ff = Parameter(default=0.1, bounds=(1.0e-6, 100))
-#     alpha_nt = Parameter(default=-0.85, bounds=(-3.0, 3.0))
-    
-#     def __init__(self, nu0=None, fix_alpha_nt=False, **kwargs):
-#         super().__init__(**kwargs)
-#         self.nu0 = nu0
-#         if fix_alpha_nt:
-#             self.alpha_nt.fixed = True
-#             # Adjust bounds for fixed case
-#             if self.alpha_nt.value < -2.0 or self.alpha_nt.value > 0.0:
-#                 self.alpha_nt = -0.85
-    
-#     def evaluate(self, x, A_sy, A_ff, alpha_nt):
-#         # This should call your RC_function_SY_FF
-#         return RC_function_SY_FF(x, A_sy, A_ff, alpha_nt, self.nu0)
-
-
-# class CauchyLossFitter:
-#     """
-#     Custom robust fitter using Cauchy loss with proper error calculation
-#     """
-#     def __init__(self, max_nfev=200000, ftol=1e-12, xtol=1e-12, gtol=1e-12):
-#         self.max_nfev = max_nfev
-#         self.ftol = ftol
-#         self.xtol = xtol
-#         self.gtol = gtol
-    
-#     def __call__(self, model, x, y, weights=None, **kwargs):
-#         # Get parameter info
-#         param_names = model.param_names
-#         param_values = [getattr(model, name).value for name in param_names]
-#         param_bounds = [(getattr(model, name).bounds[0] if getattr(model, name).bounds else -np.inf,
-#                         getattr(model, name).bounds[1] if getattr(model, name).bounds else np.inf) 
-#                        for name in param_names]
-#         fixed_params = {name: getattr(model, name).fixed for name in param_names}
-        
-#         # Create arrays for free parameters only
-#         free_param_names = [name for name in param_names if not fixed_params[name]]
-#         free_param_values = [getattr(model, name).value for name in free_param_names]
-#         free_param_bounds = [(getattr(model, name).bounds[0] if getattr(model, name).bounds else -np.inf,
-#                              getattr(model, name).bounds[1] if getattr(model, name).bounds else np.inf) 
-#                             for name in free_param_names]
-        
-#         # Transpose bounds for scipy format
-#         bounds = list(zip(*free_param_bounds)) if free_param_bounds else ([], [])
-        
-#         def residual_func(free_params):
-#             # Reconstruct full parameter set
-#             full_params = {}
-#             free_idx = 0
-#             for name in param_names:
-#                 if fixed_params[name]:
-#                     full_params[name] = getattr(model, name).value
-#                 else:
-#                     full_params[name] = free_params[free_idx]
-#                     free_idx += 1
-            
-#             # Evaluate model
-#             model_vals = model.evaluate(x, **full_params)
-#             residuals = y - model_vals
-            
-#             # Apply weights
-#             if weights is not None:
-#                 residuals *= weights
-                
-#             return residuals
-        
-#         # Two-stage fitting as in original
-#         # First stage
-#         result_1 = least_squares(
-#             residual_func,
-#             free_param_values,
-#             bounds=bounds,
-#             method='trf',
-#             loss='cauchy',
-#             ftol=self.ftol,
-#             xtol=self.xtol,
-#             gtol=self.gtol,
-#             max_nfev=self.max_nfev
-#         )
-        
-#         # Second stage
-#         result = least_squares(
-#             residual_func,
-#             result_1.x,
-#             bounds=bounds,
-#             method='trf',
-#             loss='cauchy',
-#             ftol=self.ftol,
-#             xtol=self.xtol,
-#             gtol=self.gtol,
-#             max_nfev=self.max_nfev
-#         )
-        
-#         # Update model with fitted parameters
-#         free_idx = 0
-#         for name in param_names:
-#             if not fixed_params[name]:
-#                 setattr(model, name, result.x[free_idx])
-#                 free_idx += 1
-        
-#         return result, model, free_param_names
-
-
-# class LMFitCompatibleResult:
-#     """
-#     Result wrapper that mimics lmfit interface with proper error calculation
-#     """
-#     def __init__(self, scipy_result, fitted_model, free_param_names, all_param_names, 
-#                  fixed_params, x, y, weights=None):
-        
-#         self.success = scipy_result.success
-#         self.message = scipy_result.message
-#         self.nfev = scipy_result.nfev
-#         self.cost = scipy_result.cost
-#         self.optimality = scipy_result.optimality
-        
-#         # Calculate chi-square
-#         residuals = scipy_result.fun
-#         self.chisqr = np.sum(residuals**2)
-        
-#         # Calculate degrees of freedom
-#         n_data = len(y)
-#         n_free_params = len(free_param_names)
-#         self.nfree = n_data - n_free_params
-#         self.redchi = self.chisqr / max(self.nfree, 1)
-        
-#         # Create parameter object
-#         self.params = LMFitParams()
-        
-#         # Calculate parameter uncertainties from covariance matrix
-#         param_errors = {}
-#         if scipy_result.jac is not None and len(free_param_names) > 0:
-#             try:
-#                 # Compute covariance matrix
-#                 # For weighted least squares with weights w, covariance = inv(J^T W J)
-#                 # where W is diagonal weight matrix
-#                 jac = scipy_result.jac
-                
-#                 # Apply weights to Jacobian if present
-#                 if weights is not None:
-#                     # Expand weights to match residual dimensions if needed
-#                     weight_matrix = np.diag(weights)
-#                     jac_weighted = weight_matrix @ jac
-#                 else:
-#                     jac_weighted = jac
-                
-#                 # Compute covariance: inv(J^T J) * residual_variance
-#                 jtj = jac_weighted.T @ jac_weighted
-                
-#                 # Add small regularization to diagonal for numerical stability
-#                 reg_factor = 1e-14 * np.trace(jtj) / len(jtj)
-#                 jtj += reg_factor * np.eye(len(jtj))
-                
-#                 try:
-#                     cov_matrix = np.linalg.inv(jtj)
-#                     # Scale by residual variance
-#                     residual_var = self.chisqr / max(self.nfree, 1)
-#                     cov_matrix *= residual_var
-                    
-#                     param_std_errors = np.sqrt(np.diag(cov_matrix))
-                    
-#                     for i, param_name in enumerate(free_param_names):
-#                         param_errors[param_name] = param_std_errors[i]
-                        
-#                 except np.linalg.LinAlgError:
-#                     # Fallback: try pseudo-inverse
-#                     try:
-#                         cov_matrix = np.linalg.pinv(jtj)
-#                         residual_var = self.chisqr / max(self.nfree, 1)
-#                         cov_matrix *= residual_var
-#                         param_std_errors = np.sqrt(np.abs(np.diag(cov_matrix)))
-                        
-#                         for i, param_name in enumerate(free_param_names):
-#                             param_errors[param_name] = param_std_errors[i]
-#                     except:
-#                         # If all else fails, set errors to None
-#                         pass
-                        
-#             except Exception as e:
-#                 # If covariance calculation fails, errors remain None
-#                 warnings.warn(f"Could not calculate parameter uncertainties: {e}")
-        
-#         # Populate parameters
-#         for name in all_param_names:
-#             param_value = getattr(fitted_model, name).value
-#             param_bounds = getattr(fitted_model, name).bounds
-#             is_fixed = fixed_params[name]
-#             stderr = param_errors.get(name, None)
-            
-#             self.params.add(
-#                 name, 
-#                 value=param_value,
-#                 min=param_bounds[0] if param_bounds else None,
-#                 max=param_bounds[1] if param_bounds else None,
-#                 vary=not is_fixed,
-#                 stderr=stderr
-#             )
-        
-#         # Store residual
-#         self.residual = scipy_result.fun
-#         self.method = 'least_squares'
-
-
-# class LMFitParams:
-#     """Parameter container mimicking lmfit.Parameters"""
-#     def __init__(self):
-#         self._params = {}
-    
-#     def add(self, name, value=None, min=None, max=None, vary=True, stderr=None):
-#         self._params[name] = LMFitParam(value, min, max, vary, stderr)
-    
-#     def __getitem__(self, name):
-#         return self._params[name]
-    
-#     def __contains__(self, name):
-#         return name in self._params
-    
-#     def items(self):
-#         return self._params.items()
-
-
-# class LMFitParam:
-#     """Parameter object mimicking lmfit.Parameter"""
-#     def __init__(self, value, min_val, max_val, vary, stderr):
-#         self.value = value
-#         self.min = min_val
-#         self.max = max_val
-#         self.vary = vary
-#         self.stderr = stderr
-
-
-# def do_fit_spec_SY_FF_map(freqs, fluxes, fluxes_err, nu0=None,
-#                           fix_alpha_nt=False, verbose=0):
-#     """
-#     Robust fitting function using astropy models with proper error calculation.
-#     Maintains exact interface compatibility with original lmfit version.
-#     """
-#     x = freqs
-#     y = fluxes
-#     yerr = fluxes_err
-    
-#     if nu0 is None:
-#         nu0 = np.mean(x)
-
-#     # Create log weights exactly as in original
-#     log_weights = 1.0 / (1.0 + np.log1p(yerr / np.median(yerr)))
-    
-#     # Create and configure model
-#     model = RC_SY_FF_Model(nu0=nu0, fix_alpha_nt=fix_alpha_nt)
-    
-#     # Set initial values and bounds
-#     model.A_sy = 1.0
-#     model.A_sy.bounds = (1.0e-6, 1000)
-    
-#     model.A_ff = 0.1  
-#     model.A_ff.bounds = (1.0e-6, 100)
-    
-#     model.alpha_nt = -0.85
-    
-#     if fix_alpha_nt:
-#         model.alpha_nt.fixed = True
-#         model.alpha_nt.bounds = (-0.855, -0.845)
-#     else:
-#         model.alpha_nt.bounds = (-3.0, -0.15)
-    
-#     # Get parameter information
-#     param_names = model.param_names
-#     fixed_params = {name: getattr(model, name).fixed for name in param_names}
-    
-#     # Perform robust fitting
-#     fitter = CauchyLossFitter(max_nfev=200000, ftol=1e-12, xtol=1e-12, gtol=1e-12)
-#     scipy_result, fitted_model, free_param_names = fitter(model, x, y, weights=log_weights)
-    
-#     # Create compatible result
-#     result = LMFitCompatibleResult(
-#         scipy_result, fitted_model, free_param_names, param_names, 
-#         fixed_params, x, y, weights=log_weights
-#     )
-    
-#     if verbose > 0:
-#         print(f"Fit success: {result.success}")
-#         print(f"Message: {result.message}")
-#         print(f"Chi-square: {result.chisqr:.6f}")
-#         print(f"Reduced chi-square: {result.redchi:.6f}")
-#         print(f"Number of function evaluations: {result.nfev}")
-#         print("Parameters:")
-#         for name, param in result.params.items():
-#             stderr_str = f"{param.stderr:.6f}" if param.stderr is not None else "N/A"
-#             fixed_str = " (fixed)" if not param.vary else ""
-#             print(f"  {name}: {param.value:.6f} +/- {stderr_str}{fixed_str}")
-    
-#     return result
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# import numpy as np
-# from astropy.modeling import Fittable1DModel, Parameter
-# from astropy.modeling.fitting import LevMarLSQFitter, FittingWithOutlierRemoval
-# from astropy.stats import sigma_clip
-# import warnings
-
-
-# class RC_SY_FF_Model(Fittable1DModel):
-#     """
-#     Astropy model for RC_function_SY_FF fitting
-#     """
-#     A_sy = Parameter(default=1.0, bounds=(1.0e-6, 1000))
-#     A_ff = Parameter(default=0.1, bounds=(1.0e-6, 100))
-#     alpha_nt = Parameter(default=-0.85, bounds=(-3.0, 3.0))
-    
-#     def __init__(self, nu0=None, **kwargs):
-#         super().__init__(**kwargs)
-#         self.nu0 = nu0
-    
-#     def evaluate(self, x, A_sy, A_ff, alpha_nt):
-#         return RC_function_SY_FF(x, A_sy, A_ff, alpha_nt, self.nu0)
-
-
-# class LMFitCompatibleResult:
-#     """
-#     Wrapper to provide lmfit-compatible interface for astropy fitting results
-#     """
-#     def __init__(self, fitted_model, fitter, x, y, weights=None):
-#         # Basic fit information
-#         if hasattr(fitter, 'fit_info') and fitter.fit_info is not None:
-#             fit_info = fitter.fit_info
-#             self.success = True  # Astropy doesn't always provide explicit success flag
-#             self.message = "Converged" if hasattr(fit_info, 'ierr') and fit_info.get('ierr', 0) <= 4 else "Unknown"
-#             self.nfev = fit_info.get('nfev', 0)
-#         else:
-#             self.success = True
-#             self.message = "Converged"
-#             self.nfev = 0
-        
-#         # Calculate residuals and chi-square
-#         model_values = fitted_model(x)
-#         residuals = y - model_values
-        
-#         if weights is not None:
-#             weighted_residuals = residuals * weights
-#             self.chisqr = np.sum(weighted_residuals**2)
-#         else:
-#             self.chisqr = np.sum(residuals**2)
-        
-#         # Degrees of freedom
-#         n_data = len(y)
-#         n_free_params = len([p for p in fitted_model.parameters if not getattr(fitted_model, fitted_model.param_names[fitted_model.parameters.tolist().index(p)]).fixed])
-#         self.nfree = n_data - n_free_params
-#         self.redchi = self.chisqr / max(self.nfree, 1)
-        
-#         # Create parameter object
-#         self.params = LMFitParams()
-        
-#         # Extract parameter uncertainties from covariance matrix
-#         param_errors = {}
-#         if hasattr(fitter, 'fit_info') and fitter.fit_info is not None:
-#             cov_matrix = fitter.fit_info.get('param_cov', None)
-#             if cov_matrix is not None:
-#                 try:
-#                     # Get indices of free parameters
-#                     free_param_indices = []
-#                     for i, param_name in enumerate(fitted_model.param_names):
-#                         if not getattr(fitted_model, param_name).fixed:
-#                             free_param_indices.append(i)
-                    
-#                     # Extract standard errors for free parameters
-#                     if len(free_param_indices) > 0 and cov_matrix.shape[0] == len(free_param_indices):
-#                         param_std_errors = np.sqrt(np.diag(cov_matrix))
-#                         for idx, param_idx in enumerate(free_param_indices):
-#                             param_name = fitted_model.param_names[param_idx]
-#                             param_errors[param_name] = param_std_errors[idx]
-#                 except Exception as e:
-#                     warnings.warn(f"Could not extract parameter uncertainties: {e}")
-        
-#         # Populate parameters
-#         for param_name in fitted_model.param_names:
-#             param = getattr(fitted_model, param_name)
-#             stderr = param_errors.get(param_name, None)
-            
-#             self.params.add(
-#                 param_name,
-#                 value=param.value,
-#                 min=param.bounds[0] if param.bounds else None,
-#                 max=param.bounds[1] if param.bounds else None,
-#                 vary=not param.fixed,
-#                 stderr=stderr
-#             )
-        
-#         # Store additional info
-#         self.residual = residuals
-#         self.method = 'astropy_levmar'
-#         self.cost = self.chisqr / 2  # For compatibility
-
-
-# class LMFitParams:
-#     """Parameter container mimicking lmfit.Parameters"""
-#     def __init__(self):
-#         self._params = {}
-    
-#     def add(self, name, value=None, min=None, max=None, vary=True, stderr=None):
-#         self._params[name] = LMFitParam(value, min, max, vary, stderr)
-    
-#     def __getitem__(self, name):
-#         return self._params[name]
-    
-#     def __contains__(self, name):
-#         return name in self._params
-    
-#     def items(self):
-#         return self._params.items()
-    
-#     def keys(self):
-#         return self._params.keys()
-    
-#     def values(self):
-#         return self._params.values()
-
-
-# class LMFitParam:
-#     """Parameter object mimicking lmfit.Parameter"""
-#     def __init__(self, value, min_val, max_val, vary, stderr):
-#         self.value = value
-#         self.min = min_val
-#         self.max = max_val
-#         self.vary = vary
-#         self.stderr = stderr
-
-
-# def do_fit_spec_SY_FF_map(freqs, fluxes, fluxes_err, nu0=None,
-#                           fix_alpha_nt=False, verbose=0):
-#     """
-#     Robust fitting function using astropy's standard fitting framework.
-#     Maintains interface compatibility with original lmfit version.
-#     """
-#     x = freqs
-#     y = fluxes
-#     yerr = fluxes_err
-    
-#     if nu0 is None:
-#         nu0 = np.mean(x)
-
-#     # Create weights as in original (but simplified for astropy)
-#     log_weights = 1.0 / (1.0 + np.log1p(yerr / np.median(yerr)))
-    
-#     # Create model
-#     model = RC_SY_FF_Model(nu0=nu0)
-    
-#     # Set initial parameter values
-#     model.A_sy = 1.0
-#     model.A_ff = 0.1
-#     model.alpha_nt = -0.85
-    
-#     # Set bounds
-#     model.A_sy.bounds = (1.0e-6, 1000)
-#     model.A_ff.bounds = (1.0e-6, 100)
-    
-#     if fix_alpha_nt:
-#         model.alpha_nt.fixed = True
-#         model.alpha_nt.bounds = (-0.855, -0.845)
-#     else:
-#         model.alpha_nt.bounds = (-3.0, -0.15)
-    
-#     # Create fitter - using robust fitting with outlier removal for robustness
-#     base_fitter = LevMarLSQFitter()
-#     fitter = FittingWithOutlierRemoval(base_fitter, sigma_clip, niter=3, sigma=3.0)
-    
-#     # Perform fit
-#     try:
-#         fitted_model, outlier_mask = fitter(model, x, y, weights=log_weights)
-        
-#         # If we used outlier removal, we need to get the base fitter for error info
-#         actual_fitter = fitter.fitter
-        
-#         if verbose > 0:
-#             n_outliers = np.sum(~outlier_mask) if outlier_mask is not None else 0
-#             print(f"Identified {n_outliers} outliers during fitting")
-            
-#     except Exception as e:
-#         if verbose > 0:
-#             print(f"Robust fitting failed, falling back to standard LevMar: {e}")
-        
-#         # Fallback to standard fitting
-#         actual_fitter = LevMarLSQFitter()
-#         fitted_model = actual_fitter(model, x, y, weights=log_weights)
-    
-#     # Create compatible result object
-#     result = LMFitCompatibleResult(fitted_model, actual_fitter, x, y, weights=log_weights)
-    
-#     if verbose > 0:
-#         print(f"Fit success: {result.success}")
-#         print(f"Message: {result.message}")
-#         print(f"Chi-square: {result.chisqr:.6f}")
-#         print(f"Reduced chi-square: {result.redchi:.6f}")
-#         print(f"Number of function evaluations: {result.nfev}")
-#         print("Parameters:")
-#         for name, param in result.params.items():
-#             stderr_str = f"{param.stderr:.6f}" if param.stderr is not None else "N/A"
-#             fixed_str = " (fixed)" if not param.vary else ""
-#             print(f"  {name}: {param.value:.6f} +/- {stderr_str}{fixed_str}")
-    
-#     return result
-
-
 
 
 # import numpy as np
@@ -2187,7 +2037,7 @@ def _level_sensitivity_uncertainties(g, levels, beam_area_, noise_rms):
     """
     Calculate uncertainties by varying the contour levels
     """
-    # Vary levels by ±noise_rms
+    # Vary levels by Â+/-noise_rms
     level_variations = []
     
     for delta in [-noise_rms, 0, noise_rms]:
@@ -2353,81 +2203,6 @@ import numpy as np
 from scipy.stats import kendalltau
 from typing import Optional, Tuple
 
-# def kendall_tau_with_uncertainty(x_data: np.ndarray,
-#                                   y_data: np.ndarray,
-#                                   x_err: Optional[np.ndarray] = None,
-#                                   y_err: Optional[np.ndarray] = None,
-#                                   n_bootstrap: int = 1000,
-#                                   seed: Optional[int] = None,
-#                                  method: Optional[str] = 'auto',
-#                                  variant: Optional[str] = 'b',
-#                                   ) -> Tuple[float, float]:
-#     """
-#     Compute Kendall's tau correlation coefficient and its uncertainty via bootstrapping.
-    
-#     Parameters:
-#         x_data (np.ndarray): Array of x data values.
-#         y_data (np.ndarray): Array of y data values.
-#         x_err (Optional[np.ndarray]): Optional 1sigma errors on x data.
-#         y_err (Optional[np.ndarray]): Optional 1sigma errors on y data.
-#         n_bootstrap (int): Number of bootstrap samples to estimate uncertainty.
-#         seed (Optional[int]): Random seed for reproducibility.
-        
-#     Returns:
-#         tau (float): Kendall's tau coefficient.
-#         tau_std (float): Standard deviation (uncertainty) of tau.
-#     """
-#     rng = np.random.default_rng(seed)
-
-#     # Clean the data: remove NaNs, Infs
-#     mask = np.isfinite(x_data) & np.isfinite(y_data)
-#     if x_err is not None:
-#         mask &= np.isfinite(x_err)
-#     if y_err is not None:
-#         mask &= np.isfinite(y_err)
-
-#     x = np.asarray(x_data)[mask]
-#     y = np.asarray(y_data)[mask]
-
-#     if x_err is not None:
-#         x_err = np.asarray(x_err)[mask]
-#     if y_err is not None:
-#         y_err = np.asarray(y_err)[mask]
-
-#     if len(x) < 2:
-#         raise ValueError("Not enough valid data points after cleaning for Kendall's tau.")
-
-#     # Compute the main Kendall's tau
-#     tau, _ = kendalltau(x, y,variant=variant,method=method)
-
-#     # Bootstrap sampling
-#     tau_samples = []
-#     for _ in range(n_bootstrap):
-#         # Resample with replacement
-#         indices = rng.choice(len(x), len(x), replace=True)
-
-#         x_sample = x[indices]
-#         y_sample = y[indices]
-
-#         # If errors provided, perturb values with Gaussian noise
-#         if x_err is not None:
-#             x_sample = rng.normal(x_sample, x_err[indices])
-#         if y_err is not None:
-#             y_sample = rng.normal(y_sample, y_err[indices])
-
-#         # Compute tau on the bootstrap sample
-#         try:
-#             tau_boot, _ = kendalltau(x_sample, y_sample)
-#             if np.isfinite(tau_boot):
-#                 tau_samples.append(tau_boot)
-#         except Exception:
-#             continue  # skip if kendalltau fails for some resample
-
-#     tau_std = np.std(tau_samples) if len(tau_samples) > 1 else np.nan
-
-#     return tau, tau_std
-
-
 
 # import numpy as np
 # from scipy.stats import kendalltau
@@ -2591,7 +2366,7 @@ def spectral_correction(data, data_frequency, target_frequency, spectral_index):
     freq_ratio = target_frequency / data_frequency
     
     # Apply the power-law correction
-    # S_target = S_ref × (nu_target/nu_ref)^alpha
+    # S_target = S_ref Ã- (nu_target/nu_ref)^alpha
     correction_factor = freq_ratio ** spectral_index
     
     # Apply correction
@@ -2991,7 +2766,7 @@ def intensity_weighted_morpho(image, mask, scale=1.0, do_plot=False, weight_powe
             # from astropy.visualization import simple_norm
             # from astropy.stats import mad_std
             norm = simple_norm(image, stretch='sqrt', asinh_a=0.02, 
-                             min_cut=3*mad_std(image), max_cut=0.2*np.nanmax(image))
+                             vmin=3*mad_std(image), vmax=0.2*np.nanmax(image))
             plt.imshow(image, cmap='gray', origin='lower', norm=norm)
         except ImportError:
             plt.imshow(image, cmap='gray', origin='lower', 
@@ -3059,3 +2834,535 @@ def intensity_weighted_morpho(image, mask, scale=1.0, do_plot=False, weight_powe
     }
     
     return report
+
+def _jackknife_uncertainties(g, levels, beam_area_):
+    """
+    Calculate uncertainties using the jackknife resampling method
+    """
+    ny, nx = g.shape
+    block_size = max(ny // 10, nx // 10, 1) # Define block size for jackknife       
+    jackknife_fluxes = []
+    for by in range(0, ny, block_size):
+        for bx in range(0, nx, block_size):
+            # Create a copy of the data
+            g_jack = g.copy()
+            # Mask out the current block
+            g_jack[by:by+block_size, bx:bx+block_size] = np.nan
+            # Calculate fluxes for each level
+            fluxes_jack = []
+            for i in range(len(levels)):
+                if i == 0:
+                    condition = (g_jack >= levels[i])
+                else:
+                    condition = ((g_jack < levels[i - 1]) & (g_jack >= levels[i]))
+                flux = np.nansum(g_jack * condition) / beam_area_
+                fluxes_jack.append(flux)
+            jackknife_fluxes.append(fluxes_jack)
+    jackknife_fluxes = np.array(jackknife_fluxes)
+    n_jack = jackknife_fluxes.shape[0]
+    # Mean fluxes
+    fluxes = np.nanmean(jackknife_fluxes, axis=0)
+    # Jackknife errors
+    flux_errors = np.sqrt((n_jack - 1) / n_jack *
+                            np.nansum((jackknife_fluxes - fluxes[None, :])**2, axis=0))
+    # Cumulative quantities
+    Lgrow = np.nancumsum(fluxes)
+    jackknife_Lgrow = np.nancumsum(jackknife_fluxes, axis=1
+    )
+    Lgrow_errors = np.sqrt((n_jack - 1) / n_jack *
+                            np.nansum((jackknife_Lgrow - Lgrow[None, :])**2, axis=0))
+    # Calculate areas
+    areas = []
+    for i in range(len(levels)):
+        if i == 0:
+            condition = (g >= levels[i])
+        else:
+            condition = ((g < levels[i - 1]) & (g >= levels[i]))
+        areas.append(np.nansum(condition))
+    areas = np.array(areas)
+    return fluxes, flux_errors, Lgrow, Lgrow_errors, areas
+
+
+
+def create_radial_mask(mask, centre=None, max_radius=None,
+                       iterations=5,dilation_size=5):
+
+    # Get the shape of the mask
+    y, x = np.indices(mask.shape)
+    if centre is None:
+        centre = (mask.shape[1]/2,mask.shape[0]/2)
+        print(f'Using centre {max_radius}')
+    if max_radius is None:
+        max_radius = mask.shape[0]/10
+        print(f'Using max radius of {max_radius}')
+    
+    # Calculate the distance from the center
+    distance_from_centre = np.sqrt((x - centre[1])**2 + (y - centre[0])**2)
+    
+    # Create a new mask that keeps only pixels within the max_radius
+    radial_mask = distance_from_centre <= max_radius
+    
+    # Apply the radial mask to the original mask
+    new_mask = mask * radial_mask
+    _,mask_region = mask_dilation_from_mask(mask,new_mask,
+                                                 iterations=iterations,dilation_size=dilation_size,
+                                                 PLOT=False,show_figure=False)
+
+    _,mask_for_fit = mask_dilation_from_mask(mask,new_mask,
+                                                 iterations=iterations,dilation_size=dilation_size*2,
+                                                 PLOT=False,show_figure=False)
+
+    plt.figure()
+    plt.imshow(mask_region,origin='lower',cmap='magma')
+    plt.show()
+
+    plt.figure()
+    plt.imshow(mask_for_fit,origin='lower',cmap='magma')
+    plt.show()
+
+    
+    return mask_region,mask_for_fit
+
+
+
+def elliptical_radial_profile(
+    image,
+    x0,
+    y0,
+    pa_deg,
+    q,
+    beam_area,
+    rms=None,
+    delta_r=1.0,
+    sigma_clip_val=3.0,
+    wedge_half_angle_deg=22.5,
+    mask=None,
+    beam_correction=True,
+):
+    """
+    Compute elliptical radial intensity profiles and luminosity growth curves
+    with full directional decomposition along the major axis, minor axis, and
+    diagonal direction.
+
+    This function is a geometry-aware replacement for the level-based profiling
+    in ``compute_image_properties``.  It returns the same named quantities
+    (``fluxes``, ``fluxes_err``, ``areas``, ``agrow``, ``Lgrow``,
+    ``Lgrow_err``, ``Lgrow_norm``, ``Lgrow_err_norm``, ``radii``) so it can
+    be used as a drop-in, while also returning directional profiles and the raw
+    semi-major-axis grid.
+
+    The coordinate transform is::
+
+        xl =  (x - x0)*cos(PA) + (y - y0)*sin(PA)   # major-axis frame
+        yl = -(x - x0)*sin(PA) + (y - y0)*cos(PA)   # minor-axis frame
+        rl =  sqrt(xl^2 + (yl/q)^2)                    # elliptical radius (= semi-major axis)
+        φ  =  arctan2(yl/q, xl)                      # azimuthal angle in de-projected frame
+
+    The four radius conventions returned are:
+
+    * ``radii_major``  = a               (projection along major axis)
+    * ``radii_minor``  = a x q           (projection along minor axis)
+    * ``radii_diag``   = a x qx sqrt 2 /  sqrt (q^2+1)  (45^o between axes)
+    * ``radii_circ``   = a x  sqrt q          (area-equivalent circular radius)
+
+    The main ``radii`` key equals ``radii_circ`` so it is directly comparable
+    with the level-based (isophotal) radii produced elsewhere.
+
+    Uncertainty model
+    -----------------
+    Within each annulus the effective number of independent resolution elements
+    is ``N_eff = N_pix / beam_area``.  The uncertainty on the mean intensity
+    (IR) and on the per-annulus flux contribution are:
+
+        IR_err  = sigma_clip /  sqrt N_eff
+        flux_err = sigma_clip x  sqrt N_eff        (= IR_err x N_pix / beam_area)
+
+    where ``sigma_clip`` is the sigma-clipped standard deviation of pixel values
+    in the annulus.  This correctly accounts for beam-to-beam correlations; the
+    naive independent-pixel formula (used in the old level-based code) over-
+    estimates errors by a factor of  sqrt beam_area.
+
+    The cumulative (growth-curve) error is the quadrature sum of per-annulus
+    flux errors, which is exact for independent annuli.
+
+    Parameters
+    ----------
+    image : 2-D ndarray
+        Image data in Jy/beam (radio) or any flux-per-pixel unit (optical).
+    x0, y0 : float
+        Centre pixel coordinates (x = column, y = row).
+    pa_deg : float
+        Position angle of the major axis in degrees, measured from the
+        positive x-axis (column axis) towards the positive y-axis (row axis),
+        consistent with the convention in morfometryka.
+    q : float
+        Axis ratio b/a (0 < q <~ 1).  q = 1 gives circular apertures.
+    beam_area : float
+        Beam area in pixels (output of ``beam_area2``).  Set to 1 for optical
+        data where one pixel is one resolution element.
+    rms : float, optional
+        Global noise estimate.  If None, estimated via ``mad_std`` on finite
+        pixel values.  Used as a fallback std when an annulus is too sparsely
+        populated for sigma-clipping.
+    delta_r : float, optional
+        Semi-major-axis step in pixels (default 1.0).
+    sigma_clip_val : float, optional
+        Rejection threshold for sigma-clipping within each annulus (default 3).
+    wedge_half_angle_deg : float, optional
+        Half-angular width of each directional wedge in degrees (default 22.5^o,
+        giving a 45^o-wide wedge symmetric about each axis including its
+        antipode).
+    mask : 2-D bool ndarray, optional
+        External validity mask (True = include pixel).  Combined with a
+        ``np.isfinite`` check.  If None, all finite pixels are used.
+    beam_correction : bool, optional
+        If True (default) use the beam-correlated flux-error formula
+        ``sigma x  sqrt N_eff``.  Set to False to reproduce the naive independent-pixel
+        formula ``sigma x  sqrt N_pix / beam_area`` used in the old code.
+
+    Returns
+    -------
+    dict
+        Keys listed below.  Arrays that depend on the semi-major-axis grid
+        (``sma``) all have the same length *before* duplicate removal.
+        ``fluxes``, ``fluxes_err``, ``areas``, ``agrow``, ``IR*``, ``radii_*``,
+        and ``sma`` all share the same length N (= len(sma)).
+        ``Lgrow*``, ``Lgrow_norm*``, and ``radii`` (main) may be shorter if
+        duplicate flux values were merged.
+
+        Drop-in equivalents
+        ~~~~~~~~~~~~~~~~~~~
+        fluxes          per-annulus flux density [Jy]
+        fluxes_err      per-annulus flux uncertainty
+        areas           number of pixels per annulus
+        agrow           copy of areas (alias, for backward compatibility)
+        Lgrow           cumulative flux growth curve
+        Lgrow_err       cumulative flux uncertainty (quadrature)
+        Lgrow_norm      Lgrow / total_flux
+        Lgrow_err_norm  Lgrow_err / total_flux
+        radii           area-equivalent circular radius (= radii_circ,
+                        after duplicate removal; matches level-based radii)
+
+        Semi-major-axis grid
+        ~~~~~~~~~~~~~~~~~~~~
+        sma             semi-major axis values used [pixels]
+
+        Four radius representations  (length N, *not* deduplicated)
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        radii_major     a  [pixels]
+        radii_minor     a x q
+        radii_diag      a x qx sqrt 2 /  sqrt (q^2+1)
+        radii_circ      a x  sqrt q  (same as radii before dedup)
+
+        Full-annulus intensity profiles
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        IR              sigma-clipped mean intensity per annulus
+        IR_err          uncertainty on IR
+
+        Directional intensity profiles  (major / minor / diagonal)
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        IR_major, IR_major_err
+        IR_minor, IR_minor_err
+        IR_diag,  IR_diag_err
+
+        Directional growth curves
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~
+        Lgrow_major,  Lgrow_major_err,  Lgrow_major_norm
+        Lgrow_minor,  Lgrow_minor_err,  Lgrow_minor_norm
+        Lgrow_diag,   Lgrow_diag_err,   Lgrow_diag_norm
+
+    Notes
+    -----
+    The directional growth curves integrate *only* the flux inside each
+    directional wedge, so their normalised values represent how the emission
+    is distributed along that axis, not a global fraction of total flux.
+    To obtain a physically meaningful fraction of total flux use the main
+    ``Lgrow_norm``.
+    """
+    from astropy.stats import sigma_clipped_stats, mad_std as _mad_std
+
+    g = np.asarray(image, dtype=float)
+    ny, nx = g.shape
+
+    # ------------------------------------------------------------------ noise
+    if rms is None:
+        finite_vals = g[np.isfinite(g)]
+        rms = _mad_std(finite_vals) if finite_vals.size > 0 else 1.0
+
+    # ----------------------------------------------------------- validity mask
+    if mask is None:
+        valid = np.isfinite(g)
+    else:
+        valid = np.asarray(mask, dtype=bool) & np.isfinite(g)
+
+    g_work = np.where(valid, g, np.nan)
+
+    # ------------------------------------------------- elliptical coordinates
+    xx, yy = np.meshgrid(np.arange(nx, dtype=float),
+                         np.arange(ny, dtype=float))
+
+    pa_rad = np.deg2rad(pa_deg)
+    cos_pa, sin_pa = np.cos(pa_rad), np.sin(pa_rad)
+
+    xl =  (xx - x0) * cos_pa + (yy - y0) * sin_pa   # along major axis
+    yl = -(xx - x0) * sin_pa + (yy - y0) * cos_pa   # along minor axis
+
+    # elliptical radius = semi-major axis equivalent
+    rl = np.sqrt(xl ** 2 + (yl / q) ** 2)
+
+    # azimuthal angle in the de-projected frame (φ=0 → major, φ=pi/2 → minor)
+    phi = np.arctan2(yl / q, xl)                      # [-pi, pi]
+
+    # ----------------------------------------------- semi-major-axis grid
+    r_max = np.hypot(ny, nx)
+    sma   = np.arange(delta_r, r_max, delta_r)        # semi-major axis values
+    dee   = 0.5 * np.gradient(sma)                    # half-annulus width
+    N     = len(sma)
+
+    # ------------------------------------------------- pre-compute wedge maps
+    # Each wedge covers both sides of the axis (the annulus half on each side),
+    # giving full 360^o sampling split into three overlapping sectors.
+    dphi = np.deg2rad(wedge_half_angle_deg)
+
+    def _angular_distance(phi_arr, phi_center):
+        """Unsigned angular distance, wrapped to [0, pi]."""
+        d = phi_arr - phi_center
+        return np.abs(np.arctan2(np.sin(d), np.cos(d)))
+
+    # True where φ is within dphi of φ_center *or* its antipode (φ_center +/- pi)
+    def _wedge(phi_center):
+        d      = _angular_distance(phi, phi_center)
+        d_anti = _angular_distance(phi, phi_center + np.pi)
+        return (d < dphi) | (d_anti < dphi)
+
+    wedge_major = _wedge(0.0)          # along major axis (φ=0, 180^o)
+    wedge_minor = _wedge(np.pi / 2.0)  # along minor axis (φ=90, 270^o)
+    wedge_diag  = _wedge(np.pi / 4.0)  # diagonal         (φ=45, 225^o)
+
+    # -------------------------------------------- per-annulus statistics helper
+    def _annulus_stats(pix_vals):
+        """
+        Sigma-clipped mean, std and derived flux quantities for a pixel
+        sample from one annulus (or wedge).
+
+        Returns (mean, mean_err, flux, flux_err, n_pix).
+        All values are NaN when fewer than 1 valid pixel is present.
+        """
+        finite = pix_vals[np.isfinite(pix_vals)]
+        n_pix  = finite.size
+
+        if n_pix == 0:
+            return np.nan, np.nan, np.nan, np.nan, 0
+
+        if n_pix < 3:
+            mean  = float(np.nanmean(finite))
+            std   = rms
+        else:
+            try:
+                mean, _, std = sigma_clipped_stats(finite,
+                                                   sigma=sigma_clip_val,
+                                                   maxiters=5)
+                if not np.isfinite(std) or std <= 0.0:
+                    std = rms
+            except Exception:
+                mean = float(np.nanmean(finite))
+                std  = rms
+
+        n_eff    = max(n_pix / beam_area, 1.0)   # independent resolution elements
+        mean_err = std / np.sqrt(n_eff)           # uncertainty on the mean
+
+        flux     = float(np.nansum(finite)) / beam_area  # Jy (or flux-unit)
+
+        # Beam-corrected flux error (recommended):
+        #   flux_err = sigma x  sqrt N_eff  (independent beams add in quadrature)
+        # Naive formula (old code, over-estimates by  sqrt beam_area):
+        #   flux_err = sigma x  sqrt N_pix / beam_area
+        if beam_correction:
+            flux_err = std * np.sqrt(n_eff)
+        else:
+            flux_err = std * np.sqrt(max(n_pix, 1)) / beam_area
+
+        return mean, mean_err, flux, flux_err, n_pix
+
+    # ---------------------------------------------------- allocate output arrays
+    IR            = np.full(N, np.nan)
+    IR_err        = np.full(N, np.nan)
+    IR_major      = np.full(N, np.nan);  IR_major_err = np.full(N, np.nan)
+    IR_minor      = np.full(N, np.nan);  IR_minor_err = np.full(N, np.nan)
+    IR_diag       = np.full(N, np.nan);  IR_diag_err  = np.full(N, np.nan)
+
+    fluxes        = np.full(N, np.nan)
+    fluxes_err    = np.full(N, np.nan)
+    areas         = np.zeros(N, dtype=float)
+
+    fluxes_major  = np.full(N, np.nan);  fluxes_major_err = np.full(N, np.nan)
+    fluxes_minor  = np.full(N, np.nan);  fluxes_minor_err = np.full(N, np.nan)
+    fluxes_diag   = np.full(N, np.nan);  fluxes_diag_err  = np.full(N, np.nan)
+
+    # ----------------------------------------------------------- radial loop
+    for i, a in enumerate(sma):
+        d   = dee[i]
+        ann = valid & (rl > (a - d)) & (rl <= (a + d))
+
+        m, m_err, f, f_err, n = _annulus_stats(g_work[ann])
+        IR[i]       = m
+        IR_err[i]   = m_err
+        fluxes[i]   = f
+        fluxes_err[i] = f_err
+        areas[i]    = n
+
+        # directional wedge profiles - pixels must also belong to the annulus
+        for wmask, ir_out, ir_err_out, fx_out, fx_err_out in (
+            (wedge_major, IR_major, IR_major_err, fluxes_major, fluxes_major_err),
+            (wedge_minor, IR_minor, IR_minor_err, fluxes_minor, fluxes_minor_err),
+            (wedge_diag,  IR_diag,  IR_diag_err,  fluxes_diag,  fluxes_diag_err),
+        ):
+            wann = ann & wmask
+            wm, wm_err, wf, wf_err, _ = _annulus_stats(g_work[wann])
+            ir_out[i]     = wm
+            ir_err_out[i] = wm_err
+            fx_out[i]     = wf
+            fx_err_out[i] = wf_err
+
+    # ------------------------------------------------- four radius conventions
+    # At azimuthal angle φ on the ellipse at semi-major axis a, the Euclidean
+    # distance from the centre to the ellipse boundary is:
+    #   r(a, φ) = a x q /  sqrt (q^2xcos^2φ + sin^2φ)
+    # which gives:
+    #   φ = 0   → r = a                               (major axis)
+    #   φ = pi/2 → r = a x q                           (minor axis)
+    #   φ = pi/4 → r = a x qx sqrt 2 /  sqrt (q^2+1)             (diagonal)
+    # Area-equivalent circle (ellipse area = pixa^2xq → r_circ = ax sqrt q):
+    radii_major = sma.copy()
+    radii_minor = sma * q
+    radii_diag  = sma * q * np.sqrt(2.0) / np.sqrt(q ** 2 + 1.0)
+    radii_circ  = sma * np.sqrt(q)
+
+    # -------------------------------------------- cumulative growth curves
+    def _growth_curve(fx, fx_err):
+        """Build cumulative flux, error (quadrature), and normalised versions."""
+        Lg       = np.nancumsum(fx)
+        Lg_err   = np.sqrt(np.nancumsum(np.where(np.isfinite(fx_err),
+                                                  fx_err ** 2, 0.0)))
+        total    = np.nansum(fx)
+        if total > 0:
+            Lg_norm     = Lg / total
+            Lg_norm_err = Lg_err / total
+        else:
+            Lg_norm     = np.full_like(Lg, np.nan)
+            Lg_norm_err = np.full_like(Lg_err, np.nan)
+        return Lg, Lg_err, Lg_norm, Lg_norm_err
+
+    Lgrow,       Lgrow_err,       Lgrow_norm,       Lgrow_err_norm       = _growth_curve(fluxes,       fluxes_err)
+    Lgrow_major, Lgrow_major_err, Lgrow_major_norm, _                    = _growth_curve(fluxes_major, fluxes_major_err)
+    Lgrow_minor, Lgrow_minor_err, Lgrow_minor_norm, _                    = _growth_curve(fluxes_minor, fluxes_minor_err)
+    Lgrow_diag,  Lgrow_diag_err,  Lgrow_diag_norm,  _                    = _growth_curve(fluxes_diag,  fluxes_diag_err)
+
+    # ---- duplicate removal on the main growth curve (matches existing code) ---
+    agrow = areas.copy()
+    Lgrow, radii_main = check_flux_duplicates(Lgrow, radii_circ.copy())
+    n_dedup       = len(Lgrow)
+    Lgrow_err     = Lgrow_err[:n_dedup]
+    Lgrow_norm    = Lgrow_norm[:n_dedup]
+    Lgrow_err_norm = Lgrow_err_norm[:n_dedup]
+
+    # ------------------------------------------------------------------ output
+    return dict(
+        # --- drop-in equivalents (same names as level-based code) ---
+        fluxes          = fluxes,
+        fluxes_err      = fluxes_err,
+        areas           = areas,
+        agrow           = agrow,
+        Lgrow           = Lgrow,
+        Lgrow_err       = Lgrow_err,
+        Lgrow_norm      = Lgrow_norm,
+        Lgrow_err_norm  = Lgrow_err_norm,
+        radii           = radii_main,    # area-equivalent; length may differ from N
+        # --- semi-major-axis grid (length N) ---
+        sma             = sma,
+        # --- four radius representations (length N, not deduplicated) ---
+        radii_major     = radii_major,
+        radii_minor     = radii_minor,
+        radii_diag      = radii_diag,
+        radii_circ      = radii_circ,    # same as radii before dedup
+        # --- full-annulus intensity profile ---
+        IR              = IR,
+        IR_err          = IR_err,
+        # --- directional intensity profiles ---
+        IR_major        = IR_major,
+        IR_major_err    = IR_major_err,
+        IR_minor        = IR_minor,
+        IR_minor_err    = IR_minor_err,
+        IR_diag         = IR_diag,
+        IR_diag_err     = IR_diag_err,
+        # --- directional growth curves (length N, not deduplicated) ---
+        Lgrow_major      = Lgrow_major,
+        Lgrow_major_err  = Lgrow_major_err,
+        Lgrow_major_norm = Lgrow_major_norm,
+        Lgrow_minor      = Lgrow_minor,
+        Lgrow_minor_err  = Lgrow_minor_err,
+        Lgrow_minor_norm = Lgrow_minor_norm,
+        Lgrow_diag       = Lgrow_diag,
+        Lgrow_diag_err   = Lgrow_diag_err,
+        Lgrow_diag_norm  = Lgrow_diag_norm,
+    )
+
+
+
+def test_ned_connectivity(timeout=10, verbose=True):
+    """
+    Quick connectivity test for the NED service.
+
+    Queries a well-known source (M31) with a short timeout and reports
+    latency and status. Useful for diagnosing network issues before
+    running batch queries.
+
+    Parameters
+    ----------
+    timeout : int, optional
+        Seconds to wait before declaring failure. Default: 10
+    verbose : bool, optional
+        Print a human-readable status line. Default: True
+
+    Returns
+    -------
+    reachable : bool
+        True if NED responded successfully.
+    latency : float or None
+        Round-trip time in seconds, or None on failure.
+    """
+    import time
+    from astroquery.ipac.ned import Ned
+    from requests.exceptions import ReadTimeout, ConnectionError as ReqConnectionError
+
+    probe_source = 'M31'
+    Ned.TIMEOUT = timeout
+
+    t0 = time.perf_counter()
+    try:
+        result = Ned.query_object(probe_source)
+        latency = time.perf_counter() - t0
+        z = result['Redshift'].data.data[0]
+        if verbose:
+            print(f"[+] NED reachable  |  latency={latency:.2f}s  |  "
+                  f"probe={probe_source}  z={z:.4f}")
+        return True, latency
+
+    except (ReadTimeout, TimeoutError):
+        latency = time.perf_counter() - t0
+        if verbose:
+            print(f"[!] NED TIMEOUT after {latency:.1f}s  "
+                  f"(host=ned.ipac.caltech.edu, timeout={timeout}s)")
+        return False, None
+
+    except ReqConnectionError as e:
+        if verbose:
+            print(f"[!] NED CONNECTION ERROR: {e}")
+        return False, None
+
+    except Exception as e:
+        if verbose:
+            print(f"[!] NED unexpected error: {e}")
+        return False, None
+
+
