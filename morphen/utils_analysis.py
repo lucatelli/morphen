@@ -144,6 +144,112 @@ def get_fits_list_names(root_path,prefix='*.fits'):
 #     return (values)
 
 
+#: Label columns every row of a decomposition table carries. They are written in
+#: this order, ahead of the `measures()` columns, so the table is readable when
+#: printed and so `pd.concat` across images/frequencies lines up.
+DECOMP_LABEL_COLUMNS = ('imagename', 'freq', 'kind', 'comp_ID', 'region_ID',
+                        'domain', 'is_compact', 'has_compact', 'n_comps_region',
+                        'region_area_completeness', 'region_flux_completeness',
+                        'region_overlap_fraction')
+
+#: Allowed values of the `kind` column.
+#:
+#:   total          the whole source, measured on the data
+#:   component      one fitted model component
+#:   compact_sum    the sum of the components listed in `comp_ids`
+#:   diffuse_sum    data minus `compact_sum` (DATA-driven, not the diffuse model)
+#:   region_data    one detected region, measured on the data
+#:   region_diffuse one detected region, minus that region's compact components
+#:   decomposition  the `dec_*` scalars from `plot_decomp_results`
+DECOMP_KINDS = ('total', 'component', 'compact_sum', 'diffuse_sum',
+                'region_data', 'region_diffuse', 'decomposition')
+
+
+def decomp_rows(props, kind, imagename=None, freq=None, domain='data',
+                comp_ID=0, region_ID=0, is_compact=None, has_compact=None,
+                n_comps_region=None, region_area_completeness=None,
+                region_flux_completeness=None, region_overlap_fraction=None):
+    """
+    Tag one `measures()` result (or a list of them) with the decomposition
+    labels, returning a list of flat dicts ready for `pd.DataFrame`.
+
+    This is deliberately a labelling function and nothing more -- it does not
+    measure, derive or rename anything. Every existing DataFrame keeps its own
+    values; the long table is these same rows with `kind`/`comp_ID`/`domain`
+    attached so they can be concatenated and filtered instead of being pulled
+    apart by hand.
+
+    Parameters
+    ----------
+    props : dict or sequence of dict
+        One or more `measures()` property dicts.
+    kind : str
+        One of `DECOMP_KINDS`.
+    comp_ID, region_ID : int
+        1-indexed; 0 means "not a single component" / "not a single region".
+    domain : str
+        'data', 'conv' or 'deconv'.
+    is_compact : bool, optional
+        Component rows only: was this ID listed in `comp_ids`.
+    has_compact, n_comps_region : optional
+        Region rows only.
+    region_area_completeness, region_flux_completeness : float, optional
+        Region rows only, and the same for every region of one image: the
+        fraction of the reference aperture's area and flux that the union of all
+        region apertures covered. Below 1.0 means part of `mask_region` is
+        disconnected from every deblended core, which is what explains
+        sum(region flux) < total_flux_mask.
+    region_overlap_fraction : float, optional
+        Region rows only: how much the region apertures overlap each other, as a
+        fraction of their union. 0.0 means a clean partition. Read it together
+        with the completeness above -- apertures can cover the reference mask
+        fully and still double-count, which shows up here and nowhere else.
+
+    Returns
+    -------
+    list of dict
+    """
+    if isinstance(props, dict):
+        props = [props]
+    rows = []
+    for entry in props:
+        row = {'kind': kind, 'comp_ID': int(comp_ID),
+               'region_ID': int(region_ID), 'domain': domain,
+               'is_compact': is_compact, 'has_compact': has_compact,
+               'n_comps_region': n_comps_region,
+               'region_area_completeness': region_area_completeness,
+               'region_flux_completeness': region_flux_completeness,
+               'region_overlap_fraction': region_overlap_fraction}
+        if imagename is not None:
+            row['imagename'] = os.path.basename(imagename)
+        if freq is not None:
+            row['freq'] = freq
+        # The measured columns win over anything above sharing their name, so a
+        # `measures()` result that already carries e.g. `comp_ID` is not
+        # silently overwritten by the label.
+        row.update(entry)
+        rows.append(row)
+    return rows
+
+
+def assemble_decomp_table(rows):
+    """
+    Turn accumulated `decomp_rows` output into a DataFrame with the label
+    columns first and `comp_ID`/`region_ID` as integers.
+
+    Empty input gives an empty frame carrying just the label columns, so callers
+    can concatenate unconditionally.
+    """
+    if not rows:
+        return pd.DataFrame(columns=list(DECOMP_LABEL_COLUMNS))
+    df = pd.DataFrame(rows)
+    for col in ('comp_ID', 'region_ID'):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
+    lead = [c for c in DECOMP_LABEL_COLUMNS if c in df.columns]
+    return df[lead + [c for c in df.columns if c not in lead]]
+
+
 def compute_model_properties(model_list,  # the model list of each component
                              which_model,  # `convolved` or `deconvolved`?
                              residualname,
