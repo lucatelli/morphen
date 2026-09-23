@@ -40,7 +40,7 @@ def reset_rc_params():
                             # 'text.usetex' : True,
                             # 'font.family' : 'serif',
                             # 'font.serif' : ['Garamond Libre', 'EB Garamond', 'Cormorant Garamond', 'serif'],
-                            #  'text.latex.preamble': r'''
+                            #     'text.latex.preamble': r'''
                             #     \usepackage{ebgaramond-maths}
                             #     \usepackage{garamondlibre}
                             #     \usepackage{amsmath}
