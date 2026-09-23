@@ -1,3 +1,30 @@
+# Nominal pivot wavelengths in Angstroms, keyed by the FILTER keyword. Used
+# wherever a header names a filter but does not state its wavelength -- JWST
+# i2d products carry no PHOTPLAM at all, and neither do some HST cutouts. Read
+# by `get_frequencies` below and by `read_data.get_filter_info` (via
+# `mlibs.FILTER_PIVOT_WAVELENGTHS`); keep it here so the two cannot drift apart.
+#
+# These are band-nominal, good to roughly a percent, and no substitute for a
+# real filter curve. Single-letter bands (HSC, Legacy Survey) are deliberately
+# NOT in here -- 'g'/'r'/'i' mean different passbands on different instruments,
+# so those live in per-instrument tables on `read_data`.
+FILTER_PIVOT_WAVELENGTHS = {
+    # JWST NIRCam
+    'F070W': 7040, 'F090W': 9010, 'F115W': 11543, 'F150W': 15007,
+    'F200W': 19886, 'F277W': 27635, 'F356W': 35682, 'F444W': 44040,
+    # JWST MIRI
+    'F560W': 56300, 'F770W': 76900, 'F1000W': 99300, 'F1280W': 128300,
+    'F1500W': 150700, 'F1800W': 178800, 'F2100W': 208600, 'F2550W': 254500,
+    # HST WFC3 IR
+    'F098M': 9864, 'F105W': 10552, 'F110W': 11534, 'F125W': 12486,
+    'F140W': 13923, 'F160W': 15369,
+    # HST WFC3 UVIS
+    'F218W': 2228, 'F225W': 2359, 'F275W': 2710, 'F336W': 3355,
+    'F390W': 3923, 'F438W': 4326, 'F475W': 4773, 'F555W': 5308,
+    'F606W': 5887, 'F625W': 6242, 'F775W': 7651, 'F814W': 8024,
+}
+
+
 def write_data_for_SED_fitter(freq, flux, flux_err, theta1, theta2, flag, filename):
     with open(filename, 'w') as file:
         # Writing the header
@@ -21,7 +48,7 @@ def write_data_for_SED_fitter_v2(freq, flux, flux_err, flux_err_3, theta1, theta
         file.write("#--------------------------------------------------------------------------\n")
         
         # Writing the data
-        for f, _flux, _flux_err, _flux_err_3, t1, t2, fl in zip(freq, flux, flux_err, flux_err_3, theta1, theta2, flag):
+        for f, _flux, _flux_err, _fluxde_err_3, t1, t2, fl in zip(freq, flux, flux_err, flux_err_3, theta1, theta2, flag):
             file.write(f"{f:.5f}   {_flux:.5f}    {_flux_err:.5f}    {_flux_err_3:.5f}     {t1:.2f}     {t2:.2f}     {fl}\n")
 
 def prepare_data(root_paths,prefix_images):
@@ -47,7 +74,8 @@ def prepare_data(root_paths,prefix_images):
     for image in imagelist:
         print(i, '>>', os.path.basename(image))
         i = i + 1    
-    freqlist_MFS = getfreqs(imagelist)
+    # freqlist_MFS = getfreqs(imagelist)
+    freqlist_MFS = getfreqs(MFS_images)
 
 
     imagelist_beam,residuallist_beam = \
@@ -84,32 +112,68 @@ def compute_image_stats_wsclean(path,
     prefix : str
         Prefix of the image files.
 
+    Notes
+    -----
+    Primary-beam-corrected images (``*-image-pb.fits``) are used by default.
+    If they are not present (e.g. simulated visibilities, for which no
+    primary beam correction can be applied), this function falls back to the
+    non-pb-corrected images (``*-image.fits``). Regardless of which version
+    is used for the statistics, the source mask (via `mask_dilation`) is
+    always computed from the non-pb-corrected image.
+
     """
-    file_list = glob.glob(f"{path}*{prefix}*MFS-image.fits")
+    file_list = glob.glob(f"{path}*{prefix}*MFS-image-pb.fits")
+    if not file_list:
+        # No pb-corrected images available -- fall back to the plain images.
+        file_list = glob.glob(f"{path}*{prefix}*MFS-image.fits")
     file_list.sort(key=os.path.getmtime, reverse=False)
     try:
         image_list[prefix] = file_list[-1]
     except:
         image_list[prefix] = file_list
-    image_list[prefix+'_residual'] = image_list[prefix].replace(
-        'MFS-image.fits', 'MFS-residual.fits')
-    image_list[prefix+'_model'] = image_list[prefix].replace(
-        'MFS-image.fits', 'MFS-model.fits')
+
+    use_pb = 'MFS-image-pb.fits' in image_list[prefix]
+    image_name_nonpb = image_list[prefix].replace('-pb.fits', '.fits')
+    if use_pb:
+        image_list[prefix+'_residual'] = image_list[prefix].replace(
+            'MFS-image-pb.fits', 'MFS-residual.fits')
+        image_list[prefix+'_model'] = image_list[prefix].replace(
+            'MFS-image-pb.fits', 'MFS-model-pb.fits')
+    else:
+        image_list[prefix+'_residual'] = image_list[prefix].replace(
+            'MFS-image.fits', 'MFS-residual.fits')
+        image_list[prefix+'_model'] = image_list[prefix].replace(
+            'MFS-image.fits', 'MFS-model.fits')
 
     sigma = 6.0
-    
 
-    level_stats = level_statistics(image_list[prefix],sigma=sigma)
+    rms_res = mad_std(load_fits_data(image_list[prefix+'_residual']), ignore_nan=True)
+    # print('RMS from residual map is ', rms_res)
+    # The mask is always computed from the non-pb-corrected image.
+    original_mask,dilated_mask = mask_dilation(
+        image_name_nonpb,
+        PLOT=False,
+        rms=rms_res,
+        sigma=sigma,
+        iterations=3)
+
+    level_stats = level_statistics(image_list[prefix],sigma=sigma,
+                                   rms=rms_res,
+                                   mask=dilated_mask)
     image_stats = get_image_statistics(imagename=image_list[prefix],
                                              residual_name = image_list[prefix+'_residual'],
                                              dic_data=level_stats,
-                                             sigma_mask=sigma)
+                                             sigma_mask=sigma,
+                                             mask=dilated_mask)
     img_props = compute_image_properties(image_list[prefix],
                                                image_list[prefix+'_residual'],
                                                results = image_stats,
                                                sigma_mask = sigma,
+                                               last_level=3.0,
+                                               mask=dilated_mask,
+                                               do_fit_ellipse = False,
+                                               verbose=1,
                                                show_figure=show_figure)[-1]
-
 
 
     image_statistics[prefix] = img_props
@@ -141,7 +205,7 @@ def run_wsclean(g_name, imsize='2048', imsizey='2048',cell='0.06asec',
                 savemodel=False,shift=None,
                 nsigma_automask='4.0', nsigma_autothreshold='2.0',
                 datacolumn='DATA',mask=None,
-                niter=1000,quiet=True,
+                niter=100000,quiet=True,
                 with_multiscale=False, scales='None',
                 uvtaper=[],nc = 4,
                 image_list={},image_statistics={},
@@ -160,6 +224,7 @@ def run_wsclean(g_name, imsize='2048', imsizey='2048',cell='0.06asec',
     print(' >> Imaging script path:',imaging_script_path)
     
     # os.system("export OPENBLAS_NUM_THREADS=1 && python /mnt/ext10TB/GitHub/morphen/selfcal/imaging_with_wsclean.py --f " +
+    # os.system("export OPENBLAS_NUM_THREADS=1 && python "+imaging_script_path+"/imaging_with_wsclean37.py --f " +
     os.system("export OPENBLAS_NUM_THREADS=1 && python "+imaging_script_path+"/imaging_with_wsclean.py --f " +
               g_name + " --sx "
               + str(imsize) + " --sy " + str(imsizey) + " --niter "
@@ -173,67 +238,80 @@ def run_wsclean(g_name, imsize='2048', imsizey='2048',cell='0.06asec',
               + " --r " + str(robust) + " --t "+str(uvtaper)
               + " --update_model " + str(savemodel) + " --save_basename " + base_name)
 
+
+    image_statistics,image_list = compute_image_stats_wsclean(path=os.path.dirname(g_name) + '/',
+                                                    image_list=image_list,
+                                                    image_statistics=image_statistics,
+                                                    prefix=base_name,
+                                                    )
+    print('Using residual map as RMS estimator:',image_list[base_name+'_residual'])
+    rms_mask = mad_std(load_fits_data(image_list[base_name+'_residual']))
+    # pb-corrected images are used by default, but may not exist (e.g.
+    # simulated visibilities); the mask is always built from the
+    # non-pb-corrected image.
+    use_pb = 'MFS-image-pb.fits' in image_list[base_name]
+    image_name_nonpb = image_list[base_name].replace('-pb.fits', '.fits')
+    mask_name,dilated_mask = create_wsclean_mask(
+        image_name_nonpb,
+        rms_mask=rms_mask,
+        sigma_mask=6.0,
+        mask_grow_iterations=2,
+        PLOT=True)
+
+
+
+#     eimshow(image_list[base_name],
+#                   rms=mad_std(load_fits_data(image_list[base_name+'_residual'])),
+#                   # crop=True,box_size=300,
+#                   crop=True,box_size=int(4*image_statistics[base_name]['C95radii']),
+#                   add_beam=True)
+
+
+    try:
+        centre = nd.maximum_position(load_fits_data(image_list[base_name]))[::-1]
+        # centre = (int(image_statistics[prefix]['y0']),int(image_statistics[prefix]['x0']))
+        fig = plt.figure(figsize=(16, 8))
+        ax0 = fig.add_subplot(1, 2, 2)
+        ax0 = eimshow(imagename = image_list[base_name],
+                            center=centre,
+                            projection = 'offset',plot_colorbar=True,
+                            vmax_factor=1.0,
+                            vmin_factor=2.0,
+                            plot_rms=True,
+                            rms=mad_std(load_fits_data(image_list[base_name + '_residual'])),
+                            # crop=True,box_size=300,
+                            figsize=(8, 8), ax=ax0,fig=fig,
+                            crop=True, box_size=int(4 * image_statistics[base_name]['C95radii']),
+                            # save_name=image_list[prefix].replace('.fits', '_map'),
+                            add_beam=True)
+        ax0.set_title(f'Radio Map')
+        ax1 = fig.add_subplot(1, 2, 1)
+        ax1 = eimshow(imagename = image_list[base_name + '_residual'],
+                            center=centre,
+                            projection='offset',
+                            vmin_factor=-3.0, vmax_factor=1.0,
+                            add_contours=False,
+                            figsize=(8, 8), ax=ax1,fig=fig,
+                            crop=True, box_size=int(4 * image_statistics[base_name]['C95radii']),
+                            save_name=image_list[base_name].replace('.fits', '_map'),
+                            plot_title = f'Residual Map', plot_colorbar=False,
+                            add_beam=False)
+
+    except:
+        print('--==>> Error on plotting radio map.')
+        pass
+
     if calculate_subband_fluxes:
-        image_statistics,image_list = compute_image_stats_wsclean(path=os.path.dirname(g_name) + '/',
-                                                        image_list=image_list,
-                                                        image_statistics=image_statistics,
-                                                        prefix=base_name)
-
-        print('Using residual map as RMS estimator:',image_list[base_name+'_residual'])
-        rms_mask = mad_std(load_fits_data(image_list[base_name+'_residual']))
-        mask_name,dilated_mask = create_wsclean_mask(image_list[base_name],
-                                             rms_mask=rms_mask,
-                                             sigma_mask=6.0,
-                                             mask_grow_iterations=2,
-                                             PLOT=True)
-
-
-    #     eimshow(image_list[base_name],
-    #                   rms=mad_std(load_fits_data(image_list[base_name+'_residual'])),
-    #                   # crop=True,box_size=300,
-    #                   crop=True,box_size=int(4*image_statistics[base_name]['C95radii']),
-    #                   add_beam=True)
-
-
-        try:
-            centre = nd.maximum_position(load_fits_data(image_list[base_name]))[::-1]
-            # centre = (int(image_statistics[prefix]['y0']),int(image_statistics[prefix]['x0']))
-            fig = plt.figure(figsize=(16, 8))
-            ax0 = fig.add_subplot(1, 2, 2)
-            ax0 = eimshow(imagename = image_list[base_name],
-                                center=centre,
-                                projection = 'offset',plot_colorbar=True,
-                                vmax_factor=1.0,
-                                vmin_factor=2.0,
-                                plot_rms=True,
-                                rms=mad_std(load_fits_data(image_list[base_name + '_residual'])),
-                                # crop=True,box_size=300,
-                                figsize=(8, 8), ax=ax0,fig=fig,
-                                crop=True, box_size=int(4 * image_statistics[base_name]['C95radii']),
-                                # save_name=image_list[prefix].replace('.fits', '_map'),
-                                add_beam=True)
-            ax0.set_title(f'Radio Map')
-            ax1 = fig.add_subplot(1, 2, 1)
-            ax1 = eimshow(imagename = image_list[base_name + '_residual'],
-                                center=centre,
-                                projection='offset',
-                                vmin_factor=-3.0, vmax_factor=1.0,
-                                add_contours=False,
-                                figsize=(8, 8), ax=ax1,fig=fig,
-                                crop=True, box_size=int(4 * image_statistics[base_name]['C95radii']),
-                                save_name=image_list[base_name].replace('.fits', '_map'),
-                                plot_title = f'Residual Map', plot_colorbar=False,
-                                add_beam=False)
-
-        except:
-            print('--==>> Error on plotting radio map.')
-            pass
-
-
-        sub_band_images = glob.glob(image_list[base_name].replace('-MFS-image.fits','')+'-????-image.fits')
+        if use_pb:
+            sub_band_images = glob.glob(image_list[base_name].replace('-MFS-image-pb.fits','')+'-????-image-pb.fits')
+        else:
+            sub_band_images = glob.glob(image_list[base_name].replace('-MFS-image.fits','')+'-????-image.fits')
         sub_band_residuals = []
         for i in range(len(sub_band_images)):
-            sub_band_residuals.append(sub_band_images[i].replace('-image.fits','-residual.fits'))
+            if use_pb:
+                sub_band_residuals.append(sub_band_images[i].replace('-image-pb.fits','-residual-pb.fits'))
+            else:
+                sub_band_residuals.append(sub_band_images[i].replace('-image.fits','-residual.fits'))
 
 
 
@@ -241,21 +319,22 @@ def run_wsclean(g_name, imsize='2048', imsizey='2048',cell='0.06asec',
         _FLUXES_err = []
     #     mask_MFS = load_fits_data(mask_name)
         for i in range(len(sub_band_images)):
-            print('++>> Computing flux density on sub-band image ',sub_band_images[i])
-            print('++>> Associated sub-band  residual image is ',sub_band_residuals[i])
+            # print('++>> Computing flux density on sub-band image ',sub_band_images[i])
+            # print('++>> Associated sub-band  residual image is ',sub_band_residuals[i])
 
             img_props = compute_image_properties(sub_band_images[i],
                                                     sub_band_residuals[i],
                                                     sigma_mask = 6.0,
-                                                    last_level=1.0,
+                                                    last_level=3.0,
                                                     mask=dilated_mask,
                                                     verbose=1,
-                                                    show_figure=True)[-1]
+                                                    do_fit_ellipse = False,
+                                                    show_figure=False)[-1]
 
-            # flux_density,flux_density_err = img_props['total_flux_levels'], img_props['flux_error_res_3']
-            flux_density,flux_density_err = img_props['total_flux_mask'], img_props['flux_error_res_3']
+            # flux_density,flux_density_err = img_props['total_flux_levels'], img_props['total_flux_error']
+            flux_density,flux_density_err = img_props['total_flux_mask'], img_props['total_flux_error']
 
-            print('Flux density = ', flux_density)
+            # print('Flux density = ', flux_density)
             _FLUXES.append(flux_density)
             _FLUXES_err.append(flux_density_err)
         FLUXES = np.asarray(_FLUXES)
@@ -284,9 +363,16 @@ def run_wsclean(g_name, imsize='2048', imsizey='2048',cell='0.06asec',
         print(f"                {Omaj:.3f} arcec            ")
         print('---------------------------------------------')
     else:
-        image_list = {}
-        image_statistics = {}
-        Omaj = None
+        try:
+            print('---------------------------------------------')
+            print('------------ RESTORING BEAM SIZE ------------')
+            Omaj,Omin, _, _, _ = beam_shape(image_list[base_name])
+            print(f"                {Omaj:.3f} arcec            ")
+            print('---------------------------------------------')
+        except:
+            image_list = {}
+            image_statistics = {}
+            Omaj = None
     
     return(image_list,image_statistics,Omaj)
 
@@ -335,61 +421,218 @@ def beam_area(Omaj, Omin, cellsize):
 
 def beam_area2(image, cellsize=None):
     '''
-    Computes the estimated projected beam area (theroetical),
-    given the semi-major and minor axis
-    and the cell size used during cleaning.
-    Return the beam area in pixels.
+    Computes the estimated projected beam area in pixels.
+    
+    For radio interferometry data, this calculates the Gaussian beam area
+    from the restoring beam parameters. For optical images without beam
+    information, returns 1.0 to indicate that one pixel represents one
+    resolution element.
+    
+    Parameters
+    ----------
+    image : str or ndarray
+        Image filename or data array
+    cellsize : float, optional
+        Cell size in arcsec. If None, extracted from image header.
+    
+    Returns
+    -------
+    BArea : float
+        Beam area in pixels. For radio data, this is the area of the
+        Gaussian beam. For optical data, returns 1.0 (one pixel per
+        resolution element).
     '''
     if cellsize is None:
         try:
             cellsize = get_cell_size(image)
         except:
-            print('Unable to read cell size from image header. '
-                  'Please, provide the cell size of the image!')
-            pass
-    imhd = imhead(image)
-    Omaj = imhd['restoringbeam']['major']['value']
-    Omin = imhd['restoringbeam']['minor']['value']
-    BArea = ((np.pi * Omaj * Omin) / (4 * np.log(2))) / (cellsize ** 2.0)
-    return (BArea)
+            print('Unable to read cell size from image header.')
+            print('Setting cell size to 1.0 arcsec/pixel.')
+            cellsize = 1.0
+    
+    try:
+        imhd = imhead(image)
+        Omaj = imhd['restoringbeam']['major']['value']
+        Omin = imhd['restoringbeam']['minor']['value']
+        # Radio data: compute Gaussian beam area in pixels
+        BArea = ((np.pi * Omaj * Omin) / (4 * np.log(2))) / (cellsize ** 2.0)
+        
+    except:
+        print('Unable to read beam shape from image header.')
+        print('Assuming 1 pixel represents one resolution element (typical for optical data).')
+        # Optical data: one pixel is one resolution element
+        BArea = 1.0
+    
+    return BArea
+
+# def getfreqs(fitslist):
+#     freqs = []
+#     for fitsfile in fitslist:
+#         hdu = fits.open(fitsfile)
+#         hdr = hdu[0].header
+#         freq = hdr['CRVAL3']
+#         freqs.append(freq)
+#     _freqs = np.array(freqs)
+#     return _freqs
 
 def getfreqs(fitslist):
+    """
+    Extract observing frequencies from a list of FITS files.
+    Handles both radio data cubes (with CRVAL3) and optical/IR imaging data
+    (using wavelength information to calculate frequency).
+    
+    Parameters
+    ----------
+    fitslist : list
+        List of paths to FITS files
+        
+    Returns
+    -------
+    freqs : numpy array
+        Array of frequencies in Hz
+    """
+    import numpy as np
+    from astropy.io import fits
+    from astropy.constants import c
+    
     freqs = []
+    
     for fitsfile in fitslist:
-        hdu = fits.open(fitsfile)
-        hdr = hdu[0].header
-        freq = hdr['CRVAL3']
-        freqs.append(freq)
-    _freqs = np.array(freqs)
-    return _freqs
+        freq = None
+        
+        try:
+            with fits.open(fitsfile) as hdu:
+                # Strategy 1: Look for frequency in CRVAL3 (radio data cubes)
+                # This is typical for VLA and ASKAP spectral cubes
+                if 'CRVAL3' in hdu[0].header:
+                    ctype3 = hdu[0].header.get('CTYPE3', '').upper()
+                    
+                    # Verify that axis 3 is actually frequency
+                    if 'FREQ' in ctype3:
+                        freq = hdu[0].header['CRVAL3']
+                        
+                        # Check units and convert if necessary
+                        cunit3 = hdu[0].header.get('CUNIT3', 'Hz').upper()
+                        if 'MHZ' in cunit3:
+                            freq *= 1e6  # Convert MHz to Hz
+                        elif 'GHZ' in cunit3:
+                            freq *= 1e9  # Convert GHz to Hz
+                        elif 'KHZ' in cunit3:
+                            freq *= 1e3  # Convert kHz to Hz
+                
+                # Strategy 2: Calculate frequency from wavelength (optical/IR data)
+                # This applies to JWST, HST, and optical surveys
+                if freq is None:
+                    # Look for pivot wavelength in Angstroms
+                    photplam = None
+                    for i, hdu_item in enumerate(hdu):
+                        if 'PHOTPLAM' in hdu_item.header:
+                            photplam = hdu_item.header['PHOTPLAM']
+                            break
+                    
+                    if photplam is not None:
+                        # PHOTPLAM is in Angstroms, convert to meters then to frequency
+                        wavelength_m = photplam * 1e-10
+                        freq = c.value / wavelength_m  # c in m/s, gives Hz
+                
+                # Strategy 3: Try to extract from filter name for known filters
+                if freq is None:
+                    filter_name = None
+                    for hdu_item in hdu:
+                        if 'FILTER' in hdu_item.header:
+                            filter_name = hdu_item.header['FILTER'].strip()
+                            break
+                    
+                    # Common filter pivot wavelengths, in Angstroms -- module
+                    # level so `read_data` shares the same numbers.
+                    filter_wavelengths = FILTER_PIVOT_WAVELENGTHS
+
+                    if filter_name and filter_name in filter_wavelengths:
+                        wavelength_m = filter_wavelengths[filter_name] * 1e-10
+                        freq = c.value / wavelength_m
+                        print(f"Note: Using approximate frequency for filter {filter_name}")
+                
+                # Strategy 4: Check for REST_FREQ keyword (sometimes used in radio data)
+                if freq is None:
+                    for hdu_item in hdu:
+                        if 'RESTFREQ' in hdu_item.header:
+                            freq = hdu_item.header['RESTFREQ']
+                            break
+                        elif 'RESTFRQ' in hdu_item.header:
+                            freq = hdu_item.header['RESTFRQ']
+                            break
+                
+                if freq is not None:
+                    freqs.append(freq)
+                else:
+                    print(f"Warning: Could not determine frequency for {fitsfile}")
+                    print(f"         No CRVAL3, PHOTPLAM, or recognizable filter found")
+                    freqs.append(np.nan)
+        
+        except Exception as e:
+            print(f"Error reading frequency from {fitsfile}: {e}")
+            freqs.append(np.nan)
+    
+    return np.array(freqs)
 
 def beam_shape(image):
     '''
-    Return the beam shape (bmin,bmaj,pa) from given image.
+    Return the beam shape (bmin, bmaj, pa) from given image.
     It uses CASA's function `imhead`.
-
+    
+    Returns
+    -------
+    Omaj : float
+        Beam major axis in arcsec
+    Omin : float
+        Beam minor axis in arcsec
+    PA : float
+        Position angle in degrees
+    freq : float
+        Reference frequency in GHz
+    BAarcsec : Quantity
+        Beam area in arcsec²
     '''
     import numpy as np
     from astropy import units as u
+    
     cell_size = get_cell_size(image)
-    imhd = imhead(image)
-    Omaj = imhd['restoringbeam']['major']['value']
-    Omin = imhd['restoringbeam']['minor']['value']
-    PA = imhd['restoringbeam']['positionangle']['value']
-    freq = imhd['refval'][2] / 1e9
-    """
-    bmaj,bmin,PA,freq = beam_shape(crop_image)
-    """
-    bmaj = Omaj*u.arcsec
-    bmin = Omin*u.arcsec
+    
+    try:
+        imhd = imhead(image)
+        Omaj = imhd['restoringbeam']['major']['value']
+        Omin = imhd['restoringbeam']['minor']['value']
+        PA = imhd['restoringbeam']['positionangle']['value']
+        freq = imhd['refval'][2] / 1e9
+        
+        # Compute beam area with Gaussian coefficient for radio data
+        bmaj = Omaj * u.arcsec
+        bmin = Omin * u.arcsec
+        fwhm_to_sigma = 1. / (8 * np.log(2))**0.5
+        BAarcsec = 2. * np.pi * (bmaj * bmin * fwhm_to_sigma**2)
+        
+    except:
+        print('---==>> Warning: Unable to read beam shape from image header!')
+        print('         Assuming 1 pixel represents one resolution element.')
+        
+        # For optical images: one pixel is one resolution element
+        Omaj = cell_size
+        Omin = cell_size
+        PA = 0.0
+        
+        # Try to get frequency, set to NaN if unavailable (typical for optical)
+        try:
+            freq = getfreqs([image])[0] / 1e9
+        except:
+            freq = np.nan
+            print('         Unable to determine frequency (typical for optical data).')
+        
+        # Direct pixel area without Gaussian coefficient
+        BAarcsec = (cell_size * u.arcsec)**2
+    
     freq_ = freq * u.GHz
-
-    fwhm_to_sigma = 1./(8*np.log(2))**0.5
-    BAarcsec = 2.*np.pi*(bmaj*bmin*fwhm_to_sigma**2)
-    # # BA
-    # equiv = u.brightness_temperature(freq_)
-    # (0.0520*u.Jy/BA).to(u.K, equivalencies=equiv)
-    return (Omaj,Omin,PA,freq,BAarcsec)
+    
+    return (Omaj, Omin, PA, freq, BAarcsec)
 
 def sort_list_by_beam_size(imagelist, residuallist=None,return_df=False):
     """
@@ -507,27 +750,45 @@ def get_beam_size_px(imagename):
     beam_size_px = np.sqrt(aO_px * bO_px)
     return(beam_size_px,aO_px,bO_px)
 
-def beam_physical_area(imagename,z):
+def beam_physical_area(imagename, z):
     '''
-    Return the beam shape (bmin,bmaj,pa) given an image.
+    Return the beam physical area and dimensions given an image and redshift.
     '''
     import numpy as np
     from astropy import units as u
+    
     cell_size = get_cell_size(imagename)
-    imhd = imhead(imagename)
-    Omaj = imhd['restoringbeam']['major']['value']
-    Omin = imhd['restoringbeam']['minor']['value']
-    """
-    bmaj,bmin,PA,freq = beam_shape(crop_image)
-    """
-    pc_scale = arcsec_to_pc(z=z,cell_size=cell_size)
-    bmaj = Omaj*pc_scale
-    bmin = Omin*pc_scale
-
-    fwhm_to_sigma = 1./(8*np.log(2))**0.5
-    BA_pc2 = 2.*np.pi*(bmaj*bmin*fwhm_to_sigma**2)
-
-    return (pc_scale,bmaj,bmin,BA_pc2)
+    pc_scale = arcsec_to_pc(z=z, cell_size=cell_size)
+    
+    try:
+        imhd = imhead(imagename)
+        Omaj = imhd['restoringbeam']['major']['value']
+        Omin = imhd['restoringbeam']['minor']['value']
+        
+        # Convert to physical units
+        bmaj = Omaj * pc_scale
+        bmin = Omin * pc_scale
+        
+        # Compute beam area in pc²
+        fwhm_to_sigma = 1. / (8 * np.log(2))**0.5
+        BA_pc2 = 2. * np.pi * (bmaj * bmin * fwhm_to_sigma**2)
+        
+    except:
+        print('Unable to read beam shape from image header. '
+              'Assuming 1 pixel represents one resolution element.')
+        
+        # For optical images: one pixel is one resolution element
+        Omaj = cell_size  # in arcsec
+        Omin = cell_size  # in arcsec
+        
+        # Convert to physical units
+        bmaj = Omaj * pc_scale
+        bmin = Omin * pc_scale
+        
+        # Area of one pixel in physical units (no Gaussian coefficient)
+        BA_pc2 = (cell_size * pc_scale)**2 * u.pc**2
+    
+    return (pc_scale, bmaj, bmin, BA_pc2)
 
 
 def get_phase_centre(vis):
@@ -1420,7 +1681,7 @@ def compute_SFR_general(flux,
         Spectral index
     flux_error : None, scalar, array, or list/tuple
         If None: no error calculation
-        If scalar/array: symmetric error (±flux_error)
+        If scalar/array: symmetric error (+/-flux_error)
         If list/tuple of length 2: [lower_error, upper_error] for asymmetric errors
         Each element can be scalar or array
     
@@ -2391,8 +2652,8 @@ def interferometric_decomposition(image1, image2, image3=None,
         return (result_mini, result_mini_I3, results, I1mask, I1mask_name, R12, M12, M123_opt,
                 M13_opt, M23_opt, I3_RT, I3ext_name)
 
-image_decomposition = deprecated("image_decomposition",
-                              "interferometric_decomposition")(interferometric_decomposition)
+# image_decomposition = deprecated("image_decomposition",
+#                               "interferometric_decomposition")(interferometric_decomposition)
 
 def perform_interferometric_decomposition(imagelist_em, imagelist_comb,
                                           imagelist_vla, residuallist_vla,
@@ -2456,7 +2717,7 @@ def perform_interferometric_decomposition(imagelist_em, imagelist_comb,
                 #                 i = idx_em # e-merlin image
                 k = idx_vla  # almost pure jvla image, but needs to have the same cellsize as of the e-merlin one
                 result_mini, results, results_short, Imask, I1mask_name, I1mask_2, R12, R12conv, M12, \
-                    M123_opt, Mcomp_opt, Mext_opt, I3re_name, I3ext_name, I3comp_name, I3_residual_23_name = image_decomposition(
+                    M123_opt, Mcomp_opt, Mext_opt, I3re_name, I3ext_name, I3comp_name, I3_residual_23_name = interferometric_decomposition(
                     #                 image1 = imagelist_comb[2],
                     image1=imagelist_em_short[l],
                     image2=imagelist_comb[j],
