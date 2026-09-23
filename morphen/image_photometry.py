@@ -209,6 +209,58 @@ def do_petrofit(image, cell_size, mask_component=None, fwhm=8, kernel_size=5, np
     return (r_list, area_arr, area_beam, p_copy, S_flux, results)
 
 
+def resolve_flux_error_map(data_2D, error_map=None, rms_map=None, invvar_map=None,
+                            variance_map=None, weight_map=None,
+                            residual_map=None, rms=None, verbose=True):
+    """
+    Resolve a single 2D per-pixel flux-uncertainty map to pass as `error=` into
+    `source_photometry` (and, downstream, `flux_err=` into `Petrosian`).
+
+    Precedence (first non-None wins, nothing is combined):
+        1. error_map    -- already a finished 2D sigma map, same grid as data_2D. Used as-is.
+        2. rms_map / invvar_map / variance_map / weight_map
+                        -- survey-convention noise maps, converted via the existing
+                           `_sigma_from_noise_inputs` (same precedence/semantics as
+                           `field_background`'s use of it in source_extraction.py).
+        3. residual_map -- e.g. a WSClean/imager residual array. abs() used directly,
+                           pixel for pixel, as the 1-sigma flux-uncertainty proxy.
+        4. rms          -- scalar noise estimate, broadcast to data_2D's shape.
+        5. nothing given -> returns (None, 'none'), identical to today's error=None.
+
+    Returns (error_map_or_None, source_str). Raises ValueError if a supplied map's
+    shape doesn't match data_2D.shape (mirrors the shape check `field_background`
+    already does for `rms_map` in field_extraction.py).
+    """
+    data_shape = np.asarray(data_2D).shape
+
+    def _check_shape(arr, name):
+        if arr.shape != data_shape:
+            raise ValueError(f"{name} shape {arr.shape} does not match data_2D shape {data_shape}")
+
+    if error_map is not None:
+        arr = np.asarray(error_map, dtype=float)
+        _check_shape(arr, 'error_map')
+        return arr, 'error_map'
+
+    sigma, source = _sigma_from_noise_inputs(rms_map=rms_map, invvar_map=invvar_map,
+                                              variance_map=variance_map,
+                                              weight_map=weight_map, verbose=verbose)
+    if sigma is not None:
+        sigma = np.asarray(sigma)
+        _check_shape(sigma, source)
+        return sigma, source
+
+    if residual_map is not None:
+        arr = np.abs(np.asarray(residual_map, dtype=float))
+        _check_shape(arr, 'residual_map')
+        return arr, 'residual_map'
+
+    if rms is not None:
+        return np.full(data_shape, float(rms)), 'rms_scalar'
+
+    return None, 'none'
+
+
 def petrosian_metrics(source, data_2D, segm, mask_source,global_mask=None,
                  i='1', petro_properties={},sigma_type='clip',eta_value=0.2,
                  rlast=None, sigma=3, vmin=3, bkg_sub=False,error=None,
@@ -248,7 +300,8 @@ def petrosian_metrics(source, data_2D, segm, mask_source,global_mask=None,
                                                       vmin=vmin * mad_std(data_2D)
                                                       )
     #     fast_plot2(mask_source * data_2D)
-    p = Petrosian(r_list, area_arr, flux_arr)
+    p = Petrosian(r_list, area_arr, flux_arr,
+                  flux_err=error_arr if error is not None else None)
     from copy import copy
     p_015 = copy(p)
     if eta_value is None:
@@ -291,7 +344,7 @@ def compute_petrosian_properties(data_2D, imagename, mask_component=None,
         npixels = int(beam_area_)
 
     ii = str(i + 1)
-    std = mad_std(data_2D)
+    std = mad_std(data_2D[data_2D!=0],ignore_nan=True)
     data_component = data_2D.copy()
     # if apply_mask == True:
     #     omask, mask = mask_dilation(image, cell_size=cell_size,
@@ -319,6 +372,13 @@ def compute_petrosian_properties(data_2D, imagename, mask_component=None,
 
     # data_component = data_2D
     # eimshow(data_component)
+    # plt.figure()
+    # plt.imshow(data_component, origin='lower', cmap='gray')
+    # plt.title('Component data')
+    # print("npixels in component mask = ", np.sum(mask_component))
+    # print("npixels = ", npixels)
+    # plt.show()
+    # plt.close()
 
     try:
         cat, segm, segm_deblend = make_catalog(image=data_component,
@@ -344,16 +404,35 @@ def compute_petrosian_properties(data_2D, imagename, mask_component=None,
                                                    vmax=vmax*data_component.max(),
                                                    vmin=vmin * std)
         except:
-            cat, segm, segm_deblend = make_catalog(image=data_component,
-                                                   threshold=0.01 * std,
-                                                   deblend=deblend,
-                                                   # kernel_size=kernel_size,
-                                                   # fwhm=fwhm,
-                                                   npixels=npixels,
-                                                   # because we already deblended it!
-                                                   plot=plot_catalog,
-                                                   vmax=vmax * data_component.max(),
-                                                   vmin=vmin * std)
+            while True:
+                 npixels = int(npixels/2)
+                 print('Reducing npixels to ', npixels)
+                 if npixels <1:
+                     npixels =1
+                 try:
+                     cat, segm, segm_deblend = make_catalog(image=data_component,
+                                                            threshold=0.1 * std,
+                                                            deblend=deblend,
+                                                            # kernel_size=kernel_size,
+                                                            # fwhm=fwhm,
+                                                            npixels=npixels,
+                                                            # because we already deblended it!
+                                                            plot=plot_catalog,
+                                                            vmax=vmax*data_component.max(),
+                                                            vmin=vmin * std)
+                     break
+                 except:
+                     pass
+            # cat, segm, segm_deblend = make_catalog(image=data_component,
+            #                                        threshold=0.01 * std,
+            #                                        deblend=deblend,
+            #                                        # kernel_size=kernel_size,
+            #                                        # fwhm=fwhm,
+            #                                        npixels=1,
+            #                                        # because we already deblended it!
+            #                                        plot=plot_catalog,
+            #                                        vmax=vmax * data_component.max(),
+            #                                        vmin=vmin * std)
 
     sorted_idx_list = order_cat(cat, key='area', reverse=True)
     idx = sorted_idx_list[0]  # index 0 is largest
@@ -374,12 +453,12 @@ def compute_petrosian_properties(data_2D, imagename, mask_component=None,
 
     # source = cat[0]
 
-    source_props['PA'] = source.orientation.value
-    source_props['q'] = 1 - source.ellipticity.value
-    source_props['area'] = source.area.value
-    source_props['Re'] = source.equivalent_radius.value
-    source_props['x0c'] = source.xcentroid
-    source_props['y0c'] = source.ycentroid
+    source_props['PA_s'] = source.orientation.value
+    source_props['q_s'] = 1 - source.ellipticity.value
+    source_props['area_s'] = source.area.value
+    source_props['Re_s'] = source.equivalent_radius.value
+    source_props['x0c_s'] = source.xcentroid
+    source_props['y0c_s'] = source.ycentroid
 
     if segm_reg == 'deblended':
         segm_mask = segm_deblend
@@ -510,12 +589,30 @@ def compute_petrosian_properties(data_2D, imagename, mask_component=None,
     source_props['R80p'] = p.fraction_flux_to_r(fraction=0.8)
     source_props['R90p'] = p.fraction_flux_to_r(fraction=0.9)
     source_props['R95p'] = p.fraction_flux_to_r(fraction=0.95)
+    source_props['R99p'] = p.fraction_flux_to_r(fraction=0.99)
 
     C1p = np.log10(source_props['R80p'] / source_props['R20p'])
     C2p = np.log10(source_props['R90p'] / source_props['R50p'])
 
     source_props['C1p'] = C1p
     source_props['C2p'] = C2p
+
+    source_props['R50_err'] = p.r_half_light_err
+    source_props['Rp_err'] = p.r_petrosian_err
+    source_props['r_total_flux_err'] = p.r_total_flux_err
+    source_props['total_flux_rp_err'] = p.total_flux_err / beam_A
+    source_props['R20p_err'] = p.fraction_flux_to_r_err(fraction=0.2)
+    source_props['R50p_err'] = p.r_half_light_err
+    source_props['R80p_err'] = p.fraction_flux_to_r_err(fraction=0.8)
+    source_props['R90p_err'] = p.fraction_flux_to_r_err(fraction=0.9)
+    source_props['R95p_err'] = p.fraction_flux_to_r_err(fraction=0.95)
+    source_props['R99p_err'] = p.fraction_flux_to_r_err(fraction=0.99)
+
+    _, source_props['C1p_err'], _, source_props['C2p_err'] = concentration_index_errors(
+        source_props['R80p'], source_props['R20p'],
+        source_props['R90p'], source_props['R50p'],
+        source_props['R80p_err'], source_props['R20p_err'],
+        source_props['R90p_err'], source_props['R50p_err'])
 
     # source_props['r_total_flux'] = p.r_total_flux
     # source_props['total_flux_rp'] = p.total_flux/beam_A
@@ -555,10 +652,10 @@ def compute_petrosian_properties(data_2D, imagename, mask_component=None,
            cat, sorted_idx_list, segm, segm_deblend)
 
 def compute_petro_source(data_2D, mask_component=None, global_mask=None,
-                         obs_type = 'radio',
+                         obs_type = 'radio', sort_key='distance',
                          npixels=None, nlevels=1, contrast=1,
                          imagename=None, i=0, source_props={},positions=None,
-                         sigma_level=3, bkg_sub=False,
+                         sigma_level=3, bkg_sub=False,error=None,
                          vmin=1, plot=False, deblend=False):
     """
     Perform petrosian photometry of a source. It can be used for the full structure of the source
@@ -592,7 +689,7 @@ def compute_petro_source(data_2D, mask_component=None, global_mask=None,
     deblend: bool
         If True, deblend the sources.
     """
-    verbose = 0
+    verbose = 1
     # if mask:
     if imagename is not None:
         try:
@@ -630,14 +727,29 @@ def compute_petro_source(data_2D, mask_component=None, global_mask=None,
                                            deblend=False,# because we already deblended it!
                                         #    npixels=npixels,
                                            npixels=npixels, nlevels=nlevels, contrast=contrast,
-                                           plot=plot, vmax=np.nanmax(data_component),
+                                           plot=False, 
+                                           vmax=np.nanmax(data_component),
                                            vmin=vmin * std)
-
-    sorted_idx_list = order_cat(cat, key='area', reverse=True)
-    # print(len(sorted_idx_list))
+    
+    if sort_key == 'area' or sort_key == 'flux':
+        sorted_idx_list = order_cat(cat, key=sort_key, reverse=True)
+        # print(len(sorted_idx_list))
+    else:
+        if sort_key == 'distance':
+            # sort by distance to the center if multiple regions found.
+            ref_centre = data_component.shape[0] / 2, data_component.shape[1] / 2
+            distances = distances_from_reference(cat.xcentroid, 
+                                                 cat.ycentroid,
+                                                 ref_centre)
+            sorted_idx_list = np.argsort(distances)
+        else:
+            print('WARNING: sort_key not recognized. Using area instead.')
+            sorted_idx_list = order_cat(cat, key='area', reverse=True)
+    
     source = cat[sorted_idx_list[0]]
+    
 
-    do_fit_ellipse = True
+    do_fit_ellipse = False
     if do_fit_ellipse:
         levels_ellipse = np.geomspace(np.nanmax(data_component), sigma_level * std, 32)
         try:
@@ -666,23 +778,27 @@ def compute_petro_source(data_2D, mask_component=None, global_mask=None,
     source_props['c' + ii + '_label'] = source.label
 
     # help function to be used if iteration required.
-    # print(' ++==>> Computing petrosian parameters...')
+    print(' ++==>> Computing petrosian parameters...')
     source_props, p = petro_params(source=source, data_2D=data_component, segm=segm,
-                                mask_source=mask_component,positions=positions,
+                                mask_source=mask_component,
+                                positions=positions,
                                 i=ii, petro_properties=source_props,
                                 rlast=None, sigma=sigma_level,
-                                vmin=vmin, bkg_sub=bkg_sub,
+                                vmin=vmin, bkg_sub=bkg_sub,error=error,
                                 plot=plot)
     
     # print('Rlast', source_props['c' + ii + '_rlast'])
     # print('2Rp', 2 * source_props['c' + ii + '_Rp'])
+    # print('p.r_total_flux', p.r_total_flux)
     """
     Check if Rp is larger than last element (rlast) of the R_list. If yes,
     we need to run petro_params again, with a larger rlast, at least r_last>=Rp.
     If not, R50 will be np.nan.
     """
-    if (source_props['c' + ii + '_rlast'] < 2 * source_props['c' + ii + '_Rp']) \
-            or (np.isnan(p.r_total_flux)):
+    # if (source_props['c' + ii + '_rlast'] < 2 * source_props['c' + ii + '_Rp']) \
+    #         or (np.isnan(p.r_total_flux)):
+    # if (source_props['c' + ii + '_rlast'] < 2 * source_props['c' + ii + '_Rp']):
+    if np.isnan(source_props['c' + ii + '_Rp']):
         if verbose>0:
             print('WARNING: Number of pixels for petro region is too small. '
                   'Looping over until good condition is satisfied.')
@@ -699,11 +815,13 @@ def compute_petro_source(data_2D, mask_component=None, global_mask=None,
                                     segm=segm, mask_source=mask_component,
                                     i=ii, petro_properties=source_props,
                                     rlast=Rlast_new, sigma=sigma_level,
-                                    vmin=vmin,
+                                    vmin=vmin,error=error,
                                     bkg_sub=bkg_sub, plot=plot)
 
-        if (source_props['c' + ii + '_rlast'] < 2 * source_props['c' + ii + '_Rp']) \
-                or (np.isnan(p.r_total_flux)):
+        # if (source_props['c' + ii + '_rlast'] < 2 * source_props['c' + ii + '_Rp']) \
+        #         or (np.isnan(p.r_total_flux)):
+        # if (source_props['c' + ii + '_rlast'] < 2 * source_props['c' + ii + '_Rp']):
+        if np.isnan(source_props['c' + ii + '_Rp']):
             if verbose>0:
                 print('WARNING: Number of pixels for petro region is too small. '
                     'Looping over until good condition is satisfied.')
@@ -719,7 +837,7 @@ def compute_petro_source(data_2D, mask_component=None, global_mask=None,
                                         segm=segm,mask_source=mask_component,
                                         i=ii, petro_properties=source_props,
                                         rlast=Rlast_new, sigma=sigma_level,
-                                        vmin=vmin,eta_value=0.25,
+                                        vmin=vmin,eta_value=0.25,error=error,
                                         bkg_sub=bkg_sub, plot=plot)
 
 
@@ -782,18 +900,22 @@ def petro_cat(data_2D, fwhm=24, npixels=128, kernel_size=15,
 
 def petro_params(source, data_2D, segm, mask_source, positions=None,
                  i='1', petro_properties={},sigma_type='clip',eta_value=None,
-                 rlast=None, sigma=3, vmin=3, bkg_sub=True, plot=False):
+                 rlast=None, sigma=3, vmin=3, bkg_sub=True, error=None, plot=False):
     if rlast is None:
-        rlast = int(np.sqrt((np.sum(mask_source) / np.pi)))
+        # rlast = int(np.sqrt((np.sum(mask_source) / np.pi)))
+        rms_temp = mad_std(data_2D)
+        threshold_mask = data_2D > (6 * rms_temp)
+        _, area_convex_mask = convex_shape(threshold_mask)
+        rlast = int(3.0*area_to_radii(area_convex_mask))
         # _, area_convex_mask = convex_shape(mask_source)
         # Rlast_convex = int(1.0 * area_to_radii(area_convex_mask))        
-        # print('Estimate for rlast =', rlast)
+        
         # print('Estimate for rlast (convex) =', Rlast_convex)
 
     else:
         rlast = rlast
         
-
+    print(' ++>> Last radial point =', rlast)
     r_list = make_radius_list(max_pix=rlast,  # Max pixel to go up to
                               n=int(rlast)  # the number of radii to produce
                              )
@@ -801,6 +923,7 @@ def petro_params(source, data_2D, segm, mask_source, positions=None,
     flux_arr, area_arr, error_arr = source_photometry(source, data_2D, segm,
                                                       r_list, cutout_size=cutout_size,
                                                       # position2=positions,
+                                                      error=error,
                                                       bg_sub=bkg_sub, sigma=sigma,
                                                       sigma_type=sigma_type,
                                                       plot=plot, vmax=0.3 * data_2D.max(),
@@ -808,7 +931,8 @@ def petro_params(source, data_2D, segm, mask_source, positions=None,
                                                       )
     # print(flux_arr)
     #     fast_plot2(mask_source * data_2D)
-    p = Petrosian(r_list, area_arr, flux_arr)
+    p = Petrosian(r_list, area_arr, flux_arr,
+                  flux_err=error_arr if error is not None else None)
 
     if eta_value is None:
         try:
@@ -883,7 +1007,7 @@ def petro_params(source, data_2D, segm, mask_source, positions=None,
     return (petro_properties, p_return)
 
 
-def source_props(data_2D, source_props={},sigma_mask = 5,
+def source_props_old(data_2D, source_props={},sigma_mask = 5,
                  fwhm=24, npixels=128, kernel_size=15, nlevels=30,
                  contrast=0.001,sigma_level=20, vmin=5,bkg_sub=False,
                  deblend=True,PLOT=False,apply_mask=False):
