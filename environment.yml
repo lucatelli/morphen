@@ -32,7 +32,7 @@ dependencies:
     - scipy
     - numpy
     - astropy
-    - pandas==2.3.3
+    - pandas==2.2.3
     - astroquery
     - tableprint
     # optional: enables shift_correction_mode='chi2_shift' / 'ensemble'
