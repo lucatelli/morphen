@@ -1,10 +1,10 @@
-name: morphen
+name: morphen12
 channels:
   - conda-forge
   - pkgw-forge
   - defaults
 dependencies:
-  - python=3.10
+  - python=3.12
   - casacore
   # - aoflagger
   # - boost
@@ -20,6 +20,9 @@ dependencies:
     - ipython
     - notebook
     - jupyter
+    # visualise_alignment's slider mode; arrives via jupyter
+    # anyway, but the dependency is real, so declare it.
+    - ipywidgets
     - tqdm
     - matplotlib
     - corner
@@ -29,9 +32,12 @@ dependencies:
     - scipy
     - numpy
     - astropy
-    - pandas
+    - pandas==2.3.3
     - astroquery
     - tableprint
+    # optional: enables shift_correction_mode='chi2_shift' / 'ensemble'
+    # in image_alignment.py. Everything else works without it.
+    - image_registration
     - prettytable
     - dynesty
     - datashader
@@ -46,8 +52,9 @@ dependencies:
     - lmfit==1.1.0
     - emcee
     - corner
+    - bilby
     - arviz
     - h5py
 #    - "jax[cuda12_pip] >= 0.4.13"  # Ensure compatibility with CUDA 12
 #    - -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-    - "jax[cpu]"
+    # - "jax[cpu]"
