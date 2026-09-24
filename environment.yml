@@ -47,14 +47,14 @@ dependencies:
     - photutils
     - sep
     - fitsio
-    - astrodendro
-    - bdsf
+    # - astrodendro
+    # - bdsf
     - lmfit==1.1.0
     - emcee
     - corner
-    - bilby
+    # - bilby
     - arviz
-    - h5py
+    # - h5py
 #    - "jax[cuda12_pip] >= 0.4.13"  # Ensure compatibility with CUDA 12
 #    - -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
     - "jax[cpu]"
