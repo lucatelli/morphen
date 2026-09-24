@@ -1183,11 +1183,10 @@ def do_fit_spec_RC_linear(freqs,
 
     # nwalkers = int(len(y) * 2 * 20)
 
+    ax1.errorbar(x, y, yerr=yerr, 
+                 fmt='o',label='Data', color='k', ecolor='gray',alpha=0.5)
     ax1.plot(x_resample,model_resample,
              color='blue', ls='-', label='Fit')
-    ax2.plot(x, (y-model_best)/model_best,
-             color='green', ls='',marker='.', lw=1.5, markersize=7, label='Residual')
-    ax2.set_ylim(-2.0,2.0)
 
     if do_mcmc_fit == True:
         ax1.plot(x_resample, model_mean,
@@ -1200,7 +1199,7 @@ def do_fit_spec_RC_linear(freqs,
             ax1.fill_between(x_resample,
                              model_mean - sigma_shade*model_std,
                              model_mean + sigma_shade*model_std, color='lightgray',
-                            alpha=0.7)
+                             label=rf'$\pm{sigma_shade}\sigma$', alpha=0.7)
         else:
             # Define the number of Monte Carlo samples
             num_samples = 5000
@@ -1224,10 +1223,13 @@ def do_fit_spec_RC_linear(freqs,
             ax1.fill_between(x_resample, median_prediction - sigma_shade*std_prediction,
                              median_prediction + sigma_shade*std_prediction,
                              color='grey', alpha=0.3,
-                             label=r'Uncertainty ($1\sigma$)'
+                             label=rf'$\pm{sigma_shade}\sigma$'
                              )
-    ax1.errorbar(x, y, yerr=yerr, 
-                 fmt='o',label='Data', color='k', ecolor='gray',alpha=0.5)
+    ax2.plot(x, (y-model_best)/model_best,
+             color='green', ls='',marker='.', lw=1.5, markersize=7, label='Residual')
+    ax2.set_ylim(-2.0,2.0)
+
+    
     # plt.ylim(1e-3,1.2*np.max(y))
     if add_fit_legend == True:
         ax1.legend(loc=(0.01, 0.01),
@@ -4124,9 +4126,12 @@ def do_fit_spec_SY_FF_map(freqs,fluxes,fluxes_err,nu0=None,
         # weights = 1 / yerr
         # return (y - model) * np.sqrt(weights)
         # Log-based weighting
+        # return ((y - model)/y) * (yerr / model)
+        # weights = 1 / yerr
+        # return (y - model) * weights
+        # res = (y - model) / (np.log(y+yerr))
         log_weights = 1.0 / (1.0 + np.log1p(yerr / np.median(yerr)))
         return (y - model) * log_weights
-        # return ((y - model)/y) * (yerr / model)
     
     a_sy_init = abs(np.nanmax(y) - np.nanmin(y))/ (2.0 * 1000)
     a_ff_init = a_sy_init * 0.5
