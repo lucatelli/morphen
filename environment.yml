@@ -1,10 +1,10 @@
-name: morphen12
+name: morphen310
 channels:
   - conda-forge
   - pkgw-forge
   - defaults
 dependencies:
-  - python=3.12
+  - python=3.10
   - casacore
   # - aoflagger
   # - boost
