@@ -50,6 +50,7 @@
 from __future__ import print_function  # prevents adding old-style print statements
 import os
 import math
+import sys
 from operator import itemgetter
 import numpy as np
 casaVersion = None
@@ -79,7 +80,7 @@ if True:
     #            print("casaVersion = ", casaVersion)
             else:
                 casaVersion = None
-#            print("You appear to be importing analysisUtils into python (not CASA). version = ", '.'.join([str(i) for i in sys.version_info[:3]]))
+#            print("You appear to be importing readscans into python (not CASA). version = ", '.'.join([str(i) for i in sys.version_info[:3]]))
 print("casaVersion = ", casaVersion)
 if casaVersion is not None:
     try:
@@ -88,6 +89,53 @@ if casaVersion is not None:
         if casaVersion >= '5.9.9':
             from casatools import quanta as qatool
 
+    asdmLibraryAvailable = False  # assume it to be false before trying to import
+    try:
+        if True:
+            asdmPath = os.getenv('ASDM_LIBRARY_PATH')
+            if asdmPath is not None:
+                asdmPath = asdmPath.rstrip('/') 
+            if asdmPath is not None:
+                if (os.path.exists(asdmPath)):
+                    print("Appended ASDM_LIBRARY_PATH: ", asdmPath)
+                    sys.path.append(asdmPath)
+                    asdmLibraryAvailable = True
+                else:
+                    print("ASDM_LIBRARY_PATH does not exist: ", asdmPath)
+                    import au_noASDMLibrary
+                    print("imported au_noASDMLibrary")
+            else:
+                # this is the path on speedwell.cv.nrao.edu
+                asdmPath = '/export/data_2/intlist/2023APR/ICD-4385/lib/python3.8/site-packages'
+                if (os.path.exists(asdmPath)):
+                    print("Appended path: ", asdmPath)
+                    sys.path.append(asdmPath)
+                    asdmLibraryAvailable = True
+                else:
+                    import au_noASDMLibrary
+    except:
+        import au_noASDMLibrary
+    if asdmLibraryAvailable:
+        try:
+            print("Trying to import ASDM and ASDMParseOptions from asdm.py")
+            try:
+                from asdm import ASDM, ASDMParseOptions
+            except:
+                # for some reason, the import fails on speedwell without the following lines
+                import ctypes
+                libdir = os.path.dirname(os.path.dirname(asdmPath))
+                ctypes.CDLL(os.path.join(libdir,'libalmaEnumerationsStandalone.so'),
+                            mode=ctypes.RTLD_GLOBAL)
+                ctypes.CDLL(os.path.join(libdir,'libasdmStandalone.so'),
+                            mode=ctypes.RTLD_GLOBAL)
+                ctypes.CDLL(os.path.join(libdir,'libenumtcl.so'),
+                            mode=ctypes.RTLD_GLOBAL)
+                from asdm import ASDM, ASDMParseOptions
+        except:
+            print("Failed")
+            asdmLibraryAvailable = False
+            import au_noASDMLibrary
+            
 def createCasaTool(mytool):
     if 'casac' in locals():
         if (type(casac.Quantity) != type):  # casa 4.x and 5.x
@@ -114,7 +162,7 @@ def call_qatime(arg, form='', prec=0):
     else:
         return(result)
 
-def readscans(sdmfile, verbose=False):
+def readscans(sdmfile, verbose=False, useMinidom=True):
     if (os.path.exists(sdmfile) == False):
         print("Could not find the SDM file = ", sdmfile)
         return([],[])
@@ -122,124 +170,185 @@ def readscans(sdmfile, verbose=False):
         print("Could not find the Scan.xml file.  Are you sure this is an ASDM?")
         return([],[])
     myqa = createCasaTool(qatool)
-    try:
-        from xml.dom import minidom
-    except ImportError as e:
-        print("failed to load xml.dom.minidom:\n", e)
-        exit(1)
-
-    # read Scan.xml into dictionary also and make a list
-    xmlscans = minidom.parse(sdmfile+'/Scan.xml')
     scandict = {}
-    rowlist = xmlscans.getElementsByTagName("row")
-    for rownode in rowlist:
-        rowfid = rownode.getElementsByTagName("scanNumber")
-        fid = int(rowfid[0].childNodes[0].nodeValue)
-        # number of subscans
-        try:
-            # ALMA
-            rowsubs = rownode.getElementsByTagName("numSubScan")
-            nsubs = int(rowsubs[0].childNodes[0].nodeValue)
-        except:
-            # EVLA
-            rowsubs = rownode.getElementsByTagName("numSubscan")
-            nsubs = int(rowsubs[0].childNodes[0].nodeValue)
-        # intents
-        rownint = rownode.getElementsByTagName("numIntent")
-        nint = int(rownint[0].childNodes[0].nodeValue)
-
-        rowintents = rownode.getElementsByTagName("scanIntent")
-        sint = str(rowintents[0].childNodes[0].nodeValue)
-        sints = sint.split()
-        rint = ''
-        for r in range(nint):
-            intent = sints[2+r]
-            if rint=='':
-                rint = intent
-            else:
-                rint += ' '+intent
-
-        # start and end times in mjd ns
-        rowstart = rownode.getElementsByTagName("startTime")
-        start = int(rowstart[0].childNodes[0].nodeValue)
-        startmjd = float(start)*1.0E-9/86400.0
-        t = myqa.quantity(startmjd,'d')
-        starttime = call_qatime(t,form="ymd",prec=8)
-        rowend = rownode.getElementsByTagName("endTime")
-        end = int(rowend[0].childNodes[0].nodeValue)
-        endmjd = float(end)*1.0E-9/86400.0
-        t = myqa.quantity(endmjd,'d')
-        endtime = call_qatime(t,form="ymd",prec=8)
-        rowsrc = rownode.getElementsByTagName("numField")
-        if (len(rowsrc) < 1):
-            numField = -1
-        else:
-            numField = int(rowsrc[0].childNodes[0].nodeValue)
-        # source name
-        rowsrc = rownode.getElementsByTagName("sourceName")
-        if (len(rowsrc) < 1):
-            print("Scan %d appears to be corrupt." % (len(scandict)+1))
-        else:
-            src = str(rowsrc[0].childNodes[0].nodeValue)
-            # to find out what all is available,
-#            print rownode.getElementsByTagName("*")
-            scandict[fid] = {}
-            scandict[fid]['start'] = starttime
-            scandict[fid]['startmjd'] = startmjd
-            scandict[fid]['end'] = endtime
-            scandict[fid]['endmjd'] = endmjd
-#            print "starttime = ", starttime
-#            print "endtime = ", endtime
-            timestr = starttime+'~'+endtime
-            scandict[fid]['timerange'] = timestr
-            scandict[fid]['source'] = src
-            scandict[fid]['numberOfFields'] = numField
-            scandict[fid]['intent'] = rint
-            scandict[fid]['nsubs'] = nsubs
-            scandict[fid]['duration'] = endmjd-startmjd
-    if (verbose):
-        print('  Found ',rowlist.length,' scans in Scan.xml')
-
-    # read Source.xml into dictionary also and make a list
-    xmlsources = minidom.parse(sdmfile+'/Source.xml')
     sourcedict = {}
     sourcelist = []
     sourceId = []
-    rowlist = xmlsources.getElementsByTagName("row")
-    for rownode in rowlist:
-        rowfid = rownode.getElementsByTagName("sourceId")
-        fid = int(rowfid[0].childNodes[0].nodeValue)
-
-        # source name
-        rowsrc = rownode.getElementsByTagName("sourceName")
-        src = str(rowsrc[0].childNodes[0].nodeValue)
+    if asdmLibraryAvailable and not useMinidom:
+        a = ASDM()
+        parser = ASDMParseOptions()
+        parser.asALMA()
+        parser.loadTablesOnDemand(True)
+        a.setFromFile(sdmfile,parser)
+        scanTable = a.scanTable().get()
+        for row in scanTable:
+            fid = row.scanNumber()
+            try: # ALMA
+                nsubs = row.numSubScan()
+            except:  # VLA
+                nsubs = row.numSubscan()
+            nint = row.numIntent()
+            intents = list([str(i) for i in row.scanIntent()])
+            rint = ' '.join(intents)
+            startmjd = row.startTime().get() * 1e-9 / 86400.
+            t = myqa.quantity(startmjd,'d')
+            starttime = call_qatime(t,form="ymd",prec=8)
+            endmjd = row.endTime().get() * 1e-9 / 86400.
+            t = myqa.quantity(endmjd,'d')
+            endtime = call_qatime(t,form="ymd",prec=8)
+            numField = row.numField()
+            if numField < 1:
+                numField = -1
+            src = str(row.sourceName()).strip()
+            if len(src) < 1:
+                print("Scan %d appears to be corrupt." % (len(scandict)+1))
+            else:
+                scandict[fid] = {}
+                scandict[fid]['start'] = starttime
+                scandict[fid]['startmjd'] = startmjd
+                scandict[fid]['end'] = endtime
+                scandict[fid]['endmjd'] = endmjd
+                timestr = starttime+'~'+endtime
+                scandict[fid]['timerange'] = timestr
+                scandict[fid]['source'] = src
+                scandict[fid]['numberOfFields'] = numField
+                scandict[fid]['intent'] = rint
+                scandict[fid]['nsubs'] = nsubs
+                scandict[fid]['duration'] = endmjd-startmjd
+        if (verbose):
+            print('  Found ',len(scanTable),' scans in Scan.xml')
+        sourceTable = a.sourceTable().get()
+        for row in sourceTable:
+            fid = row.sourceId()
+            src = row.sourceName()
+            try:
+                directionCode = str(row.directionCode())
+            except:
+                directionCode = ''
+            rowsrc = row.direction()
+            ra = float(rowsrc[0].get())
+            dec = float(rowsrc[1].get())
+            if src not in sourcelist:
+                sourcelist.append(src)
+                sourceId.append(fid)
+                sourcedict[fid] = {}
+                sourcedict[fid]['source'] = src
+                sourcedict[fid]['directionCode'] = directionCode
+                sourcedict[fid]['ra'] = ra
+                sourcedict[fid]['dec'] = dec
+    else:
         try:
-            rowsrc = rownode.getElementsByTagName("directionCode")
-            directionCode = str(rowsrc[0].childNodes[0].nodeValue)
-        except:
-            directionCode = ''
-        rowsrc = rownode.getElementsByTagName("direction")
-        (ra,dec) = rowsrc[0].childNodes[0].nodeValue.split()[2:4]
-        ra = float(ra)
-        dec = float(dec)
-        if (src not in sourcelist):
-            sourcelist.append(src)
-            sourceId.append(fid)
-            sourcedict[fid] = {}
-#            sourcedict[fid]['sourceName'] = src
-            sourcedict[fid]['source'] = src
-            sourcedict[fid]['directionCode'] = directionCode
-            sourcedict[fid]['ra'] = ra
-            sourcedict[fid]['dec'] = dec
-#            print "Loading source %s to index %d" % (src,fid)
-        else:
-            ai = sourceId[sourcelist.index(src)]
-#            print "Source %s is already at index %d = ID:%d" % (src,sourcelist.index(src),ai)
-            if (ra != sourcedict[ai]['ra'] or dec != sourcedict[ai]['dec']):
-                print("WARNING: Multiple directions found for source %d = %s" % (fid,src))
-                ras = (ra - sourcedict[ai]['ra'])*180*3600*math.cos(dec)/math.pi
-                decs = (dec - sourcedict[ai]['dec'])*180*3600/math.pi
-                print("The difference is (%f,%f) arcseconds." % (ras,decs))
+            from xml.dom import minidom
+        except ImportError as e:
+            print("failed to load xml.dom.minidom:\n", e)
+            return
+        # read Scan.xml into dictionary also and make a list
+        xmlscans = minidom.parse(sdmfile+'/Scan.xml')
+        rowlist = xmlscans.getElementsByTagName("row")
+        for rownode in rowlist:
+            rowfid = rownode.getElementsByTagName("scanNumber")
+            fid = int(rowfid[0].childNodes[0].nodeValue)
+            # number of subscans
+            try:
+                # ALMA
+                rowsubs = rownode.getElementsByTagName("numSubScan")
+                nsubs = int(rowsubs[0].childNodes[0].nodeValue)
+            except:
+                # EVLA
+                rowsubs = rownode.getElementsByTagName("numSubscan")
+                nsubs = int(rowsubs[0].childNodes[0].nodeValue)
+            # intents
+            rownint = rownode.getElementsByTagName("numIntent")
+            nint = int(rownint[0].childNodes[0].nodeValue)
+
+            rowintents = rownode.getElementsByTagName("scanIntent")
+            sint = str(rowintents[0].childNodes[0].nodeValue)
+            sints = sint.split()
+            rint = ''
+            for r in range(nint):
+                intent = sints[2+r]
+                if rint=='':
+                    rint = intent
+                else:
+                    rint += ' '+intent
+
+            # start and end times in mjd ns
+            rowstart = rownode.getElementsByTagName("startTime")
+            start = int(rowstart[0].childNodes[0].nodeValue)
+            startmjd = float(start)*1.0E-9/86400.0
+            t = myqa.quantity(startmjd,'d')
+            starttime = call_qatime(t,form="ymd",prec=8)
+            rowend = rownode.getElementsByTagName("endTime")
+            end = int(rowend[0].childNodes[0].nodeValue)
+            endmjd = float(end)*1.0E-9/86400.0
+            t = myqa.quantity(endmjd,'d')
+            endtime = call_qatime(t,form="ymd",prec=8)
+            rowsrc = rownode.getElementsByTagName("numField")
+            if (len(rowsrc) < 1):
+                numField = -1
+            else:
+                numField = int(rowsrc[0].childNodes[0].nodeValue)
+            # source name
+            rowsrc = rownode.getElementsByTagName("sourceName")
+            if (len(rowsrc) < 1):
+                print("Scan %d appears to be corrupt." % (len(scandict)+1))
+            else:
+                src = str(rowsrc[0].childNodes[0].nodeValue).strip()
+                # to find out what all is available,
+    #            print rownode.getElementsByTagName("*")
+                scandict[fid] = {}
+                scandict[fid]['start'] = starttime
+                scandict[fid]['startmjd'] = startmjd
+                scandict[fid]['end'] = endtime
+                scandict[fid]['endmjd'] = endmjd
+    #            print "starttime = ", starttime
+    #            print "endtime = ", endtime
+                timestr = starttime+'~'+endtime
+                scandict[fid]['timerange'] = timestr
+                scandict[fid]['source'] = src
+                scandict[fid]['numberOfFields'] = numField
+                scandict[fid]['intent'] = rint
+                scandict[fid]['nsubs'] = nsubs
+                scandict[fid]['duration'] = endmjd-startmjd
+        if (verbose):
+            print('  Found ',rowlist.length,' scans in Scan.xml')
+
+        # read Source.xml into dictionary also and make a list
+        xmlsources = minidom.parse(sdmfile+'/Source.xml')
+        rowlist = xmlsources.getElementsByTagName("row")
+        for rownode in rowlist:
+            rowfid = rownode.getElementsByTagName("sourceId")
+            fid = int(rowfid[0].childNodes[0].nodeValue)
+            # source name
+            rowsrc = rownode.getElementsByTagName("sourceName")
+            src = str(rowsrc[0].childNodes[0].nodeValue).strip()
+            try:
+                rowsrc = rownode.getElementsByTagName("directionCode")
+                directionCode = str(rowsrc[0].childNodes[0].nodeValue)
+            except:
+                directionCode = ''
+            rowsrc = rownode.getElementsByTagName("direction")
+            (ra,dec) = rowsrc[0].childNodes[0].nodeValue.split()[2:4]
+            ra = float(ra)
+            dec = float(dec)
+            if (src not in sourcelist):
+                sourcelist.append(src)
+                sourceId.append(fid)
+                sourcedict[fid] = {}
+    #            sourcedict[fid]['sourceName'] = src
+                sourcedict[fid]['source'] = src
+                sourcedict[fid]['directionCode'] = directionCode
+                sourcedict[fid]['ra'] = ra
+                sourcedict[fid]['dec'] = dec
+    #            print "Loading source %s to index %d" % (src,fid)
+            else:
+                ai = sourceId[sourcelist.index(src)]
+    #            print "Source %s is already at index %d = ID:%d" % (src,sourcelist.index(src),ai)
+                if (ra != sourcedict[ai]['ra'] or dec != sourcedict[ai]['dec']):
+                    print("WARNING: Multiple directions found for source %d = %s" % (fid,src))
+                    ras = (ra - sourcedict[ai]['ra'])*180*3600*math.cos(dec)/math.pi
+                    decs = (dec - sourcedict[ai]['dec'])*180*3600/math.pi
+                    print("The difference is (%f,%f) arcseconds." % (ras,decs))
 #    for src in range(len(sourcedict)):
 #        print "%s direction = %f, %f" % (sourcedict[src]['sourceName'],
 #                                         sourcedict[src]['ra'],

@@ -6,7 +6,7 @@
 #entering and retrieving  measurements from the calibrator catalog database.
 #
 #
-#$Id: calDatabaseQuery.py,v 2.2 2022/12/27 18:44:09 thunter Exp $
+#$Id: calDatabaseQuery.py,v 2.4 2024/11/07 22:11:32 thunter Exp $
 
 from __future__ import print_function  # prevents adding old-style print statements
 import datetime
@@ -672,7 +672,7 @@ class CalibratorCatalogUpdate:
         #mjd = self.strDate2MJD_non_casa(date)
         mjd = aU.strDate2MJD(date)
         if (measurements == None):
-            print("Calling self.wrapSearch(name='%s',limit=%d,date='%s',fLower=%f,fUpper=%f,searchOnDate=%s,sourceBandLimit=%d,types=%s,catalogues=%s" % (sourcename,limit,date,fLower,fUpper,searchOnDate,sourceBandLimit,str(types),str(catalogues)))
+            print("Calling self.wrapSearch(name='%s',limit=%d,date='%s',fLower=%f,fUpper=%f,searchOnDate=%s,sourceBandLimit=%d,types=%s,catalogues=%s)" % (sourcename,limit,date,fLower,fUpper,searchOnDate,sourceBandLimit,str(types),str(catalogues)))
             measurements = self.wrapSearch(name=sourcename, limit=limit, date=date, fLower=fLower, 
                                            fUpper=fUpper, searchOnDate=searchOnDate,
                                            sourceBandLimit=sourceBandLimit,
@@ -722,7 +722,13 @@ class CalibratorCatalogUpdate:
             julian_dates = self.getJulianDates(measurements)
             julian_min = np.array([abs(x-mjd) for x in julian_dates])
             bydate = range(len(srcdegrees))
-            rank = np.argsort(julian_min)  # rank might look like 3,1,4,2,0
+            if np.__version__ >= '2.0':
+                # au.searchFlux('J1517-2422',date='20180320',sourceBandLimit=500,catalogues=[5],fLower=276,fUpper=373) gives  [282,283] with None/stable/quicksort/mergesort/not setting it,  I cannot make it match np1.24, so I won't set kind in either version.
+                rank = np.argsort(julian_min)  # rank might look like 3,1,4,2,0 
+            else:   
+                rank = np.argsort(julian_min)  # rank gives [283,282] with quicksort and not setting it,  gives [282,283] with mergesort
+#            print("rank = ", rank)
+
             # This can have a tie.  argsort breaks ties by taking furthest one
             # in the list.
             # But we should break ties by choosing the higher frequency in
@@ -731,6 +737,7 @@ class CalibratorCatalogUpdate:
             if (nvalues > 1):
                 frequencies = np.array(frequencies)
                 newfirst = np.argmax(frequencies[rank][:nvalues])
+                print("newfirst = ", newfirst)
                 oldfirst = rank[0]
                 rank[0] = rank[newfirst]
                 rank[newfirst] = oldfirst

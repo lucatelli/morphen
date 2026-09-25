@@ -2,8 +2,9 @@
 # QA2 Calibration Script Generator
 # Dirk Petry (ESO)
 # Todd Hunter (NRAO)
-# Eric Villard (JAO)
-# $Id: almaqa2csg.py,v 2.1 2022/12/14 16:40:12 jreveco Exp $
+# Luke Maud (ESO)
+#
+# $Id: almaqa2csg.py,v 2.18 2025/03/05 08:14:59 dpetry Exp $
 #
 """
 The ALMA QA2 Calibration Script Generator
@@ -26,8 +27,10 @@ try:  # Python 3
     from casatasks import importasdm
     from casatasks import gencal
     from casatasks import casalog
+    from casatasks import mstransform
     from casatools import table as tbtool
     from casatools import msmetadata as msmdtool
+    from casatools import quanta as qatool
 
     from urllib.parse import urlparse, urlencode
     from urllib.request import urlopen, Request, HTTPPasswordMgrWithDefaultRealm, HTTPBasicAuthHandler, build_opener
@@ -35,6 +38,15 @@ try:  # Python 3
     from urllib.error import HTTPError
     from subprocess import getstatusoutput, getoutput
     import XmlObjectifier_python3 as XmlObjectifier
+
+    def get_default_args(func):
+        signature = inspect.signature(func)
+        return {
+            k: v.default
+            for k, v in signature.parameters.items()
+            if v.default is not inspect.Parameter.empty
+        }
+
 except ImportError:  # Python 2
     from taskinit import *
     from importasdm_cli import importasdm_cli as importasdm
@@ -53,10 +65,11 @@ def version(short=False):
     """
     Returns the CVS revision number.
     """
-    myversion = "$Id: almaqa2csg.py,v 2.1 2022/12/14 16:40:12 jreveco Exp $"
+    myversion = "$Id: almaqa2csg.py,v 2.18 2025/03/05 08:14:59 dpetry Exp $"
     if (short):
         myversion = myversion.split()[2]
     return myversion
+
 
 
 def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFinalData=0., 
@@ -64,10 +77,12 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
                         projectCode='', schedblockName='', schedblockUid='', queue='', state='', 
                         upToTimeForState=2, useLocalAlmaHelper=True, tsysChanTol=1, sdQSOflux=1, 
                         runPhaseClosure=False, skipSyscalChecks=False, lazy=False, lbc=False, 
-                        phaseDiff=False, remcloud=False, bdfflags=True, phaseDiffPerSpwSetup=False, 
+                        remcloud=False, bdfflags=True,
                         tsysPerField=False, splitMyScienceSpw=True, bpassCalTableName='', 
-                        reindexMyScienceSpw=False, useCalibratorService=True, allowHybrid=False,
-                        combineB2BLFspws=False, includeRenorm=True):
+                        reindexMyScienceSpw=False, useCalibratorService=True,
+                        calibratorServiceURL=None, allowHybrid=False,
+                        combineB2BLFspws=False, combineB2BLFHFspws=False, combineB2BDGCspws=False,
+                        includeRenorm=True, vetoBPBootstrap=False, legacyfixes=False):
     """
     The ALMA QA2 calibration script generator
 
@@ -115,13 +130,8 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
               default=True
     bpassCalTableName: to use instead of default name
               default='', i.e. use the bp table created for bpassCalId with the standard naming
-    phaseDiff: force the combination of spw. If it is not enabled, and a DGC scan is detected, then it will 
-              automatically enable it.
-              default=False
-    phaseDiffPerSpwSetup:  controls the iteration loop for the calculation of gaincal table with spw combined. 
-              If False, the iteration will be done over the fields; if True, the iteration will be done over 
-              the groups of spw from the same setup. - DEPRECATED
-              default=False
+    phaseDiff: deprecated (BWSW and B2B modes are recognized automatically)
+
     tsysPerField: passed to the perField parameter of tsysspwmap
               default=False
     splitMyScienceSpw: In the final split-out, only include the SPWs corresponding to intent OBSERVE_TARGET
@@ -132,14 +142,32 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
     useCalibratorService: if True, then, in the call to aU.getALMAFluxForMS in the setjy step, use
               aU.calibratorService(), otherwise use aU.getALMAFlux()
               default=True
+    calibratorServiceURL: the URL to pass to aU.calibratorService() if useCalibratorService==True
+              default: None - use the default of calibratorServiceURL in aU.getALMAFluxForMS()
     allowHybrid: if False, only the antennas of the dominant (most often occuring) antenna diameter are split out.
-               If True, all antennas are split out. 
+              If True, all antennas are split out. 
               default=False
     combineB2BLFspws: if True, and if the dataset uses band-to-band phase transfer, then combine the LF SPWs
-               in gaincal and use appropriate spwmaps.
+              in gaincal for PHASE calibrator and use appropriate spwmaps. This is "CASE B", minor combine.
+              default=False
+    combineB2BLFHFspws: if True, and if the dataset uses band-to-band phase transfer, then combine the LF SPWs
+              and HF SPWs in BANDPASS, DIFFGAIN (phaseint) and PHASE gaincal and use appropriate spwmaps. MOST USEFUL,
+              required for narrow Bandwidth SPW, particualrly at HF. This is "CASE C", extension of "CASE B".
+              default=False
+    combineB2BDGCspws: if True, and if the dataset uses band-to-band phase transfer, then combine the LF SPWs,
+              HF SPWs, and SpWs for the B2B offset in BANDPASS, DIFFGAIN, DIFFGAIN(B2B offset) and PHASE
+              gaincal stages and use appropriate spwmaps. This is "CASE D", extension of "CASE C" with the added
+              combine needed for the _rare_ case of weak DIFFGAIN and B2B offset with low SNR.
               default=False
     includeRenorm: if True, a step is added in the calibration script to perform renormalization
               default=True
+    vetoBPBootstrap: if True, bandpass bootstrapping will not be done even if ampcal and bandpass are different
+              default=False
+    legacyfixes: if True, generate code to apply fixes for CSV2555 and SYSCAL table times, and fixplanets even for
+              data observed on or after 1 October 2015 (ALMA Cycle 3 start). For data observed before this time,
+              the fixes are applied in any case.
+              default=False
+
     """
 
     print("The ALMA QA2 calibration script generator")
@@ -150,16 +178,30 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
 
     mycasaversion = aU.getCasaVersion()
 
-    if mycasaversion < '4.7.2':
-        casalog.post('CASA versions < 4.7.2 are no longer supported.', 'SEVERE')
+    if mycasaversion < '5.6.1':
+        casalog.post('CASA versions < 5.6.1 are no longer supported.', 'SEVERE')
 
-    latestValidatedVersion = '6.4.1' # 2022-09-08
+    latestValidatedVersion = '6.6.1' # 2024-10-23
     if re.search('^'+latestValidatedVersion, mycasaversion) == None:
         print('WARNING: You are currently running CASA %s rather than CASA %s.' % (mycasaversion, latestValidatedVersion))
-        print('WARNING: If you observe any issue, please send an email to Dirk Petry (dpetry@eso.org) or file an ALMA PRTSPR ticket.')
+        print('WARNING: If you observe any issue, please file an ALMA PRTSPR or helpdesk ticket.')
+
+    if useCalibratorService:
+        if calibratorServiceURL==None:
+            if mycasaversion > '5.9.9':
+                calibratorServiceURL = get_default_args(aU.getALMAFluxForMS)['calibratorServiceURL']
+            else:
+                casalog.post('Cannot determine default for calibratorServiceURL in CASA versions below 6.\nSet useCalibratorService to False or provide URL explicitly.', 'SEVERE')
+                return False
+        elif type(calibratorServiceURL)!=str or len(calibratorServiceURL)==0:
+            casalog.post('Parameter calibratorServiceURL value must be None or a non-empty string, e.g. "https://almascience.org/sc/flux"', 'SEVERE')
+            return False
+            
+        print("Will use calibratorServiceURL = '"+str(calibratorServiceURL)+"' in calls to aU.getALMAFluxForMS().")
 
 
     mytb = aU.createCasaTool(tbtool)
+    mymsmd = msmdtool()
 
 
     ######################################
@@ -204,10 +246,6 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
         casalog.post("refant must be a string", 'SEVERE')
         return False
 
-    # phaseDiffPerSpwSetup
-    if phaseDiffPerSpwSetup:
-        casalog.post("phaseDiffPerSpwSetup is enabled but deprecated. Useful output cannot be guaranteed.", 'WARN')
-        
     # splitMyScienceSpw, reindexMyScienceSpw
     if splitMyScienceSpw and (not reindexMyScienceSpw) and mycasaversion < '5.4':
         casalog.post("splitMyScienceSpw = True and reindexMyScienceSpw = False is not supported in CASA versions < 5.4", 'SEVERE')
@@ -241,11 +279,41 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
         casalog.post('Parameter combineB2BLFspws must be True or False.', 'SEVERE')
         return False
 
+    if type(combineB2BLFHFspws) != bool:
+        casalog.post('Parameter combineB2BLFHFspws must be True or False.', 'SEVERE')
+        return False
+
+    if type(combineB2BDGCspws) != bool:
+        casalog.post('Parameter combineB2BDGCspws must be True or False.', 'SEVERE')
+        return False
+
     if type(includeRenorm) != bool:
         casalog.post('Parameter includeRenorm must be True or False.', 'SEVERE')
         return False
 
+    if type(legacyfixes) != bool:
+        casalog.post('Parameter legacyfixes must be True or False.', 'SEVERE')
+        return False
 
+    phaseDiff=False # may be overridden later in the case of BWSW or B2B
+
+    # Logic for triggering various sections for B2B CASEs
+    # Case A - Vanilla no combine
+    # Case B - LF combine only in gaincal - combineB2BLFspws
+    # Case C - LF and HF combine, in bandpass, and other gaincal for phase solns (_not_ B2B offset)
+    #         - activate also the other mode as it is an 'add-on' 
+    if combineB2BLFHFspws:
+        combineB2BLFspws = True
+
+    # Case D - LF and HF combine PLUS also combine the Diffgain cal solutions in the B2B offset
+    #      - activate all other cases as this is an 'add-on'
+    if combineB2BDGCspws:
+        combineB2BLFHFspws = True
+        combineB2BLFspws = True
+
+    # With this CASE logic sequence, only the minimal 'trigger' needs to be coded in, i.e. combineB2BLF only where required
+    # and will trigger in all other cases.
+    
     # end initial parameter parsing
     ##################################
 
@@ -292,12 +360,22 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
 
             importasdm(asdmName, vis=msName, asis=asis1, bdfflags=bdfflags, lazy=lazy, process_caldevice=False, with_pointing_correction=with_pointing_correction)
 
+        print('Determining the date of the observation')
+        mymsmd.open(msName)
+        thestartmjd = mymsmd.timerangeforobs(0)['begin']['m0']['value']
+        mymsmd.close()
+        if thestartmjd < 57296 and not legacyfixes:
+            legacyfixes = True
+            print('** Data was taken on MJD '+str(round(thestartmjd,1))+', i.e. before 1 Oct 2015. Will generate code for legacyfixes.')
+            
+        
     msNames = sorted(msNames)
     valueMaps = {}
 
     for msName in msNames:
 
-        if step not in ['fluxcal']: sfsdr.fixForCSV2555(msName)
+        if legacyfixes:
+            if step not in ['fluxcal']: sfsdr.fixForCSV2555(msName)
 
         if os.getlogin == 'aod':
             sfsdr.listOfIntentsWithSources(msName)
@@ -359,6 +437,7 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
 
             mystepdict = {}
             mystepindent = "  "
+            myrepgenpardict = {} # parameters for the final QA2 report generation are gathered here
 
             tsysmap = ''
             if re.search('^3.3', mycasaversion) == None and skipSyscalChecks == False: # do Syscall checks
@@ -375,7 +454,6 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
                 gencal(vis = msName, caltable = msName+'.tsys.temp', caltype = 'tsys')
 
                 print("\n*** SEARCH FOR MISSING SCANS IN SYSCAL TABLE ***")
-                mymsmd = msmdtool()
                 mymsmd.open(msName)
 
                 scans1 = sorted(mymsmd.scansforintent('CALIBRATE_ATMOSPHERE#*').tolist()) # T. Hunter 2014-08-14
@@ -462,24 +540,28 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
 
             stext += "\n  if not os.path.exists('"+msName+".flagversions'):\n    print('ERROR in importasdm. Output MS is probably not useful. Will stop here.')\n    thesteps = []"
 
-            stext += "\nif applyonly != True: es.fixForCSV2555('"+msName+"')"
+            if legacyfixes:
+                stext += "\nif applyonly != True: es.fixForCSV2555('"+msName+"')"
+                
             sfsdr.addReducScriptStep(f1, mystepdict, "Import of the ASDM", stext, mystepindent, applyonly=True)
 
-            ### add fixsyscaltimes step: see CAS-4981, CSV-2841, ICT-3642; sometimes needed for cycle 0-2.
-            if mycasaversion < '5.9.9':
-                stext = "from recipes.almahelpers import fixsyscaltimes\nfixsyscaltimes(vis = '"+msName+"')"
-            else:
-                stext = "from casarecipes.almahelpers import fixsyscaltimes\nfixsyscaltimes(vis = '"+msName+"')"
-            sfsdr.addReducScriptStep(f1, mystepdict, "Fix of SYSCAL table times", stext, mystepindent, applyonly=True)
+            if legacyfixes:
+                ### add fixsyscaltimes step: see CAS-4981, CSV-2841, ICT-3642; sometimes needed for cycle 0-2.
+                if mycasaversion < '5.9.9':
+                    stext = "from recipes.almahelpers import fixsyscaltimes\nfixsyscaltimes(vis = '"+msName+"')"
+                else:
+                    stext = "from casarecipes.almahelpers import fixsyscaltimes\nfixsyscaltimes(vis = '"+msName+"')"
+                sfsdr.addReducScriptStep(f1, mystepdict, "Fix of SYSCAL table times", stext, mystepindent, applyonly=True)
 
             print('print("# A priori calibration")\n', file=f1)
 
-            ### add fixplanets step if needed 
-            stext = doRunFixPlanets(msName)
-            if stext is not None: 
-                sfsdr.addReducScriptStep(f1, mystepdict, "Running fixplanets on fields with 0,0 coordinates", stext, mystepindent, applyonly=True)
-            else:
-                print('No (0,0) coordinates found. fixplanets step not needed.')
+            if legacyfixes:
+                ### add fixplanets step if needed 
+                stext = doRunFixPlanets(msName)
+                if stext is not None: 
+                    sfsdr.addReducScriptStep(f1, mystepdict, "Running fixplanets on fields with 0,0 coordinates", stext, mystepindent, applyonly=True)
+                else:
+                    print('No (0,0) coordinates found. fixplanets step not needed.')
 
             ### add listobs step
             stext = "os.system('rm -rf %s.listobs')\n" %(msName) # Added by CLB
@@ -502,7 +584,7 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
 
             ### add antpos (if needed) and first applycal step
             if corrAntPos == True:
-                stext = sfsdr.correctMyAntennaPositions(msName) # use default setting for lbc
+                stext = sfsdr.correctMyAntennaPositions(msName)  ## use default setting for maxSearchDays, see also SCIREQ-2684
                 if stext is not None:
                     sfsdr.addReducScriptStep(f1, mystepdict, "Generation of the antenna position cal table", stext, mystepindent)
                     stext = doApplyAprioriCalTables(msName, tsys=tsysCalTableName[0], wvr=wvrCalTableName[0], antpos=msName+'.antpos', tsysmap=tsysmap, tsysChanTol=tsysChanTol, tsysPerField=tsysPerField, valueMaps=valueMaps)
@@ -537,8 +619,9 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
             sfsdr.addReducScriptStep(f1, mystepdict, "Initial flagging", stext, mystepindent)
 
             ### add setjy step
-            stext = doRunSetjy(msName, msName1=msName+'.split', iHaveSplitMyScienceSpw=reindexMyScienceSpw, 
-                               useCalibratorService=useCalibratorService, isB2B=isB2B, valueMaps=valueMaps)
+            stext, theFluxCalNames = doRunSetjy(msName, msName1=msName+'.split', iHaveSplitMyScienceSpw=reindexMyScienceSpw, 
+                                                useCalibratorService=useCalibratorService, calibratorServiceURL=calibratorServiceURL,  
+                                                isB2B=isB2B, valueMaps=valueMaps)
             sfsdr.addReducScriptStep(f1, mystepdict, "Putting a model for the flux calibrator(s)", stext, mystepindent)
 
             ### add bandpass step
@@ -549,7 +632,8 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
                 thebpassCalTableName = []
                 stext = doBandpassCalibration(msName, msName1=msName+'.split', iHaveSplitMyScienceSpw=reindexMyScienceSpw, 
                                               refant=myRefAnt, calTableName=thebpassCalTableName, lowSNR=lowSNR, lbc=lbc, 
-                                              phaseDiff=phaseDiff, isB2B=isB2B, isBWSW=isBWSW, isFullP=isFullP, 
+                                              phaseDiff=phaseDiff, isB2B=isB2B, isBWSW=isBWSW, combineB2BLFHFspws=combineB2BLFHFspws, isFullP=isFullP, 
+                                              bpassCalId=bpassCalId, theFluxCalNames=theFluxCalNames, vetoBPBootstrap=vetoBPBootstrap,
                                               valueMaps=valueMaps)
                 #### NOTE: thebpassCalTableName[0] is set by doBandpassCalibration!
                 sfsdr.addReducScriptStep(f1, mystepdict, "Bandpass calibration", stext, mystepindent)
@@ -563,41 +647,66 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
             ampForSci = []
             if isB2B:
                 stext = doB2BGainCalibrationPartI(msName, msName1=msName+'.split', iHaveSplitMyScienceSpw=reindexMyScienceSpw, refant=myRefAnt, 
-                                                  bandpass=thebpassCalTableName[0], valueMaps=valueMaps, combineB2BLFspws=combineB2BLFspws)
+                                                  bandpass=thebpassCalTableName[0], valueMaps=valueMaps, combineB2BLFspws=combineB2BLFspws,
+                                                  combineB2BLFHFspws=combineB2BLFHFspws, combineB2BDGCspws=combineB2BDGCspws)
                 sfsdr.addReducScriptStep(f1, mystepdict, "B2B Gain calibration Part I", stext, mystepindent)
 
                 stext = doB2BGainCalibrationPartII(msName, msName1=msName+'.split', iHaveSplitMyScienceSpw=reindexMyScienceSpw, refant=myRefAnt, 
                                                    bandpass=thebpassCalTableName[0], ampForSci=ampForSci, 
-                                                   valueMaps=valueMaps, combineB2BLFspws=combineB2BLFspws)
+                                                   valueMaps=valueMaps, combineB2BLFspws=combineB2BLFspws,
+                                                   combineB2BLFHFspws=combineB2BLFHFspws, combineB2BDGCspws=combineB2BDGCspws)
                 sfsdr.addReducScriptStep(f1, mystepdict, "B2B Gain calibration Part II", stext, mystepindent)
 
             else:
                 stext = doGainCalibration(msName, msName1=msName+'.split', iHaveSplitMyScienceSpw=reindexMyScienceSpw, refant=myRefAnt, 
                                           bandpass=thebpassCalTableName[0], phaseDiffCalTableName=phaseDiffCalTableName, ampForSci=ampForSci, 
-                                          phaseDiff=phaseDiff, phaseDiffPerSpwSetup=phaseDiffPerSpwSetup, 
+                                          phaseDiff=phaseDiff, 
                                           isBWSW=isBWSW,
                                           valueMaps=valueMaps)
                 sfsdr.addReducScriptStep(f1, mystepdict, "Gain calibration", stext, mystepindent)
+
+            ## for CASA 6.6.1 and later: add renorm step before applycal
+            renormTableName=''
+            renorm_message=''
+            if addRenormStep and (mycasaversion > '6.6.0'):
+                # we have already checked above that the present CASA version actually has the renorm recipes available
+                try:
+                    rn = ACreNorm(msName)
+                except:
+                    print(sys.exc_info())
+                    casalog.post('Error in ACreNorm from pipeline.extern.almarenorm ! You may want to run again with includeRenorm=False.', 'WARN')
+                    sys.exit('Error in ACreNorm from pipeline.extern.almarenorm ! You may want to run again with includeRenorm=False.')
+                if rn.tdm_only:
+                    casalog.post('This dataset only has TDM SPWs. No renorm investigation needed.', 'INFO')
+                else:
+                    stext, renormTableName = doRenormTable(msName, msName1=msName+'.split', isB2B=isB2B, isBWSW=isBWSW,
+                                                           iHaveSplitMyScienceSpw=reindexMyScienceSpw, valueMaps=valueMaps)
+                    renorm_message = ' and the renorm table'
+                    sfsdr.addReducScriptStep(f1, mystepdict, "Renormalization", stext, mystepindent)
+
 
             ### add safeflags step
             stext = doSaveFlags(msName+'.split', name='BeforeApplycal')
             sfsdr.addReducScriptStep(f1, mystepdict, "Save flags before applycal", stext, mystepindent, applyonly=True)
 
+              
             ### add final applycal step
             if isB2B:
                 stext = doApplyB2BBandpassAndGainCalTables(msName, msName1=msName+'.split', iHaveSplitMyScienceSpw=reindexMyScienceSpw, 
-                                                           bandpass=thebpassCalTableName[0], valueMaps=valueMaps, combineB2BLFspws=combineB2BLFspws)
+                                                           bandpass=thebpassCalTableName[0], valueMaps=valueMaps, combineB2BLFspws=combineB2BLFspws,
+                                                           combineB2BLFHFspws=combineB2BLFHFspws, combineB2BDGCspws=combineB2BDGCspws,
+                                                           renorm=renormTableName)
             else:
                 stext = doApplyBandpassAndGainCalTables(msName, msName1=msName+'.split', iHaveSplitMyScienceSpw=reindexMyScienceSpw, 
                                                         bandpass=thebpassCalTableName[0], phaseForCal=msName+'.split.phase_int', 
                                                         phaseForSci=msName+'.split.phase_inf', flux=msName+'.split.flux_inf', 
                                                         phaseDiffCalTableName=phaseDiffCalTableName, ampForSci=ampForSci, 
-                                                        phaseDiffPerSpwSetup=phaseDiffPerSpwSetup, valueMaps=valueMaps)
+                                                        valueMaps=valueMaps, renorm=renormTableName)
 
-            sfsdr.addReducScriptStep(f1, mystepdict, "Application of the bandpass and gain cal tables", stext, mystepindent, applyonly=True)
+            sfsdr.addReducScriptStep(f1, mystepdict, "Application of the bandpass and gain cal tables"+renorm_message, stext, mystepindent, applyonly=True)
 
 
-            if addRenormStep: ### add a renormalisation step to investigate and fix problems with ATM lines, if there are FDM SPWs
+            if addRenormStep and (mycasaversion < '6.6.1'): ### add a renormalisation step to investigate and fix problems with ATM lines, if there are FDM SPWs
                 # we have already checked above that the present CASA version actually has the renorm recipes available
                 try:
                     rn = ACreNorm(msName)
@@ -619,6 +728,12 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
             ### add final flagsave step
             stext = doSaveFlags(msName+'.split.cal', name='AfterApplycal')
             sfsdr.addReducScriptStep(f1, mystepdict, "Save flags after applycal", stext, mystepindent, applyonly=True)
+
+            ### add QA2 report generation step
+
+            stext = doQa2ReportGeneration(msName, refant=myRefAnt, isB2B=isB2B, isBWSW=isBWSW, iHaveSplitMyScienceSpw=reindexMyScienceSpw)
+            sfsdr.addReducScriptStep(f1, mystepdict, "Generate QA2 Report", stext, mystepindent, applyonly=True)
+
 
             ### finish script by adding header
             sfsdr.prependReducScriptHeader(f1, mystepdict, "Created using "+version(), mystepindent)
@@ -713,8 +828,9 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
             print("# Using reference antenna = "+myRefAnt+"\n", file=f1)
 
             print('print("# A priori calibration")\n', file=f1)
-            stext = doRunFixPlanets(msName)
-            if stext is not None: sfsdr.addReducScriptStep(f1, mystepdict, "Running fixplanets on fields with 0,0 coordinates", stext, mystepindent)
+            if legacyfixes:
+                stext = doRunFixPlanets(msName)
+                if stext is not None: sfsdr.addReducScriptStep(f1, mystepdict, "Running fixplanets on fields with 0,0 coordinates", stext, mystepindent)
 
             stext = "os.system('rm -rf %s.listobs')\n" %(msName) # Added by CLB
             stext += "listobs(vis = '"+msName+"',\n  listfile = '"+msName+".listobs')\n\n" # Modified by CLB
@@ -729,7 +845,7 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
             sfsdr.addReducScriptStep(f1, mystepdict, "Generation of the Tsys cal table", stext, mystepindent)
 
             if corrAntPos == True:
-                stext = sfsdr.correctMyAntennaPositions(msName)
+                stext = sfsdr.correctMyAntennaPositions(msName) # use default setting for maxSearchDays, see also SCIREQ-2684
             if corrAntPos == True and stext is not None:
                 sfsdr.addReducScriptStep(f1, mystepdict, "Generation of the antenna position cal table", stext, mystepindent)
                 stext = doApplyAprioriCalTables(msName, tsys=tsysCalTableName[0], wvr=wvrCalTableName[0], antpos=msName+'.antpos', tsysmap=tsysmap, valueMaps=valueMaps)
@@ -752,17 +868,20 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
             sfsdr.addReducScriptStep(f1, mystepdict, "Listobs, clear pointing table, and save original flags", stext, mystepindent)
             stext = doInitialFlagging(msName, msName1=msName+'.split', iHaveSplitMyScienceSpw=reindexMyScienceSpw)
             sfsdr.addReducScriptStep(f1, mystepdict, "Initial flagging", stext, mystepindent)
-            stext = doRunSetjy(msName, msName1=msName+'.split', iHaveSplitMyScienceSpw=reindexMyScienceSpw, useCalibratorService=useCalibratorService, valueMaps=valueMaps)
+            stext, theFluxCalNames = doRunSetjy(msName, msName1=msName+'.split', iHaveSplitMyScienceSpw=reindexMyScienceSpw, 
+                                                useCalibratorService=useCalibratorService, calibratorServiceURL=calibratorServiceURL, valueMaps=valueMaps)
             sfsdr.addReducScriptStep(f1, mystepdict, "Putting a model for the flux calibrator(s)", stext, mystepindent)
             stext = doSaveFlags(msName+'.split', name='BeforeBandpassCalibration')
             sfsdr.addReducScriptStep(f1, mystepdict, "Save flags before bandpass cal", stext, mystepindent)
             thebpassCalTableName = []
             stext = doBandpassCalibration(msName, msName1=msName+'.split', bpassCalId=bpassCalId, iHaveSplitMyScienceSpw=reindexMyScienceSpw, refant=myRefAnt, 
-                                          calTableName=thebpassCalTableName, valueMaps=valueMaps)
+                                          calTableName=thebpassCalTableName, theFluxCalNames=theFluxCalNames, vetoBPBootstrap=vetoBPBootstrap,
+                                          valueMaps=valueMaps)
             sfsdr.addReducScriptStep(f1, mystepdict, "Bandpass calibration", stext, mystepindent)
             stext = doSaveFlags(msName+'.split', name='BeforeGainCalibration')
             sfsdr.addReducScriptStep(f1, mystepdict, "Save flags before gain cal", stext, mystepindent)
-            stext = doGainCalibration(msName, msName1=msName+'.split', iHaveSplitMyScienceSpw=reindexMyScienceSpw, refant=myRefAnt, bandpass=thebpassCalTableName[0], gaintypeForAmp='T', valueMaps=valueMaps)
+            stext = doGainCalibration(msName, msName1=msName+'.split', iHaveSplitMyScienceSpw=reindexMyScienceSpw, refant=myRefAnt,
+                                      bandpass=thebpassCalTableName[0], gaintypeForAmp='T', valueMaps=valueMaps)
             sfsdr.addReducScriptStep(f1, mystepdict, "Gain calibration", stext, mystepindent)
 
             sfsdr.prependReducScriptHeader(f1, mystepdict, "Created using "+version(), mystepindent)
@@ -793,7 +912,7 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
             obsTimeRange = mytb.getcol('TIME_RANGE')
             obsTime = (obsTimeRange[0]+obsTimeRange[1])/2.0
             obsTime = ((obsTime/86400.0)+2400000.5-2440587.5)*86400.0
-            obsTime = timeUtilities.strftime('%Y-%m-%dT%H:%M:%S', timeUtilities.gmtime(obsTime))
+            obsTime = timeUtilities.strftime('%Y-%m-%dT%H:%M:%S', timeUtilities.gmtime(int(obsTime[0])))
             mytb.close()
 
             mystepdict = {}
@@ -1042,11 +1161,14 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
 
             stext += "  importasdm('"+re.findall('.+(?=\.ms)', msName, re.IGNORECASE)[0]+"', asis='"+asis1+"', bdfflags="+str(bdfflags)+", lazy="+str(lazy)+", process_caldevice=False, with_pointing_correction="+str(with_pointing_correction)+")"
 
-            stext += "\nif applyonly != True: es.fixForCSV2555('"+msName+"')"
+            if legacyfixes:
+                stext += "\nif applyonly != True: es.fixForCSV2555('"+msName+"')"
+                
             sfsdr.addReducScriptStep(f1, mystepdict, "Import of the ASDM", stext, mystepindent, applyonly=True)
 
-            stext = doRunFixPlanets(msName)
-            if stext is not None: sfsdr.addReducScriptStep(f1, mystepdict, "Running fixplanets on fields with 0,0 coordinates", stext, mystepindent)
+            if legacyfixes:
+                stext = doRunFixPlanets(msName)
+                if stext is not None: sfsdr.addReducScriptStep(f1, mystepdict, "Running fixplanets on fields with 0,0 coordinates", stext, mystepindent)
 
             mytb.open(msName+'/ANTENNA')
             antNames = mytb.getcol('NAME').tolist()
@@ -1154,7 +1276,7 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
             obsTimeRange = mytb.getcol('TIME_RANGE')
             mytb.close()
             obsTimeStart = ((obsTimeRange[0]/86400.0)+2400000.5-2440587.5)*86400.0
-            obsTimeStart = timeUtilities.strftime('%Y-%m-%dT%H:%M:%S', timeUtilities.gmtime(obsTimeStart))
+            obsTimeStart = timeUtilities.strftime('%Y-%m-%dT%H:%M:%S', timeUtilities.gmtime(int(obsTimeStart[0])))
 
             if step in ['SDcalibLine', 'SDscience']:
 
@@ -1168,6 +1290,9 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
                     stext = SDdoCalibration(asapNames, msName=msName, tsysCalTableName=tsysCalTableName[0], skyCalTableName=skyCalTableName[0],
                                             jyCalTableName=jyCalTableName[0])
                     sfsdr.addReducScriptStep(f1, mystepdict, "Calibration of the data into Janskys", stext, mystepindent)
+
+                    stext = SDdoAtmCor(msName=msName, jyCalTableName=jyCalTableName[0])
+                    sfsdr.addReducScriptStep(f1, mystepdict, "Correction of residual atmospheric features (sdatmcor)", stext, mystepindent)
 
 
                 if mycasaversion < '5.0':
@@ -1272,14 +1397,18 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
 
                 sfsdr.addReducScriptStep(f1, mystepdict, "Convert the Science Target Units from Kelvin to Jansky", stext, mystepindent)
 
-            if step in ['SDscience', 'SDampcal']:
+            ###############################################
+
+            if step in ['SDampcal']:
+
+                print('Preparing imaging code ...')
 
                 imagingParams[msName] = {}
 
                 imagingParams[msName]['spwIds'] = spwIds
                 print("running au.getTPSampling('%s', showplot=False, pickFirstRaster=True)" % (msName))
                 xSampling, ySampling, maxsize = aU.getTPSampling(msName, showplot=False, pickFirstRaster=True)
-                imagingParams[msName]['maxsize'] = maxsize
+                imagingParams[msName]['maxsize'] = float(maxsize)
                 mymsmd = msmdtool()
                 mymsmd.open(msName)
 
@@ -1312,6 +1441,163 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
 
                 mymsmd.close()
 
+            if step in ['SDscience']:
+
+                print('Preparing imaging code (SDscience) ...')
+                ignoreOFF = True # meaning we will prepare a POINTING table for getTPSampling which has no off-source positions
+                myqa = qatool()
+
+                imagingParams[msName] = {}
+
+                imagingParams[msName]['spwIds'] = spwIds
+
+                ephemFieldNames = aU.getEphemerisFields(msName)
+
+                mymsmd = msmdtool()
+                mymsmd.open(msName)
+
+                fieldIds = list(mymsmd.fieldsforintent('OBSERVE_TARGET#ON_SOURCE'))
+
+                isMultiField=False
+                if len(fieldIds) > 1:
+                    isMultiField=True
+                    casalog.post('NOTE: there are '+str(len(fieldIds))+' science fields, i.e. more than one.', 'WARN')
+                elif len(fieldIds) == 0:
+                    casalog.post('ERROR: There are no science fields.', 'SEVERE')
+                    return False
+
+                imagingParams[msName]['fieldIds'] = fieldIds
+                imagingParams[msName]['maxsize'] = {}
+                fieldNames = {}
+
+                for i in fieldIds:
+                    fieldName = mymsmd.namesforfields(i)[0]
+                    fieldNames[i] = fieldName
+
+                    scansToUse = np.intersect1d(mymsmd.scansforfield(i), mymsmd.scansforintent('OBSERVE_TARGET#ON_SOURCE'))
+                    if len(scansToUse)==0:
+                        casalog.post('No scans observing field '+str(i), 'WARN')
+                        imagingParams[msName]['maxsize'][fieldName] = 0.
+                        continue
+                    scansToUseStr = str(scansToUse[0])
+                    if not (fieldName in ephemFieldNames): # for ephem fields, use only first scan, otherwise all relevant
+                        for k in scansToUse[1:]:
+                            scansToUseStr+=','+str(k)
+
+                    if ignoreOFF:
+                        if isMultiField:
+                            mytimes = mymsmd.timesforfield(i)
+                            myt = myqa.quantity(v=mytimes[0], unitname='s') 
+                            myt2 = myqa.quantity(v=mytimes[-1], unitname='s') 
+                            mytimerange = myqa.time(myt, form='ymd')[0]+'~'+myqa.time(myt2, form='ymd')[0]                        
+                            print('Splitting out time range '+mytimerange+' to determine sampling for field '+fieldName)
+                            tmp_msname = 'tmp_field'+str(i)+'_'+msName
+                            os.system('rm -rf '+tmp_msname)
+                            mstransform(vis=msName, timerange=mytimerange, spw=sorted(spwInfo.keys())[0], outputvis=tmp_msname, 
+                                        nchan=1, datacolumn='data', antenna='0&&0', scan=scansToUseStr)  
+                        else:
+                            # we save the time for splitting and modify the POINTING table in place but keep a copy
+                            tmp_msname = msName 
+                            tmp_orig_pointing = msName+'/originalPOINTING'
+                            os.system('rm -rf '+tmp_orig_pointing)
+                            os.system('cp -R '+msName+'/POINTING '+tmp_orig_pointing)
+
+                        # load from POINTING columns TIME, from Main TIME and STATE_ID, from STATE: OBS_MODE
+                        mytb.open(tmp_msname+'/POINTING')
+                        poiTime = mytb.getcol('TIME')
+                        poiInterval = mytb.getcell('INTERVAL',0) 
+                        mytb.close()
+                        mytb.open(tmp_msname)
+                        mainTime = mytb.getcol('TIME')
+                        mainStateId = mytb.getcol('STATE_ID')
+                        mytb.close()
+                        mytb.open(tmp_msname+'/STATE')
+                        stateObsMode = mytb.getcol('OBS_MODE')
+                        mytb.close()
+                        # Loop over OBS_MODE and get state_ids for ON_SOURCE
+                        onsource_stateIds = []
+                        for k in range(len(stateObsMode)):
+                            if stateObsMode[k] == 'OBSERVE_TARGET#ON_SOURCE':
+                                onsource_stateIds.append(k)
+                        print('   onsource_stateIds ', onsource_stateIds)
+                        print('   Determining on-source subscan times ...')
+                        # loop over mainTime and mainStateId to get beginning and end of each on_source sub-scan: subscan_start[], subscan_end[]
+                        subscan_start = []
+                        subscan_end = []
+                        timeSafetyMargin = 1.0 # seconds
+                        if timeSafetyMargin < poiInterval:
+                            timeSafetyMargin = poiInterval
+                        curr_sId = -1 # the current onsource state ID
+                        for k, mT in enumerate(mainTime):
+                            if curr_sId > 0:
+                                if mainStateId[k] == curr_sId:
+                                    continue
+                                else: # we have reached the end of an onsource subscan
+                                    subscan_end.append(mT-timeSafetyMargin)
+                                    curr_sId = -1
+                            else: # search for next 
+                                for sId in onsource_stateIds:
+                                    if mainStateId[k] == sId: # we are in an onsource subscan
+                                        subscan_start.append(mT+timeSafetyMargin)
+                                        curr_sId = sId
+                                        break
+                        if len(subscan_start)>len(subscan_end): 
+                            # the last onsource subscan ended at the end of mainTime
+                            subscan_end.append(mainTime[-1]-timeSafetyMargin)
+
+                        # loop over pointing time and compile list of rows which are not in an on_source subscan
+                        print('   Removing other subscan times from POINTING ...')
+                        pRowsToBeDel = []
+                        kstart = 0
+                        for j, pT in enumerate(poiTime):
+                            notFound = True
+                            for k in range(kstart, len(subscan_start)):
+                                if subscan_start[k]<=pT and pT<subscan_end[k]:
+                                    notFound = False
+                                    kstart = k # earlier subscans can now be ignored
+                                    break
+                            if notFound:
+                                #print(j)
+                                pRowsToBeDel.append(j)
+                        # delete the list of rows from POINTING
+                        mytb.open(tmp_msname+'/POINTING', nomodify=False)
+                        print('   Deleting '+str(len(pRowsToBeDel))+' rows from POINTING table of '+tmp_msname)
+                        mytb.removerows(pRowsToBeDel)
+                        mytb.close()
+                        samplingPlotName = msName+'.'+'sampling_field'+str(i)+'.png'
+
+                        print("   running au.getTPSampling('"+tmp_msname+"', showplot=True, plotfile='"+samplingPlotName+"',pickFirstRaster=False, field='"+fieldName+"', scan='"+scansToUseStr+"')")
+                        xSampling, ySampling, maxsize = aU.getTPSampling(tmp_msname, showplot=True, plotfile=samplingPlotName, pickFirstRaster=False, field=fieldName, scan=scansToUseStr)
+
+                        if isMultiField:
+                            os.system('rm -rf '+tmp_msname)
+                        else:
+                            print('Restoring POINTING table in '+msName)
+                            os.system('rm -rf '+msName+'/POINTING')
+                            os.system('mv '+tmp_orig_pointing+' '+msName+'/POINTING')
+
+                    else: # don't ignore off
+                        print("running au.getTPSampling("+msName+", showplot=False, pickFirstRaster=False, field='"+fieldName+"', scan="+scansToUseStr+")")
+                        xSampling, ySampling, maxsize = aU.getTPSampling(msName, showplot=False, pickFirstRaster=False, field=fieldName, scan=scansToUseStr)
+
+                    print("   ... found maxsize (arcsec) for field "+str(i)+" to be ", float(maxsize))
+                    imagingParams[msName]['maxsize'][fieldName] = float(maxsize)
+
+                for i in sorted(spwInfo.keys()):
+                    imagingParams[msName][i] = {}
+
+                    freq = mymsmd.meanfreq(i)
+                    imagingParams[msName][i]['freq'] = freq
+
+                    theorybeam = aU.primaryBeamArcsec(frequency=freq*1e-9, fwhmfactor=1.13, diameter=12)
+                    imagingParams[msName][i]['theorybeam'] = theorybeam
+
+                    minor, major, fwhmsfBeam, sfbeam = aU.sfBeam(frequency=freq*1e-9, pixelsize=theorybeam/9.0, convsupport=6, img=None, stokes='both', xSamplingArcsec=xSampling, ySamplingArcsec=ySampling, fwhmfactor=1.13, diameter=12)
+                    imagingParams[msName][i]['sfbeam'] = sfbeam
+
+                mymsmd.close()
+
+
             if step == 'SDampcal':
 
                 stext = "# the values below were calculated assuming fwhmfactor = 1.13\n\n"
@@ -1336,7 +1622,8 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
 
                 stext += "\nfor spw in "+str(spwIds)+":\n\n"
                 stext += "  cell = theorybeam[spw]/9.0\n"
-                stext += "  imsize = int(round(maxsize/cell)*2)\n\n"
+                stext += "  imsize = int(1.5*maxsize/cell)\n"
+                stext += "  imsize += (imsize % 2)\n\n"
                 stext += "  for ant in "+str(antNames)+":\n\n"
                 stext += "    sdimaging(infiles = '"+msName+".cal',\n"
                 stext += "      field = '"+fieldName+"',\n"
@@ -1370,7 +1657,8 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
                         srcsize = (planetInfo['majorAxis']*planetInfo['minorAxis'])**0.5
                         spwfreq = planetInfo['meanFrequency']
                     else:
-                        qsoInfo = aU.getALMAFluxForMS(msName, field=fieldName, spw=str(i), useCalibratorService=useCalibratorService)
+                        qsoInfo = aU.getALMAFluxForMS(msName, field=fieldName, spw=str(i), useCalibratorService=useCalibratorService,
+                                                      calibratorServiceURL=calibratorServiceURL)
                         srcflux = qsoInfo[fieldName]['fluxDensity']
                         spwfreq = qsoInfo[fieldName]['frequency']
 
@@ -1409,7 +1697,7 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
                 obsTimeRange = mytb.getcol('TIME_RANGE')
                 obsTime = (obsTimeRange[0]+obsTimeRange[1])/2.0
                 obsTime = ((obsTime/86400.0)+2400000.5-2440587.5)*86400.0
-                obsTime = timeUtilities.strftime('%Y-%m-%dT%H:%M:%S', timeUtilities.gmtime(obsTime))
+                obsTime = timeUtilities.strftime('%Y-%m-%dT%H:%M:%S', timeUtilities.gmtime(int(obsTime[0])))
                 mytb.close()
 
                 stext += "date = '"+obsTime+"'\n"
@@ -1480,7 +1768,10 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
 
             stext = 'msNames = [ \\\n'
             for i in range(len(msNames)):
-                stext += "'"+msNames[i]+".cal.jy', \\\n"
+                if mycasaversion < '6.4.4':
+                    stext += "'"+msNames[i]+".cal.jy', \\\n"
+                else:
+                    stext += "'"+msNames[i]+".cal', \\\n"
             stext += ']\n\n'
 
             tos = []
@@ -1491,6 +1782,8 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
             stext += "# Total = "+str(round(np.sum(tos), 1))+" min"
 
             sfsdr.addReducScriptStep(f1, mystepdict, "Define the calibrated datasets", stext, mystepindent)
+
+            ############################################
 
             splitMS = False
             for i in range(len(msNames)):
@@ -1527,27 +1820,63 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
 
                 sfsdr.addReducScriptStep(f1, mystepdict, "Split the science spectral windows", stext, mystepindent)
 
+            #######################################################
+
+
+            myspwids = sorted(imagingParams[msNames[0]]['spwIds'])
+
             stext = "# only the spectral windows listed below will be imaged\n"
-            stext += "spwIds = "+str(imagingParams[msNames[0]]['spwIds'])+"\n\n"
+
+            stext += "spwIds = "+str(myspwids)+"\n\n"
 
             if mycasaversion >= '5.0':
 
                 blspwmap = {}
-                for i in imagingParams[msNames[0]]['spwIds']: blspwmap[i] = str(imagingParams[msNames[0]]['spwIds'].index(i))
+                for i in myspwids: blspwmap[i] = str(myspwids.index(i))
                 stext += "blspwmap = "+str(blspwmap)+"\n"
 
+            # image name endings 
+            myimagename = {}            
+            for i in myspwids:
+                myimagename[i] = '_sci.spw'+str(i)+'.cube.I.manual'
+
+            stext += "\nmyimagenames = {"
+            for i in myspwids:
+                stext += "'"+str(i)+"': '"+myimagename[i]+"',\n                "
+            stext += "}\n"
+
+            # science fields
+            stext += "\nmyfields = {"
+            for i in fieldNames.keys():
+                stext += "'"+str(i)+"': '"+fieldNames[i]+"',\n            "
+            stext += "}\n"
+
+            # maxsizes for the science fields
+            stext += "\nmymaxsizes = {"
+            for i in fieldNames.keys():
+                stext += "'"+str(i)+"': "+str(imagingParams[msNames[0]]['maxsize'][fieldNames[i]])+",\n              "
+            stext += "}\n"
 
             sfsdr.addReducScriptStep(f1, mystepdict, "Define the imaging parameters", stext, mystepindent)
 
-            fieldId = imagingParams[msNames[0]]['fieldId']
-            fieldName = imagingParams[msNames[0]]['fieldName']
+            #######################################################
 
-            stext = "# the values below were calculated assuming fwhmfactor = 1.13\n\n"
-            stext += "maxsize = "+str(imagingParams[msNames[0]]['maxsize'])+"\n\n"
+            haveEphemTarget = False
+            for i in fieldNames.keys():
+                if fieldNames[i] in ephemFieldNames:
+                    haveEphemTarget = True
+                    break
+
+            if mycasaversion < '6.6' and not haveEphemTarget:
+                stext = ''
+                sdimgPrefix = '' # use oldfashioned sdimaging
+            else:
+                stext = "import os\n\n"
+                sdimgPrefix = 't' # use tsdimaging
+                
+            stext += "# the values below were calculated assuming fwhmfactor = 1.13\n\n"
 
             stext += "theorybeam = {}\n"
-
-            myspwids = sorted(imagingParams[msNames[0]]['spwIds'])
 
             for i in myspwids:
                 stext += "theorybeam['"+str(i)+"'] = "+str(imagingParams[msNames[0]][int(i)]['theorybeam'])+" # mean freq = "+str(imagingParams[msNames[0]][int(i)]['freq']*1e-9)+"\n"
@@ -1555,15 +1884,8 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
             stext += "\n# the values below were calculated assuming cell = theorybeam[spw]/9.0\n"
             stext += "sfbeam = {}\n"
 
-            myimagename = {}            
             for i in myspwids:
                 stext += "sfbeam['"+str(i)+"'] = "+str(imagingParams[msNames[0]][int(i)]['sfbeam'])+" # mean freq = "+str(imagingParams[msNames[0]][int(i)]['freq']*1e-9)+"\n"
-                myimagename[i] = aU.genImageName(vis=msNames[0], spw=int(i), field=fieldId, imtype='cube', targettype='sci', stokes='I', modtext='manual')
-
-            stext += "\nmyimagenames = {"
-            for i in myspwids:
-                stext += "'"+str(i)+"': '"+myimagename[i]+"',\n                "
-            stext += "}\n"
 
             # improvement to help with cases like SACM-576 
             limit_numebs = 9
@@ -1573,56 +1895,72 @@ def generateReducScript(msNames='', step='calib', corrAntPos=True, timeBinForFin
                 
                 stext += "\nconcat(vis = msNames, concatvis = 'concat_"+str(len(msNames))+"EBs.ms')\n"
 
+            stext += "\nfor myfieldid in myfields.keys():\n\n"
 
-            stext += "\nfor spw in spwIds:\n\n"
+            stext += "  maxsize = mymaxsizes[myfieldid]\n"
 
-            stext += "  cell = theorybeam[spw]/9.0\n"
-            stext += "  imsize = int(round(maxsize/cell)*2)\n\n"
+            stext += "\n  for spw in spwIds:\n\n"
+
+            stext += "    cell = theorybeam[spw]/9.0\n"
+            stext += "    imsize = int(1.5*maxsize/cell)\n\n"
+            stext += "    imsize += (imsize % 2)\n\n"
+
 
             if len(msNames) > limit_numebs:
-                stext += "  sdimaging(infiles = 'concat_"+str(len(msNames))+"EBs.ms',\n"
+                stext += "    "+sdimgPrefix+"sdimaging(infiles = 'concat_"+str(len(msNames))+"EBs.ms',\n"
             else:
-                stext += "  sdimaging(infiles = msNames,\n"
+                stext += "    "+sdimgPrefix+"sdimaging(infiles = msNames,\n"
 
 
-            stext += "    field = '"+fieldName+"',\n"
+            stext += "      field = myfields[myfieldid],\n"
 
             if mycasaversion < '5.0':
-                stext += "    spw = spw,\n"
+                stext += "      spw = spw,\n"
             else:
-                stext += "    spw = blspwmap[spw],\n"
+                stext += "      spw = blspwmap[spw],\n"
 
-            stext += "    mode = 'channel',\n"
-            stext += "    outframe = 'lsrk',\n"   # requires lower-case prior to fix for CAS-12820
-            stext += "    gridfunction = 'SF',\n"
-            stext += "    convsupport = 6,\n"
-            stext += "    phasecenter = "+str(fieldId)+",\n"
-            stext += "    imsize = imsize,\n"
-            stext += "    cell = str(cell)+'arcsec',\n"
-            stext += "    overwrite = True,\n"
-            stext += "    outfile = myimagenames[spw])\n\n"
+            stext += "      mode = 'channel',\n"
+            stext += "      outframe = 'lsrk',\n"   # requires lower-case prior to fix for CAS-12820
+            stext += "      gridfunction = 'SF',\n"
+            stext += "      convsupport = 6,\n"
+            if haveEphemTarget:
+                stext += "      phasecenter = 'TRACKFIELD',\n"
+                stext += "      specmode = 'cubesource',\n"
+            else:
+                stext += "      phasecenter = int(myfieldid),\n"
+
+            stext += "      imsize = imsize,\n"
+            stext += "      cell = str(cell)+'arcsec',\n"
+            stext += "      overwrite = True,\n"
+            stext += "      outfile = myfields[myfieldid]+myimagenames[spw])\n\n"
+
+            if sdimgPrefix == 't': # make up for tsdiaging file naming issue
+                stext += "    os.system('mv '+myfields[myfieldid]+myimagenames[spw]+'.image '+myfields[myfieldid]+myimagenames[spw])\n\n"
 
             sfsdr.addReducScriptStep(f1, mystepdict, "Image the Science Target", stext, mystepindent)
 
-            stext = "\nfor spw in spwIds:\n\n"
-            stext += "  imhead(imagename = myimagenames[spw],\n"
-            stext += "    mode = 'put',\n"
-            stext += "    hdkey = 'bunit',\n"
-            stext += "    hdvalue = 'Jy/beam')\n\n"
+            stext = "\nfor myfieldid in myfields.keys():\n"
+            stext += "\n  for spw in spwIds:\n\n"
+            stext += "    imhead(imagename = myfields[myfieldid]+myimagenames[spw],\n"
+            stext += "      mode = 'put',\n"
+            stext += "      hdkey = 'bunit',\n"
+            stext += "      hdvalue = 'Jy/beam')\n\n"
 
             sfsdr.addReducScriptStep(f1, mystepdict, "Correct the brightness unit in the image header", stext, mystepindent)
 
-            stext = "\nfor spw in spwIds:\n\n"
-            stext += "  myia = iatool()\n"
-            stext += "  myia.open(myimagenames[spw])\n"
-            stext += "  myia.setrestoringbeam(major = str(sfbeam[spw])+'arcsec', minor = str(sfbeam[spw])+'arcsec', pa = '0deg')\n"
-            stext += "  myia.done()\n"
+            stext = "\nfor myfieldid in myfields.keys():\n"
+            stext += "\n  for spw in spwIds:\n\n"
+            stext += "    myia = iatool()\n"
+            stext += "    myia.open(myfields[myfieldid]+myimagenames[spw])\n"
+            stext += "    myia.setrestoringbeam(major = str(sfbeam[spw])+'arcsec', minor = str(sfbeam[spw])+'arcsec', pa = '0deg')\n"
+            stext += "    myia.done()\n"
 
             sfsdr.addReducScriptStep(f1, mystepdict, "Add Restoring Beam Header Information to the Science Image", stext, mystepindent)
 
-            stext = "\nfor spw in spwIds:\n\n"
-            stext += "  exportfits(imagename = myimagenames[spw],\n"
-            stext += "    fitsimage = myimagenames[spw]+'.fits')\n\n"
+            stext = "\nfor myfieldid in myfields.keys():\n"
+            stext += "\n  for spw in spwIds:\n\n"
+            stext += "    exportfits(imagename = myfields[myfieldid]+myimagenames[spw],\n"
+            stext += "      fitsimage = myfields[myfieldid]+myimagenames[spw]+'.fits')\n\n"
 
             sfsdr.addReducScriptStep(f1, mystepdict, "Export images to fits", stext, mystepindent)
 
@@ -1643,6 +1981,8 @@ def doAprioriFlagging(msName, flagAutoCorr=True, flagCalIntents=True, valueMaps=
     print('\n*** doAprioriFlagging ***')
 
     casaCmd = ''
+
+    print('Gathering information ...')
 
     if flagCalIntents == True:
 
@@ -1784,6 +2124,8 @@ def doGenerateWVRCalTable(msName, calTableName=[], refant='', smooth=True, doplo
 
     print('\n*** doGenerateWVRCalTable ***')
 
+    print('Gathering information ...')
+
     if remcloud:
         if aU.getCasaSubversionRevision() < '35187':
             casalog.post('ERROR: remcloud option is only supported for CASA >= r35187','SEVERE')
@@ -1796,9 +2138,7 @@ def doGenerateWVRCalTable(msName, calTableName=[], refant='', smooth=True, doplo
     obsTimeRange = mytb.getcol('TIME_RANGE')
     mytb.close()
     obsTimeStart = ((obsTimeRange[0]/86400.0)+2400000.5-2440587.5)*86400.0
-    if type(obsTimeStart) in [list, np.ndarray]:
-        obsTimeStart = obsTimeStart[0]   # needed for py3.8
-    obsTimeStart = timeUtilities.strftime('%Y-%m-%dT%H:%M:%S', timeUtilities.gmtime(obsTimeStart))
+    obsTimeStart = timeUtilities.strftime('%Y-%m-%dT%H:%M:%S', timeUtilities.gmtime(int(obsTimeStart[0])))
     if obsTimeStart > '2013-01-21T00:00:00':
         wvrTimeOffset = 0
     else:
@@ -1915,6 +2255,8 @@ def doRunFixPlanets(msName):
 
     print('\n*** doRunFixPlanets ***')
 
+    print('Gathering information ...')
+
     fieldIds = sfsdr.getFieldsForFixPlanets(msName)
 
     if len(fieldIds) != 0:
@@ -1942,6 +2284,7 @@ def doGenerateTsysCalTable(msName, calTableName=[], doplot=True, isB2B=False):
     """Generate code for the Tsys table generation step of a calibration script."""
 
     print('\n*** doGenerateTsysCalTable ***')
+    print('Gathering information ...')
 
     casaCmd = ''
     
@@ -1950,9 +2293,7 @@ def doGenerateTsysCalTable(msName, calTableName=[], doplot=True, isB2B=False):
     obsTimeRange = mytb.getcol('TIME_RANGE')
     mytb.close()
     obsTimeStart = ((obsTimeRange[0]/86400.0)+2400000.5-2440587.5)*86400.0
-    if type(obsTimeStart) in [list, np.ndarray]:
-        obsTimeStart = obsTimeStart[0] # needed for py3.8
-    obsTimeStart = timeUtilities.strftime('%Y-%m-%dT%H:%M:%S', timeUtilities.gmtime(obsTimeStart))
+    obsTimeStart = timeUtilities.strftime('%Y-%m-%dT%H:%M:%S', timeUtilities.gmtime(int(obsTimeStart[0])))
 
     sciSpwInfo = sfsdr.getSpwInfo(msName, caching=True)
 
@@ -1979,7 +2320,7 @@ def doGenerateTsysCalTable(msName, calTableName=[], doplot=True, isB2B=False):
         if tsysSpwInfo[i]['numChans'] <= 256:
             if spwSpec != '': spwSpec = spwSpec+','
             chanEdge1 = chanEdge * tsysSpwInfo[i]['numChans'] / 128.
-            spwSpec = spwSpec+str(i)+':0~'+str(np.long(tsysSpwInfo[i]['numChans']*chanEdge1-1))+';'+str(np.long(tsysSpwInfo[i]['numChans']-tsysSpwInfo[i]['numChans']*chanEdge1))+'~'+str(tsysSpwInfo[i]['numChans']-1)
+            spwSpec = spwSpec+str(i)+':0~'+str(np.longlong(tsysSpwInfo[i]['numChans']*chanEdge1-1))+';'+str(np.longlong(tsysSpwInfo[i]['numChans']-tsysSpwInfo[i]['numChans']*chanEdge1))+'~'+str(tsysSpwInfo[i]['numChans']-1)
 
     if spwSpec != '':
         casaCmd = casaCmd + "# Flagging edge channels\n\n"
@@ -2074,6 +2415,7 @@ def doApplyAprioriCalTables(msName, tsys='', wvr='', antpos='', tsysmap='', tsys
     """Generate code for the applycal step (apriori calibration: WVR, Tsys, and antpos) of a calibration script."""
 
     print('\n*** doApplyAprioriCalTables ***')
+    print('Gathering information ...')
 
     casaCmd = ''
 
@@ -2179,7 +2521,7 @@ def doApplyAprioriCalTables(msName, tsys='', wvr='', antpos='', tsysmap='', tsys
                 spwIds2 = np.unique(spwIds2)
                 spwIds1 = ','.join(['%s' %j for j in spwIds if j in spwIds2])
 
-                sourceIntents = np.unique(np.hstack(np.array(sourceIntents))).tolist()
+                sourceIntents = np.unique(np.hstack(sourceIntents)).tolist()
 
                 found = 0
 
@@ -2384,6 +2726,7 @@ def doSplitOut(msName, msName1='', outMsName='', splitMyScienceSpw=False, timebi
     """Generate code for the split-out the corrected data."""
 
     print('\n*** doSplitOut ***')
+    print('Gathering information ...')
 
     if aU.getCasaVersion() >= '5.4':
         useMStransform = True
@@ -2505,6 +2848,7 @@ def doSaveFlags(msName, name=''):
     name - The flag version name (obligatory)"""
 
     print('\n*** doSaveFlags ***')
+    print('Gathering information ...')
 
     if name == '': 
         casalog.post('ERROR: Missing version name.','SEVERE')
@@ -2545,6 +2889,7 @@ def doInitialFlagging(msName, msName1='', chanEdge=0.0625, thresh=0.2, iHaveSpli
     """Generate code for the initial flagging step of a calibration script."""
 
     print('\n*** doInitialFlagging ***')
+    print('Gathering information ...')
 
     specLines = {'Neptune': [[114.00,116.50], [227.00,234.50], [340.00,351.50], [455.00,467.50], [686.00,696.50], [803.00,810.50]], # CO
         'Titan': [[114.93,115.66], [229.51,231.71], [343.86,347.58], [458.34,463.74], [687.83,694.58], [803.55,809.76], # CO
@@ -2585,7 +2930,7 @@ def doInitialFlagging(msName, msName1='', chanEdge=0.0625, thresh=0.2, iHaveSpli
                 spwSpec = spwSpec+str(i)
             else:
                 spwSpec = spwSpec+str(spwIds[i])
-            spwSpec = spwSpec+':0~'+str(np.long(sciNumChans[i]*chanEdge-1))+';'+str(np.long(sciNumChans[i]-sciNumChans[i]*chanEdge))+'~'+str(sciNumChans[i]-1)
+            spwSpec = spwSpec+':0~'+str(np.longlong(sciNumChans[i]*chanEdge-1))+';'+str(np.longlong(sciNumChans[i]-sciNumChans[i]*chanEdge))+'~'+str(sciNumChans[i]-1)
 
 
     if spwSpec != '':
@@ -2634,15 +2979,22 @@ def doInitialFlagging(msName, msName1='', chanEdge=0.0625, thresh=0.2, iHaveSpli
 
 #####################################
 
-def doRunSetjy(msName, msName1='', iHaveSplitMyScienceSpw=False, useCalibratorService=False, isB2B=False, valueMaps={}):
+def doRunSetjy(msName, msName1='', iHaveSplitMyScienceSpw=False, useCalibratorService=False, calibratorServiceURL=None, 
+               isB2B=False, valueMaps={}):
     """Generate code for the setjy step of a calibration script,
-    i.e. for setting a model for the flux calibrator(s)."""
+    i.e. for setting a model for the flux calibrator(s).
+
+    Return the generated code and the list of the name(s) of the selected flux calibrators
+
+    """
 
     print('\n*** doRunSetjy ***')
+    print('Gathering information ...')
 
     if msName1 == '': msName1 = msName
 
     casaCmd = ''
+    theFluxCalNames = [] # store the names of the fields which are actually used as fluxcal (in order of field ID)
 
     print('Decide on model or quasar fluxcal ...')
 
@@ -2659,11 +3011,11 @@ def doRunSetjy(msName, msName1='', iHaveSplitMyScienceSpw=False, useCalibratorSe
     ij = np.where(phaseDirKeywords['MEASINFO']['TabRefTypes'] == 'ICRS')[0][0]
     icrscode = phaseDirKeywords['MEASINFO']['TabRefCodes'][ij]
 
-    if fieldIds != []:
+    if fieldIds != []: # there are non-quasar flux calibrators
 
         print('Model fluxcal ...')
 
-        fieldNames1 = ['%s' %fieldNames[i] for i in fieldIds]
+        fieldNames1 = ['%s' %fieldNames[i] for i in fieldIds] # the names of the non-quasar flux calibrators
         fieldNames = ','.join(fieldNames1)
         fieldIds = ['%s' %i for i in fieldIds]
         fieldIds1 = ','.join(fieldIds)
@@ -2675,6 +3027,7 @@ def doRunSetjy(msName, msName1='', iHaveSplitMyScienceSpw=False, useCalibratorSe
             spwInfo1 = sfsdr.getSpwInfo(msName, intent='OBSERVE_TARGET|CALIBRATE_BANDPASS|CALIBRATE_DIFFGAIN', caching=True)
             spwIds1 = sorted(spwInfo1.keys())
             spwIds = [spwIds1.index(i) for i in spwIds]
+            
         spwIds = ['%s' %i for i in spwIds]
         spwIds = ','.join(spwIds)
 
@@ -2684,6 +3037,7 @@ def doRunSetjy(msName, msName1='', iHaveSplitMyScienceSpw=False, useCalibratorSe
 
                 casaCmd = casaCmd + "setjy(vis = '"+msName1+"',\n"
                 casaCmd = casaCmd + "  field = '"+fieldIds[i]+"', # "+fieldNames1[i]+"\n"
+                theFluxCalNames.append(fieldNames1[i])
                 casaCmd = casaCmd + "  spw = '"+spwIds+"',\n"
 
                 if ephemerisIds[int(fieldIds[i])] != -1 and phaseDirRef[int(fieldIds[i])] == icrscode:
@@ -2696,6 +3050,7 @@ def doRunSetjy(msName, msName1='', iHaveSplitMyScienceSpw=False, useCalibratorSe
 
             casaCmd = casaCmd + "setjy(vis = '"+msName1+"',\n"
             casaCmd = casaCmd + "  field = '"+fieldIds1+"', # "+fieldNames+"\n"
+            theFluxCalNames = fieldNames1.copy()
             casaCmd = casaCmd + "  spw = '"+spwIds+"',\n"
             haveEphemFluxcal=False
             for i in range(len(fieldIds)):
@@ -2763,161 +3118,243 @@ def doRunSetjy(msName, msName1='', iHaveSplitMyScienceSpw=False, useCalibratorSe
                 for j in range(0,2):
                     print('B2B: Will use field id '+str(myIntentSources[j]['sourceid'])+' as flux cal for SPWs '+str(explicitSpw[j]))
 
+        else: # not B2B
+            print("fluxcal SPWs:  ", myIntentSources[0]['spw'])
+            spwInfo1 = sfsdr.getSpwInfo(msName, intent='OBSERVE_TARGET|CALIBRATE_BANDPASS', caching=True)
+            spwIds1 = sorted(spwInfo1.keys())
+
+            
 
         for ii in range(len(myIntentSources)):
 
             if len(myIntentSources[ii]['sourceid']) != 0:
-
-                found = 0
 
                 fluxCalSourceId = myIntentSources[ii]['sourceid']
                 fluxCalSourceNames = myIntentSources[ii]['name']
 
                 found = 0
                 
+                sourceFluxesPerSPW = {}
+                confimedFluxCalNames = set([])
+                universal_spix = True
+                
                 if useCalibratorService:
-                    print('Running aU.getALMAFluxForMS using the calibrator service ...')
+                    print('Running aU.getALMAFluxForMS per science SPW using the calibrator service ...')
 
-                sourceFluxes = aU.getALMAFluxForMS(msName, useCalibratorService=useCalibratorService)
+                    for myspw in myIntentSources[0]['spw']:
+                        if myspw in spwIds1:
+                            print('   SPW ', myspw)
+                            sFluxes = aU.getALMAFluxForMS(msName, useCalibratorService=useCalibratorService, calibratorServiceURL=calibratorServiceURL, spw=myspw)
+                            if len(sFluxes) != 0:
+                                for j in list(sFluxes.keys()):
+                                    if j not in fluxCalSourceNames:
+                                        sFluxes.pop(j)
+                                fluxCalIds = []
+                                for j in sFluxes.keys():
+                                    fluxCalIds.append(list(fieldNames).index(j))
+                                fluxCalId = sorted(fluxCalIds)[0] # pick the fluxcal with the lowest ID
+                                fluxCalSourceName = fieldNames[fluxCalId]
+                                confimedFluxCalNames.add(fluxCalSourceName)
+                                
+                                if len(sFluxes.keys()) > 1:
+                                    casalog.post("THERE IS MORE THAN ONE FLUX CALIBRATOR. WILL PICK THE FIRST ONE: "+fluxCalSourceName+". THIS MAY BE WRONG.", 'WARN')
+                                for j in list(sFluxes.keys()):
+                                    if j != fluxCalSourceName:
+                                        sFluxes.pop(j)
+                            else: # sFluxes empty
+                                casalog.post("   ERROR: There is no usable flux catalog information. Will try to continue ...",'WARN')
+                                        
+                            sourceFluxesPerSPW[myspw] = sFluxes
 
-                if len(sourceFluxes) != 0:
-
-                    for j in list(sourceFluxes.keys()):
-                        if j not in fluxCalSourceNames:
-                            sourceFluxes.pop(j)
-
+                    if len(confimedFluxCalNames) == 0:
+                        casalog.post("ERROR: There is no usable flux calibrator.",'SEVERE')
+                        return False
+                    if len(confimedFluxCalNames) > 1:
+                        casalog.post("ERROR: (internal) a different flux calibrator was choses for different SPWs.",'SEVERE')
+                        return False
+                    
+                            
+                    # check if spix values are the same for all SPWs
+                    myFluxCalSourceName = list(confimedFluxCalNames)[0]
+                    print('\n*** Flux calibrator '+myFluxCalSourceName+':')
+                    firstspw = list(sourceFluxesPerSPW.keys())[0]
+                    firstspix = round(sourceFluxesPerSPW[firstspw][myFluxCalSourceName]['spectralIndex'],6)
+                    for myspw in sourceFluxesPerSPW.keys():
+                        myspix = round(sourceFluxesPerSPW[myspw][myFluxCalSourceName]['spectralIndex'],6)
+                        print('     SPW: '+str(myspw)+', Spix: '+str(myspix))
+                        if not myspix == firstspix:
+                            universal_spix = False
+                                   
+                    if universal_spix:
+                        print('*** All SPWs share the same spix. Re-querying calibrator service for entire spectral range ...')
+                        sFluxes = aU.getALMAFluxForMS(msName, useCalibratorService=useCalibratorService, calibratorServiceURL=calibratorServiceURL)
+                        if len(sFluxes) != 0:
+                            sourceFluxesPerSPW = {}
+                            sourceFluxesPerSPW['allspws'] = sFluxes
+                            
+                else:
+                    print('Running aU.getALMAFluxForMS without using the calibrator service ...')
+                        
+                    sourceFluxesPerSPW['allspws'] = aU.getALMAFluxForMS(msName)
+                    
+                    
+                for myspw in sourceFluxesPerSPW.keys(): # loop over the getALMAFluxForMS return values for each science SPW
+                    if myspw != 'allspws' and myspw not in spwIds1:
+                        continue   # only do the science SPWs
+                        
+                    sourceFluxes = sourceFluxesPerSPW[myspw]
+                    
                     if len(sourceFluxes) != 0:
 
-                        found = 1
-                        fluxCalSourceNames = list(sourceFluxes.keys())
-                        fluxCalSourceName = fluxCalSourceNames[0]                            
+                        for j in list(sourceFluxes.keys()):
+                            if j not in fluxCalSourceNames:
+                                sourceFluxes.pop(j)
 
-                        if len(fluxCalSourceNames) > 1:
-                            casalog.post("THERE IS MORE THAN ONE FLUX CALIBRATOR. WILL PICK THE FIRST ONE: "+fluxCalSourceName+". THIS MAY BE WRONG.", 'WARN')
+                        if len(sourceFluxes) != 0:
 
-                        fluxCalId = list(fieldNames).index(fluxCalSourceName)
-                        haveEphemFluxcal=False
-                        if ephemerisIds[fluxCalId] != -1 and phaseDirRef[fluxCalId] == icrscode:
-                            haveEphemFluxcal=True
-                            casalog.post('  The flux calibrator is an ephemeris object: '+fluxCalSourceName, 'WARN')
-                        elif 'DataConditions' in sourceFluxes[fluxCalSourceName].keys(): # aU supports data conditions check
-                            for mySName in fluxCalSourceNames:
-                                myCond = str(sourceFluxes[mySName]['DataConditions'])
-                                casalog.post("   Flux Calibrator "+mySName+" has condition "+myCond, 'INFO')
-
-                            fluxCalConditions = str(sourceFluxes[fluxCalSourceName]['DataConditions'])
-                            # value[0]: number of available measurements used, where 9 means 9 or more
-                            # value[1]: 1 if measurements exist from at least two distinct bands, 0 otherwise
-                            # value[2]: 1 if there is at least one measurement on either side of the selected date, 0 otherwise)
-                            if len(fluxCalConditions)>=3:
-                                casaCmd = casaCmd + "# URL for catalog access: "+sourceFluxes[fluxCalSourceName]['url']+"\n"
-                                casaCmd = casaCmd + "# Number of available measurements used (where 9 means 9 or more): "+str(fluxCalConditions[0])+"\n"
-                                casaCmd = casaCmd + "# Measurements were available in more than one band: "+str(fluxCalConditions[1]=='1')+"\n"
-                                casaCmd = casaCmd + "# Measurements bracketed the observation date: "+str(fluxCalConditions[2]=='1')+"\n\n"
-                            else:
-                                casalog.post('Invalid condition code returned by aU.getALMAFluxForMS for flux calibrator '+fluxCalSourceName+': '+fluxCalConditions, 'WARN')
-
-                        casaCmd = casaCmd + "setjy(vis = '"+msName1+"',\n"
-                        casaCmd = casaCmd + "  standard = 'manual',\n"
-                        casaCmd = casaCmd + "  field = '"+fluxCalSourceName+"',\n"
-
-                        if isB2B and explicitSpw[ii] != []:
-                            casaCmd = casaCmd + "  spw = '"+','.join(str(n) for n in explicitSpw[ii])+"',\n"
-
-                        casaCmd = casaCmd + "  usescratch = True,\n" # because of bug in virt. model (see SCIREQ-2035)
-
-                        casaCmd = casaCmd + "  fluxdensity = ["+str(sourceFluxes[fluxCalSourceName]['fluxDensity'])+", 0, 0, 0],\n"
-                        casaCmd = casaCmd + "  spix = "+str(sourceFluxes[fluxCalSourceName]['spectralIndex'])+",\n"
-                        casaCmd = casaCmd + "  reffreq = '"+str(sourceFluxes[fluxCalSourceName]['frequency']/1.e9)+"GHz')\n\n"
-
-                        for tag in ['fluxDensityUncertainty', 'meanAge']: casaCmd = casaCmd + "# "+tag+" = "+str(sourceFluxes[fluxCalSourceName][tag])+"\n"
-
-                if found == 0:
-
-                    fluxCalSourceId = myIntentSources[ii]['sourceid']
-
-                    sourceFluxes = sfsdr.getFluxesFromSourceTable(msName)
-
-                    if len(fluxCalSourceId) > 1:
-                        print("WARNING: THERE IS MORE THAN ONE FLUX CALIBRATOR. I WILL PICK THE FIRST ONE. THIS MAY BE WRONG.")
-                        fluxCalSourceId = [j for j in fluxCalSourceId if j in list(sourceFluxes.keys())]
-
-                    if len(fluxCalSourceId) == 0: 
-                        casalog.post("ERROR: There is no flux calibrator.",'SEVERE')
-                        return False
-
-                    fluxCalSourceId = fluxCalSourceId[0]
-
-                    fluxCalSourceName = myIntentSources[ii]['name'][myIntentSources[ii]['sourceid'].index(fluxCalSourceId)]
-
-                    if len(myIntentSources[ii]['sourceid']) > 1:
-                        mytb.open(msName+'/FIELD')
-                        tb1 = mytb.query('SOURCE_ID == '+str(fluxCalSourceId))
-                        fluxCalFieldIds1 = tb1.rownumbers().tolist()
-                        tb1.close()
-                        mytb.close()
-                        fluxCalFieldIds = [j for j in fluxCalFieldIds1 if j in myIntentSources[i]['id']]
-                    else:
-                        fluxCalFieldIds = myIntentSources[ii]['id']
-
-                    if fluxCalSourceId in sourceFluxes:
-
-                        if fluxCalSourceName != sourceFluxes[fluxCalSourceId]['sourceName']: 
-                            casalog.post("ERROR: Source names do not match.",'SEVERE')
-                            return False
-
-                        haveEphemFluxcal=False
-                        for k in range(len(fluxCalFieldIds)):
-                            if ephemerisIds[int(fluxCalFieldIds[k])] != -1 and phaseDirRef[int(fluxCalFieldIds[k])] == icrscode:
+                            found = 1
+                            fluxCalSourceNames = list(sourceFluxes.keys())
+                            fluxCalSourceName = fluxCalSourceNames[0]
+                            
+                            if len(fluxCalSourceNames) > 1:
+                                casalog.post("THERE IS MORE THAN ONE FLUX CALIBRATOR. WILL PICK THE FIRST ONE: "+fluxCalSourceName+". THIS MAY BE WRONG.", 'WARN')
+                                
+                            fluxCalId = list(fieldNames).index(fluxCalSourceName)
+                            haveEphemFluxcal=False
+                            if ephemerisIds[fluxCalId] != -1 and phaseDirRef[fluxCalId] == icrscode:
                                 haveEphemFluxcal=True
-                                casalog.post('There are ephemeris objects among the flux calibrators: field id '+str(fluxCalFieldIds[k]), 'WARN')
+                                casalog.post('  The flux calibrator is an ephemeris object: '+fluxCalSourceName, 'WARN')
+                            elif 'DataConditions' in sourceFluxes[fluxCalSourceName].keys(): # aU supports data conditions check
+                                for mySName in fluxCalSourceNames:
+                                    myCond = str(sourceFluxes[mySName]['DataConditions'])
+                                    casalog.post("   Flux Calibrator "+mySName+" has condition "+myCond, 'INFO')
 
-                        fluxCalFieldIds = ['%s' %k for k in fluxCalFieldIds]
-                        fluxCalFieldIds = ','.join(fluxCalFieldIds)
-
-                        if msName in valueMaps.keys():
-                            vm = valueMaps[msName]
-                            print('Using canned ValueMap.')
-                        else:
-                            vm = aU.ValueMapping(msName)
-                            valueMaps[msName] = vm
-
-                        spwInfo = sfsdr.getSpwInfo(msName, intent='CALIBRATE_FLUX', caching=True)
-                        spwIds = sorted(spwInfo.keys())
-
-                        spwMeanFreq = []
-                        for j in spwIds: spwMeanFreq.append(vm.spwInfo[j]['meanFreq'])
-
-                        if iHaveSplitMyScienceSpw == True: 
-                            spwIds = list(range(len(spwIds)))
-
-                        for j in range(len(spwIds)):
-
-                            frequency1 = []
-                            for k in sourceFluxes[fluxCalSourceId]['frequency']: frequency1.append(abs(k-spwMeanFreq[j]))
-                            ij = frequency1.index(min(frequency1))
-
-                            frequency1 = sourceFluxes[fluxCalSourceId]['frequency'][ij]
-                            flux1 = sourceFluxes[fluxCalSourceId]['flux'][ij]
+                                fluxCalConditions = str(sourceFluxes[fluxCalSourceName]['DataConditions'])
+                                # value[0]: number of available measurements used, where 9 means 9 or more
+                                # value[1]: 1 if measurements exist from at least two distinct bands, 0 otherwise
+                                # value[2]: 1 if there is at least one measurement on either side of the selected date, 0 otherwise)
+                                if len(fluxCalConditions)>=3:
+                                    casaCmd = casaCmd + "\n# URL for catalog access: "+sourceFluxes[fluxCalSourceName]['url']+"\n"
+                                    casaCmd = casaCmd + "# Number of available measurements used (where 9 means 9 or more): "+str(fluxCalConditions[0])+"\n"
+                                    casaCmd = casaCmd + "# Measurements were available in more than one band: "+str(fluxCalConditions[1]=='1')+"\n"
+                                    casaCmd = casaCmd + "# Measurements bracketed the observation date: "+str(fluxCalConditions[2]=='1')+"\n\n"
+                                    if myspw == 'allspws': # setjy for all SPWs at once
+                                        casaCmd = casaCmd +"# The catalog value for the flux calibrator spectral index was constant over all SPWs.\n\n"
+                                else:
+                                    casalog.post('Invalid condition code returned by aU.getALMAFluxForMS for flux calibrator '+fluxCalSourceName+': '+fluxCalConditions, 'WARN')
 
                             casaCmd = casaCmd + "setjy(vis = '"+msName1+"',\n"
-                            casaCmd = casaCmd + "  field = '"+fluxCalFieldIds+"', # source name = "+fluxCalSourceName+"\n"
-                            casaCmd = casaCmd + "  spw = '"+str(spwIds[j])+"', # center frequency of spw = "+str(spwMeanFreq[j]/1.e9)+"GHz\n"
-                            casaCmd = casaCmd + "  usescratch = True,\n" # because of bug in virt. model (see SCIREQ-2035)
                             casaCmd = casaCmd + "  standard = 'manual',\n"
-                            casaCmd = casaCmd + "  fluxdensity = ["+str(flux1)+", 0, 0, 0]) # frequency of measurement = "+str(frequency1/1.e9)+"GHz\n\n"
+                            casaCmd = casaCmd + "  field = '"+fluxCalSourceName+"',\n"
+                            if fluxCalSourceName not in theFluxCalNames:
+                                theFluxCalNames.append(fluxCalSourceName)
+
+                            if myspw == 'allspws': # setjy for all SPWs at once
+                                if isB2B and explicitSpw[ii] != []:
+                                    casaCmd = casaCmd + "  spw = '"+','.join(str(n) for n in explicitSpw[ii])+"',\n"
+                            else:
+                                if iHaveSplitMyScienceSpw == True:                                    
+                                    casaCmd = casaCmd + "  spw = '"+str(spwIds1.index(myspw))+"',\n"
+                                else:
+                                    casaCmd = casaCmd + "  spw = '"+str(myspw)+"',\n"
+
+                            casaCmd = casaCmd + "  usescratch = True,\n" # because of bug in virt. model (see SCIREQ-2035)
+
+                            casaCmd = casaCmd + "  fluxdensity = ["+str(sourceFluxes[fluxCalSourceName]['fluxDensity'])+", 0, 0, 0],\n"
+                            casaCmd = casaCmd + "  spix = "+str(round(sourceFluxes[fluxCalSourceName]['spectralIndex'],6))+",\n"
+                            casaCmd = casaCmd + "  reffreq = '"+str(sourceFluxes[fluxCalSourceName]['frequency']/1.e9)+"GHz')\n\n"
+
+                            for tag in ['fluxDensityUncertainty', 'meanAge']: casaCmd = casaCmd + "# "+tag+" = "+str(sourceFluxes[fluxCalSourceName][tag])+"\n"
+
+                    if found == 0:
+
+                        fluxCalSourceId = myIntentSources[ii]['sourceid']
+
+                        sourceFluxes = sfsdr.getFluxesFromSourceTable(msName)
+
+                        if len(fluxCalSourceId) > 1:
+                            print("WARNING: THERE IS MORE THAN ONE FLUX CALIBRATOR. I WILL PICK THE FIRST ONE. THIS MAY BE WRONG.")
+                            fluxCalSourceId = [j for j in fluxCalSourceId if j in list(sourceFluxes.keys())]
+
+                        if len(fluxCalSourceId) == 0: 
+                            casalog.post("ERROR: There is no flux calibrator.",'SEVERE')
+                            return False
+
+                        fluxCalSourceId = fluxCalSourceId[0]
+
+                        fluxCalSourceName = myIntentSources[ii]['name'][myIntentSources[ii]['sourceid'].index(fluxCalSourceId)]
+
+                        if len(myIntentSources[ii]['sourceid']) > 1:
+                            mytb.open(msName+'/FIELD')
+                            tb1 = mytb.query('SOURCE_ID == '+str(fluxCalSourceId))
+                            fluxCalFieldIds1 = tb1.rownumbers().tolist()
+                            tb1.close()
+                            mytb.close()
+                            fluxCalFieldIds = [j for j in fluxCalFieldIds1 if j in myIntentSources[i]['id']]
+                        else:
+                            fluxCalFieldIds = myIntentSources[ii]['id']
+
+                        if fluxCalSourceId in sourceFluxes:
+
+                            if fluxCalSourceName != sourceFluxes[fluxCalSourceId]['sourceName']: 
+                                casalog.post("ERROR: Source names do not match.",'SEVERE')
+                                return False
+
+                            haveEphemFluxcal=False
+                            for k in range(len(fluxCalFieldIds)):
+                                if ephemerisIds[int(fluxCalFieldIds[k])] != -1 and phaseDirRef[int(fluxCalFieldIds[k])] == icrscode:
+                                    haveEphemFluxcal=True
+                                    casalog.post('There are ephemeris objects among the flux calibrators: field id '+str(fluxCalFieldIds[k]), 'WARN')
+
+                            fluxCalFieldIds = ['%s' %k for k in fluxCalFieldIds]
+                            fluxCalFieldIds = ','.join(fluxCalFieldIds)
+
+                            if msName in valueMaps.keys():
+                                vm = valueMaps[msName]
+                                print('Using canned ValueMap.')
+                            else:
+                                vm = aU.ValueMapping(msName)
+                                valueMaps[msName] = vm
+
+                            spwInfo = sfsdr.getSpwInfo(msName, intent='CALIBRATE_FLUX', caching=True)
+                            spwIds = sorted(spwInfo.keys())
+
+                            spwMeanFreq = []
+                            for j in spwIds: spwMeanFreq.append(vm.spwInfo[j]['meanFreq'])
+
+                            if iHaveSplitMyScienceSpw == True: 
+                                spwIds = list(range(len(spwIds)))
+
+                            for j in range(len(spwIds)):
+
+                                frequency1 = []
+                                for k in sourceFluxes[fluxCalSourceId]['frequency']: frequency1.append(abs(k-spwMeanFreq[j]))
+                                ij = frequency1.index(min(frequency1))
+
+                                frequency1 = sourceFluxes[fluxCalSourceId]['frequency'][ij]
+                                flux1 = sourceFluxes[fluxCalSourceId]['flux'][ij]
+
+                                casaCmd = casaCmd + "setjy(vis = '"+msName1+"',\n"
+                                casaCmd = casaCmd + "  field = '"+fluxCalFieldIds+"', # source name = "+fluxCalSourceName+"\n"
+                                if fluxCalSourceName not in theFluxCalNames:
+                                    theFluxCalNames.append(fluxCalSourceName)
+                                casaCmd = casaCmd + "  spw = '"+str(spwIds[j])+"', # center frequency of spw = "+str(spwMeanFreq[j]/1.e9)+"GHz\n"
+                                casaCmd = casaCmd + "  usescratch = True,\n" # because of bug in virt. model (see SCIREQ-2035)
+                                casaCmd = casaCmd + "  standard = 'manual',\n"
+                                casaCmd = casaCmd + "  fluxdensity = ["+str(flux1)+", 0, 0, 0]) # frequency of measurement = "+str(frequency1/1.e9)+"GHz\n\n"
 
 
-    return casaCmd
+    return casaCmd, list(theFluxCalNames)
 
 #######################################
 
 def doBandpassCalibration(msName, msName1='', bpassCalId='', chanAvg=1.0, refant='', iHaveSplitMyScienceSpw=False, 
                           calTableName=[], lowSNR=False, doplot=True, phaseDiff=False, solnorm=True, lbc=False, 
-                          isB2B=None, isBWSW=None, isFullP=None, valueMaps={}):
+                          isB2B=None, isBWSW=None, combineB2BLFHFspws=None, isFullP=None, theFluxCalNames=[], vetoBPBootstrap=False, valueMaps={}):
     """Generate code for the bandpass calibration step of a calibration script."""
 
     print('\n*** doBandpassCalibration ***')
+    print('Gathering information ...')
 
     casaCmd = ''
 
@@ -2939,6 +3376,8 @@ def doBandpassCalibration(msName, msName1='', bpassCalId='', chanAvg=1.0, refant
         print('WARNING: TREATING THIS AS A B2B-TRANSFER OBSERVATION.')
         solnorm = True
         phaseDiff = True
+        if combineB2BLFHFspws:
+            print(' NOTE: WILL COMBINE RESPECTIVE LF AND HF SPWS')
     elif isBWSW:
         print('WARNING: TREATING THIS AS A BW-SWITCHING OBSERVATION.')
         print('WARNING: Forcing solnorm to False.')
@@ -2962,12 +3401,17 @@ def doBandpassCalibration(msName, msName1='', bpassCalId='', chanAvg=1.0, refant
     print('Selecting bandpass calibrator ...')
 
     intentSources = sfsdr.getIntentsAndSourceNames(msName)
-    ampCalId = intentSources['CALIBRATE_AMPLI']['id'] + intentSources['CALIBRATE_FLUX']['id']
-    ampCalId = np.unique([i for i in ampCalId if i != '']).tolist()
 
-    if len(ampCalId) > 1:
-        casaCmd = casaCmd + "# Note: there is more than one flux calibrator, picking the first one: "+fieldNames[ampCalId[0]]+".\n"
+    if type(theFluxCalNames) != list or len(theFluxCalNames)==0:
+        ampCalId = intentSources['CALIBRATE_AMPLI']['id'] + intentSources['CALIBRATE_FLUX']['id']
+        ampCalId = np.unique([i for i in ampCalId if i != '']).tolist()
+
+        if len(ampCalId) > 1:
+            casaCmd = casaCmd + "# Note: there is more than one flux calibrator, picking the first one: "+fieldNames[ampCalId[0]]+".\n"
         ampCalId = ampCalId[0]
+            
+    else: # flux cal was given via theFluxCalNames
+        ampCalId = list(fieldNames).index(theFluxCalNames[0])
 
     if bpassCalId == '':
 
@@ -2995,6 +3439,17 @@ def doBandpassCalibration(msName, msName1='', bpassCalId='', chanAvg=1.0, refant
 
     print('Will use field ID '+str(bpassCalId))
 
+    bootstrap = False
+    if bpassCalId != ampCalId:
+        if not vetoBPBootstrap:
+            casalog.post('The bandpass calibrator was not used as flux calibrator!', 'WARN')
+            casalog.post('Will need to bootstrap its spectrum!', 'WARN')
+            bootstrap = True
+        else:
+            casalog.post('The bandpass calibrator was not used as flux calibrator', 'WARN')
+            casalog.post('but vetoBPBootstrap was set to True. So we will not bootstrap the BP spectrum!', 'WARN')
+        
+        
     ###
 
     spwInfo = sfsdr.getSpwInfo(msName, intent='OBSERVE_TARGET|CALIBRATE_BANDPASS', caching=True)
@@ -3052,195 +3507,476 @@ def doBandpassCalibration(msName, msName1='', bpassCalId='', chanAvg=1.0, refant
 
     mymsmd = msmdtool()
     mymsmd.open(msName)
+    
     if 'CALIBRATE_BANDPASS#ON_SOURCE' in mymsmd.intentsforfield(bpassCalId):
         bpassCalScanList = mymsmd.scansforintent('CALIBRATE_BANDPASS#ON_SOURCE') 
     else:
         bpassCalScanList = mymsmd.scansforfield(bpassCalId) 
 
     atmCalScanList = mymsmd.scansforintent('CALIBRATE_ATMOSPHERE*')
-    bpassCalScanList = [str(i) for i in bpassCalScanList if i not in atmCalScanList]
+    bpassCalScanList = [i for i in bpassCalScanList if i not in atmCalScanList]  # still need index list for B2B filter - then str after B2B extra clause
 
-    print(bpassCalScanList)
-
-    bpassCalScanList = ','.join(bpassCalScanList)
 
     if isB2B:
         diffGainCalScanListLow  = ','.join([str(i) for i in mymsmd.scansforintent('CALIBRATE_DIFFGAIN#REFERENCE')])
 
+        ### now we need additional things that are useful for B2B as the LF and HF are separated
+        ### copied (and edited) code from Part I calibration. It is repeated also in part II.
+        ### Could be rearranged if needed.
+
+
+        ### determine the field, scan, and spw ids to be used in the code
+
+        if msName in valueMaps.keys():
+            vm = valueMaps[msName]
+            print('Using canned ValueMap.')
+        else:
+            vm = aU.ValueMapping(msName)
+            valueMaps[msName] = vm
+
+        intentSources = sfsdr.getIntentsAndSourceNames(msName)
+        diffGainCalId = intentSources['CALIBRATE_DIFFGAIN']['id'][0]
+
+        spwsDiffgainsig = vm.getSpwsForIntent('CALIBRATE_DIFFGAIN#SIGNAL')
+        if spwsDiffgainsig == []:
+            spwsDiffgainsig = vm.getSpwsForIntent('CALIBRATE_DIFFGAIN#ON_SOURCE')
+            sigintent = 'CALIBRATE_DIFFGAIN#ON_SOURCE'
+        else:
+            sigintent = 'CALIBRATE_DIFFGAIN#SIGNAL'
+
+
+        spwHighDict = sfsdr.getSpwInfo(msName,intent=sigintent, caching=True)
+        spwLowDict = sfsdr.getSpwInfo(msName,intent='CALIBRATE_DIFFGAIN#REFERENCE', caching=True)
+        spwHigh = sorted(spwHighDict.keys())
+        spwLow = sorted(spwLowDict.keys())
+
+
+        # determine spw mapping
+        if iHaveSplitMyScienceSpw == True:
+            spwInfo = sfsdr.getSpwInfo(msName, intent='OBSERVE_TARGET|CALIBRATE_BANDPASS', caching=True)
+            spwIds = sorted(spwInfo.keys())
+
+            spwHighSplit = []
+            for myspw in spwHigh:
+                spwHighSplit.append(spwIds.index(myspw))  
+            spwHighStr = ','.join([str(i) for i in spwHighSplit])
+
+            spwLowSplit = []
+            for myspw in spwLow:
+                spwLowSplit.append(spwIds.index(myspw))
+            spwLowStr = ','.join([str(i) for i in spwLowSplit])
+
+
+            ## Mapping only needed LF to LF or HF to HF for Bandpass
+            if combineB2BLFHFspws:
+                LFtoLF_BP = list(range(max(spwLowSplit)+1))
+                HFtoHF_BP = list(range(max(spwHighSplit)+1))
+                for spwMap in spwLowSplit:
+                    LFtoLF_BP[spwMap] = min(spwLowSplit)  # maps to lowest index
+                for spwMap in spwHighSplit:
+                    HFtoHF_BP[spwMap] = min(spwHighSplit)  # maps to highest index
+
+                    
+
+        else: # no reindexing took place
+            spwHighStr = ','.join([str(i) for i in spwHigh])
+            spwLowStr = ','.join([str(i) for i in spwLow])
+
+            if combineB2BLFHFspws:
+                LFtoLF_BP = list(range(max(spwLow)+1))
+                HFtoHF_BP = list(range(max(spwHigh)+1))
+                for spwMap in spwLow:
+                    LFtoLF_BP[spwMap] = min(spwLow)  # maps to lowest index
+                for spwMap in spwHigh:
+                    HFtoHF_BP[spwMap] = min(spwHigh)  # maps to highest index
+
+
+        # separate Bandpass scans
+        # simply get from SpWs by exclusion
+        
+        bpassCalScanListLow =  [str(scnuse) for scnuse in bpassCalScanList if scnuse in mymsmd.scansforspw(min(spwLow))]
+        bpassCalScanListHigh =  [str(scnuse) for scnuse in  bpassCalScanList if scnuse in mymsmd.scansforspw(min(spwHigh))]
+        bpassCalScanListLow = ','.join(bpassCalScanListLow)   
+        bpassCalScanListHigh = ','.join(bpassCalScanListHigh)  
+
+        
+    ### end B2B extras  ###
+        
     mymsmd.close()
+
+    ### now make the string list and print (global script gen) - filtered ATM out above isB2B 
+    
+    bpassCalScanList = [str(i) for i in bpassCalScanList]
+
+    print(bpassCalScanList)
+
+    bpassCalScanList = ','.join(bpassCalScanList)  
+
+    #######
+    if isB2B and combineB2BLFHFspws:
+        print('bpassCalScanListLow ', bpassCalScanListLow)
+        print('bpassCalScanListHigh ', bpassCalScanListHigh)
+        print('spwHighStr ', spwHighStr)
+        print('spwLowStr ', spwLowStr)
+        print('LFtoLF_BP ', str(LFtoLF_BP))
+        print('HFtoHF_BP ', str(HFtoHF_BP))
+
+    ######
 
     print('Writing code ...')
 
     calTableName1 = msName1+'.bandpass'
-    casaCmd = casaCmd + "os.system('rm -rf %s.ap_pre_bandpass') \n"%(msName1)
-    casaCmd = casaCmd + "\ngaincal(vis = '"+msName1+"',\n"
-    casaCmd = casaCmd + "  caltable = '"+msName1+".ap_pre_bandpass',\n"
-    casaCmd = casaCmd + "  field = '"+str(bpassCalId)+"', # "+fieldNames[int(bpassCalId)]+"\n"
-    casaCmd = casaCmd + "  spw = '"+spwSpec+"',\n"
-    if bpassCalScanList != '': 
-        casaCmd = casaCmd + "  scan = '"+bpassCalScanList+"',\n"
-    casaCmd = casaCmd + "  solint = 'int',\n"
-    casaCmd = casaCmd + "  refant = '"+refant+"',\n"
-    if isB2B:
-        casaCmd = casaCmd + "  refantmode = 'strict',\n"
-        casaCmd = casaCmd + "  minsnr = 3.0,\n"
-    elif isFullP:
-        casaCmd = casaCmd + "  refantmode = 'strict',\n"
-    casaCmd = casaCmd + "  calmode = 'p')\n"
 
-    if hasNoLFbpB2B:
+    if isB2B:
+       # permanent phasediff - but not in same sense as implemented below (could be useful for all modes)
+        casaCmd = casaCmd + "os.system('rm -rf %s.ap_pre_phasediff') \n"%(msName1)
         casaCmd = casaCmd + "\ngaincal(vis = '"+msName1+"',\n"
-        casaCmd = casaCmd + "  caltable = '"+msName1+".ap_pre_bandpass',\n"
-        casaCmd = casaCmd + "  field = '"+str(dgCalId)+"', # "+fieldNames[int(dgCalId)]+"\n"
-        casaCmd = casaCmd + "  spw = '"+spwBSpec+"',\n"
-        casaCmd = casaCmd + "  scan = '"+diffGainCalScanListLow+"',\n"
-        casaCmd = casaCmd + "  solint = 'int',\n"
-        casaCmd = casaCmd + "  minsnr = 3.0,\n"
+        casaCmd = casaCmd + "  caltable = '"+msName1+".ap_pre_phasediff',\n"
+        casaCmd = casaCmd + "  field = '"+str(bpassCalId)+"', # "+fieldNames[int(bpassCalId)]+"\n"
+        casaCmd = casaCmd + "  spw = '"+spwSpec+"',\n"
+        if bpassCalScanList != '': 
+            casaCmd = casaCmd + "  scan = '"+bpassCalScanList+"',\n"
+        casaCmd = casaCmd + "  solint = 'inf',\n"
         casaCmd = casaCmd + "  refant = '"+refant+"',\n"
         casaCmd = casaCmd + "  refantmode = 'strict',\n"
-        casaCmd = casaCmd + "  calmode = 'p',\n"
-        casaCmd = casaCmd + "  append = True)\n"
+        casaCmd = casaCmd + "  minsnr = 3.0,\n"
+        casaCmd = casaCmd + "  calmode = 'p')\n"
+
+        if hasNoLFbpB2B:  ## likely defunct, only useful for old non-conforming data
+            casaCmd = casaCmd + "\ngaincal(vis = '"+msName1+"',\n"
+            casaCmd = casaCmd + "  caltable = '"+msName1+".ap_pre_phasediff',\n"
+            casaCmd = casaCmd + "  field = '"+str(dgCalId)+"', # "+fieldNames[int(dgCalId)]+"\n"
+            casaCmd = casaCmd + "  spw = '"+spwBSpec+"',\n"
+            casaCmd = casaCmd + "  scan = '"+diffGainCalScanListLow+"',\n"
+            casaCmd = casaCmd + "  solint = 'inf',\n"
+            casaCmd = casaCmd + "  minsnr = 3.0,\n"
+            casaCmd = casaCmd + "  refant = '"+refant+"',\n"
+            casaCmd = casaCmd + "  refantmode = 'strict',\n"
+            casaCmd = casaCmd + "  calmode = 'p',\n"
+            casaCmd = casaCmd + "  append = True)\n"
+
+
+        ##  now we do the ap pre bandpass, and must always use the ap_pre_phasediff in solve    
+            
+        casaCmd = casaCmd + "\nos.system('rm -rf %s.ap_pre_bandpass') \n"%(msName1)
+        casaCmd = casaCmd + "\ngaincal(vis = '"+msName1+"',\n"
+        casaCmd = casaCmd + "  caltable = '"+msName1+".ap_pre_bandpass',\n"
+        casaCmd = casaCmd + "  field = '"+str(bpassCalId)+"', # "+fieldNames[int(bpassCalId)]+"\n"
+        casaCmd = casaCmd + "  spw = '"+spwSpec+"',\n"
+        if bpassCalScanList != '': 
+            casaCmd = casaCmd + "  scan = '"+bpassCalScanList+"',\n"
+        casaCmd = casaCmd + "  solint = 'int',\n"
+        if combineB2BLFHFspws:
+            casaCmd = casaCmd + "  combine='spw',\n"
+        casaCmd = casaCmd + "  refant = '"+refant+"',\n"
+        casaCmd = casaCmd + "  refantmode = 'strict',\n"
+        casaCmd = casaCmd + "  minsnr = 3.0,\n"
+        casaCmd = casaCmd + "  gaintable = ['%s.ap_pre_phasediff'], \n"%(msName1)
+        casaCmd = casaCmd + "  calmode = 'p')\n"
+
+        if hasNoLFbpB2B:
+            casaCmd = casaCmd + "\ngaincal(vis = '"+msName1+"',\n"
+            casaCmd = casaCmd + "  caltable = '"+msName1+".ap_pre_bandpass',\n"
+            casaCmd = casaCmd + "  field = '"+str(dgCalId)+"', # "+fieldNames[int(dgCalId)]+"\n"
+            casaCmd = casaCmd + "  spw = '"+spwBSpec+"',\n"
+            casaCmd = casaCmd + "  scan = '"+diffGainCalScanListLow+"',\n"
+            casaCmd = casaCmd + "  solint = 'int',\n"
+            casaCmd = casaCmd + "  minsnr = 3.0,\n"
+            casaCmd = casaCmd + "  refant = '"+refant+"',\n"
+            casaCmd = casaCmd + "  refantmode = 'strict',\n"
+            casaCmd = casaCmd + "  calmode = 'p',\n"
+            casaCmd = casaCmd + "  gaintable = ['%s.ap_pre_phasediff'], \n"%(msName1)
+            casaCmd = casaCmd + "  append = True)\n"
+
+ 
+
+    else:  ## i.e. NOT B2B, as it was before
+        casaCmd = casaCmd + "os.system('rm -rf %s.ap_pre_bandpass') \n"%(msName1)
+        casaCmd = casaCmd + "\ngaincal(vis = '"+msName1+"',\n"
+        casaCmd = casaCmd + "  caltable = '"+msName1+".ap_pre_bandpass',\n"
+        casaCmd = casaCmd + "  field = '"+str(bpassCalId)+"', # "+fieldNames[int(bpassCalId)]+"\n"
+        casaCmd = casaCmd + "  spw = '"+spwSpec+"',\n"
+        if bpassCalScanList != '': 
+            casaCmd = casaCmd + "  scan = '"+bpassCalScanList+"',\n"
+        casaCmd = casaCmd + "  solint = 'int',\n"
+        casaCmd = casaCmd + "  refant = '"+refant+"',\n"
+        if isFullP:   # removed B2B option as it is a stand alone above
+            casaCmd = casaCmd + "  refantmode = 'strict',\n"
+        casaCmd = casaCmd + "  calmode = 'p')\n"
+
 
     if doplot:
         casaCmd = casaCmd + "\nif applyonly != True: es.checkCalTable('"+msName1+".ap_pre_bandpass', msName='"+msName1+"', interactive=False) \n\n"
 
-    casaCmd = casaCmd + "os.system('rm -rf %s.bandpass') \n"%(msName1)
-    casaCmd = casaCmd + "bandpass(vis = '"+msName1+"',\n"
-    casaCmd = casaCmd + "  caltable = '"+calTableName1+"',\n"
-    casaCmd = casaCmd + "  field = '"+str(bpassCalId)+"', # "+fieldNames[int(bpassCalId)]+"\n"
-    if bpassCalScanList != '': 
-        casaCmd = casaCmd + "  scan = '"+bpassCalScanList+"',\n"
-    casaCmd = casaCmd + "  solint = 'inf',\n"
-    if isB2B:
-        casaCmd = casaCmd + "  minsnr = 3.0,\n"
-    casaCmd = casaCmd + "  combine = 'scan',\n"
-    casaCmd = casaCmd + "  refant = '"+refant+"',\n"
-    casaCmd = casaCmd + "  solnorm = "+str(solnorm)+",\n"
-    casaCmd = casaCmd + "  bandtype = 'B',\n"
-    casaCmd = casaCmd + "  gaintable = '"+msName1+".ap_pre_bandpass')\n"
+    if bootstrap and not phaseDiff: # bootstrap the bandpass calibrator spectrum (SCIREQ-2477)
 
-    if hasNoLFbpB2B:
+        casaCmd = casaCmd + "os.system('rm -rf "+msName1+".bandpass_tentative')\n" 
         casaCmd = casaCmd + "bandpass(vis = '"+msName1+"',\n"
-        casaCmd = casaCmd + "  caltable = '"+calTableName1+"',\n"
-        casaCmd = casaCmd + "  field = '"+str(dgCalId)+"', # "+fieldNames[int(dgCalId)]+"\n"
-        casaCmd = casaCmd + "  scan = '"+diffGainCalScanListLow+"',\n"
-        casaCmd = casaCmd + "  solint = 'inf',\n"
-        casaCmd = casaCmd + "  minsnr = 3.0,\n"
-        casaCmd = casaCmd + "  combine = 'scan',\n"
-        casaCmd = casaCmd + "  refant = '"+refant+"',\n"
-        casaCmd = casaCmd + "  solnorm = "+str(solnorm)+",\n"
-        casaCmd = casaCmd + "  bandtype = 'B',\n"
-        casaCmd = casaCmd + "  gaintable = '"+msName1+".ap_pre_bandpass',\n"
-        casaCmd = casaCmd + "  append = True)\n"
-
-    if doplot:
-        casaCmd = casaCmd + "\nif applyonly != True: es.checkCalTable('"+calTableName1+"', msName='"+msName1+"', interactive=False) \n"
-
-    minSciNumChans = min(sciNumChans)
-    minSciChanWidth = min(sciChanWidths)
-
-    if (minSciNumChans > 256 or isBWSW) and minSciChanWidth < 8E6:
-        casaCmd = casaCmd + "\nos.system('rm -rf %s.bandpass_smooth20ch') \n"%(msName1)
-        casaCmd = casaCmd + "\nbandpass(vis = '"+msName1+"',\n"
-        casaCmd = casaCmd + "  caltable = '"+calTableName1+'_smooth20ch'+"',\n"
+        casaCmd = casaCmd + "  caltable = '"+msName1+".bandpass_tentative',\n"
         casaCmd = casaCmd + "  field = '"+str(bpassCalId)+"', # "+fieldNames[int(bpassCalId)]+"\n"
         if bpassCalScanList != '': 
             casaCmd = casaCmd + "  scan = '"+bpassCalScanList+"',\n"
-        if lbc or isBWSW:
-            casaCmd = casaCmd + "  solint = 'inf,8MHz',\n"
-        else:
-            casaCmd = casaCmd + "  solint = 'inf,20ch',\n"
+            
+        casaCmd = casaCmd + "  solint = 'inf',\n"
         casaCmd = casaCmd + "  combine = 'scan',\n"
         casaCmd = casaCmd + "  refant = '"+refant+"',\n"
         casaCmd = casaCmd + "  solnorm = "+str(solnorm)+",\n"
         casaCmd = casaCmd + "  bandtype = 'B',\n"
-        casaCmd = casaCmd + "  gaintable = '"+msName1+".ap_pre_bandpass')\n"
+        casaCmd = casaCmd + "  gaintable = '"+msName1+".ap_pre_bandpass')\n\n"
 
-        if hasNoLFbpB2B:
-            casaCmd = casaCmd + "\nbandpass(vis = '"+msName1+"',\n"
-            casaCmd = casaCmd + "  caltable = '"+calTableName1+'_smooth20ch'+"',\n"
-            casaCmd = casaCmd + "  field = '"+str(dgCalId)+"', # "+fieldNames[int(dgCalId)]+"\n"
-            casaCmd = casaCmd + "  scan = '"+diffGainCalScanListLow+"',\n"
-            casaCmd = casaCmd + "  solint = 'inf,20ch',\n"
+        if doplot:
+            casaCmd = casaCmd + "if applyonly != True: es.checkCalTable('"+msName1+".bandpass_tentative', msName='"+msName1+"', interactive=False)\n\n" 
+    
+        casaCmd = casaCmd + "# bootstrapping BP calibrator spectrum\n\n"
+
+        casaCmd = casaCmd + "os.system('rm -rf "+msName1+".G1p')\n"
+        casaCmd = casaCmd + "gaincal(vis = '"+msName1+"',\n"
+        casaCmd = casaCmd + "  caltable = '"+msName1+".G1p',\n"
+        casaCmd = casaCmd + "  field = '"+str(bpassCalId)+","+str(ampCalId)+"', # bandpass, flux calibrator\n"
+        casaCmd = casaCmd + "  gaintable = '"+msName1+".bandpass_tentative',\n"
+        casaCmd = casaCmd + "  gaintype = 'G',\n"
+        casaCmd = casaCmd + "  refant = '"+refant+"',\n"
+        casaCmd = casaCmd + "  calmode = 'p',\n"
+        casaCmd = casaCmd + "  solint = 'int')\n\n"
+
+        casaCmd = casaCmd + "os.system('rm -rf "+msName1+".G1')\n"
+        casaCmd = casaCmd + "gaincal(vis = '"+msName1+"',\n"
+        casaCmd = casaCmd + "  caltable = '"+msName1+".G1',\n"
+        casaCmd = casaCmd + "  field = '"+str(bpassCalId)+","+str(ampCalId)+"', # bandpass, flux calibrator\n"
+        casaCmd = casaCmd + "  gaintable = ['"+msName1+".bandpass_tentative', '"+msName1+".G1p'],\n"
+        casaCmd = casaCmd + "  gaintype = 'G',\n"
+        casaCmd = casaCmd + "  refant = '"+refant+"',\n"
+        casaCmd = casaCmd + "  calmode = 'ap',\n"
+        casaCmd = casaCmd + "  solint = 'inf')\n\n"
+
+        casaCmd = casaCmd + "os.system('rm -rf "+msName1+".F1')\n"
+        casaCmd = casaCmd + "flux_bandpass = fluxscale(vis = '"+msName1+"',\n"
+        casaCmd = casaCmd + "  caltable = '"+msName1+".G1',\n"
+        casaCmd = casaCmd + "  fluxtable = '"+msName1+".F1',\n"
+        casaCmd = casaCmd + "  reference = '"+str(ampCalId)+"',\n"
+        casaCmd = casaCmd + "  transfer = '"+str(bpassCalId)+"',\n"
+        casaCmd = casaCmd + "  listfile = '"+msName1+".bandpass.fluxinfo',\n"
+        casaCmd = casaCmd + "  fitorder=1)\n\n"
+        
+        casaCmd = casaCmd + "setjy(vis='"+msName1+"',\n"
+        casaCmd = casaCmd + "  field = '"+str(bpassCalId)+"',\n"
+        casaCmd = casaCmd + "  scalebychan = True,\n"
+        casaCmd = casaCmd + "  standard = 'fluxscale',\n"
+        casaCmd = casaCmd + "  fluxdict = flux_bandpass)\n\n"
+        
+        casaCmd = casaCmd + "os.system('rm -rf "+msName1+".G0.b')\n"
+        casaCmd = casaCmd + "gaincal(vis = '"+msName1+"',\n"
+        casaCmd = casaCmd + "  caltable = '"+msName1+".G0.b',\n"
+        casaCmd = casaCmd + "  field = '"+str(bpassCalId)+"', # bandpass\n"
+        casaCmd = casaCmd + "  gaintype = 'G',\n"
+        casaCmd = casaCmd + "  refant = '"+refant+"',\n"
+        casaCmd = casaCmd + "  calmode = 'p',\n"
+        casaCmd = casaCmd + "  solint = 'int')\n\n"
+
+        casaCmd = casaCmd + "os.system('rm -rf "+calTableName1+"')\n"
+        casaCmd = casaCmd + "bandpass(vis = '"+msName1+"',\n"
+        casaCmd = casaCmd + "  caltable = '"+calTableName1+"',\n"
+        casaCmd = casaCmd + "  field = '"+str(bpassCalId)+"', # bandpass\n"
+        if bpassCalScanList != '': 
+            casaCmd = casaCmd + "  scan = '"+bpassCalScanList+"',\n"
+
+        casaCmd = casaCmd + "  solint = 'inf',\n"
+        casaCmd = casaCmd + "  combine = 'scan',\n"
+        casaCmd = casaCmd + "  refant = '"+refant+"',\n"
+        casaCmd = casaCmd + "  solnorm = True,\n"
+        casaCmd = casaCmd + "  bandtype = 'B',\n"
+        casaCmd = casaCmd + "  gaintable = '"+msName1+".G0.b')\n\n"
+
+        if doplot:
+            casaCmd = casaCmd + "\nif applyonly != True: es.checkCalTable('"+calTableName1+"', msName='"+msName1+"', interactive=False) \n"
+
+        calTableName.append(calTableName1)
+        
+    else: # no bootstrapping   
+
+        if bootstrap: # bootstrapping was not done because phasediff was True at the same time
+            casalog.post('WARNING: bandpass cal != fluxcal but phaseDiff mode is on. No bandpass bootstrapping implemented.', 'WARN')
+
+        ## FOR B2B only LF and HF separated 
+        if isB2B:
+            # doing the LF first
+            casaCmd = casaCmd + "os.system('rm -rf %s.bandpass') \n"%(msName1)
+
+            if not hasNoLFbpB2B:
+                casaCmd = casaCmd + "bandpass(vis = '"+msName1+"',\n"
+                casaCmd = casaCmd + "  caltable = '"+calTableName1+"',\n"
+                casaCmd = casaCmd + "  field = '"+str(bpassCalId)+"', # "+fieldNames[int(bpassCalId)]+"\n"
+                if bpassCalScanList != '': 
+                    casaCmd = casaCmd + "  scan = '"+bpassCalScanListLow+"',\n"  
+                casaCmd = casaCmd + "  solint = 'inf',\n"
+                casaCmd = casaCmd + "  minsnr = 3.0,\n"
+                casaCmd = casaCmd + "  combine = 'scan',\n"
+                casaCmd = casaCmd + "  refant = '"+refant+"',\n"
+                casaCmd = casaCmd + "  solnorm = "+str(solnorm)+",\n"
+                casaCmd = casaCmd + "  bandtype = 'B',\n"
+                if combineB2BLFHFspws:  ## ADD THE MAPS
+                    casaCmd = casaCmd + "  spwmap = [[],"+str(LFtoLF_BP)+"], \n"  
+                casaCmd = casaCmd + "  gaintable = ['"+msName1+".ap_pre_phasediff','"+msName1+".ap_pre_bandpass'])\n"
+ 
+            #if hasNoLFbpB2B:
+            else:
+                casaCmd = casaCmd + "bandpass(vis = '"+msName1+"',\n"
+                casaCmd = casaCmd + "  caltable = '"+calTableName1+"',\n"
+                casaCmd = casaCmd + "  field = '"+str(dgCalId)+"', # "+fieldNames[int(dgCalId)]+"\n"
+                casaCmd = casaCmd + "  scan = '"+diffGainCalScanListLow+"',\n"
+                casaCmd = casaCmd + "  solint = 'inf',\n"
+                casaCmd = casaCmd + "  minsnr = 3.0,\n"
+                casaCmd = casaCmd + "  combine = 'scan',\n"
+                casaCmd = casaCmd + "  refant = '"+refant+"',\n"
+                casaCmd = casaCmd + "  solnorm = "+str(solnorm)+",\n"
+                casaCmd = casaCmd + "  bandtype = 'B',\n"
+                #casaCmd = casaCmd + "  append = True,\n"
+                if combineB2BLFHFspws:  ## ADD THE MAPS - don't know if this functions given no LF bandpass and other field used - old data, wont use? 
+                    casaCmd = casaCmd + "  spwmap = [[],"+str(LFtoLF_BP)+"], \n"  
+                casaCmd = casaCmd + "  gaintable = ['"+msName1+".ap_pre_phasediff','"+msName1+".ap_pre_bandpass'])\n"
+
+            ## here wanted for the HF wanted a run over AU tool
+            ## but that needs the MS and the Tsys table
+            ## cannnot be calling aU in the script as users do not have it by default
+            ## placeholder for now just to add instructins to analysts
+
+            casaCmd = casaCmd + "\n  # Note for analyst, the below needs to be copied/edited \n"
+            casaCmd = casaCmd + "  # possibly for each SpW individaully to apply X channel binning as required \n"
+            casaCmd = casaCmd + "  # PLEASE delete this comment before delivering the script \n"            
+            casaCmd = casaCmd + "bandpass(vis = '"+msName1+"',\n"
+            casaCmd = casaCmd + "  caltable = '"+calTableName1+"',\n"
+            casaCmd = casaCmd + "  field = '"+str(bpassCalId)+"', # "+fieldNames[int(bpassCalId)]+"\n"
+            if bpassCalScanList != '': 
+                casaCmd = casaCmd + "  scan = '"+bpassCalScanListHigh+"',\n"
+            casaCmd = casaCmd + "  spw = '"+spwHighStr+"',\n" 
+            casaCmd = casaCmd + "  solint = 'inf,Xch',\n"
             casaCmd = casaCmd + "  minsnr = 3.0,\n"
             casaCmd = casaCmd + "  combine = 'scan',\n"
             casaCmd = casaCmd + "  refant = '"+refant+"',\n"
             casaCmd = casaCmd + "  solnorm = "+str(solnorm)+",\n"
             casaCmd = casaCmd + "  bandtype = 'B',\n"
-            casaCmd = casaCmd + "  gaintable = '"+msName1+".ap_pre_bandpass',\n"
-            casaCmd = casaCmd + "  append = True)\n"
+            casaCmd = casaCmd + "  append = True,\n"
+            if combineB2BLFHFspws:  ## ADD THE MAPS
+                    casaCmd = casaCmd + "  spwmap = [[],"+str(HFtoHF_BP)+"], \n"  
+            casaCmd = casaCmd + "  gaintable = ['"+msName1+".ap_pre_phasediff','"+msName1+".ap_pre_bandpass'])\n"         
+                
+            if doplot:
+                casaCmd = casaCmd + "\nif applyonly != True: es.checkCalTable('"+calTableName1+"', msName='"+msName1+"', interactive=False) \n"
 
-        if doplot:
-            casaCmd = casaCmd + "\nif applyonly != True: es.checkCalTable('"+calTableName1+'_smooth20ch'+"', msName='"+msName1+"', interactive=False) \n"
 
-        #use the smoothed table from now on
-        calTableName1 = calTableName1+'_smooth20ch'
-
-
-    calTableName.append(calTableName1)
-
-    if phaseDiff == True:
-        if bpassCalId != ampCalId:
-
-            casaCmd = casaCmd + "\n\n"
-
-            fluxscaleDictName = []
-            casaCmd = casaCmd + doGainCalibration(msName, msName1=msName1, refant=refant, bandpass=calTableName1, calmode2='a', phaseDiff=False, fluxscaleDictName=fluxscaleDictName, iHaveSplitMyScienceSpw=iHaveSplitMyScienceSpw, isBWSW=False, isFullP=isFullP, valueMaps=valueMaps)
-
-            casaCmd = casaCmd + "\nsetjy(vis = '"+msName1+"',\n"
-            casaCmd = casaCmd + "  field = '"+str(bpassCalId)+"', # "+fieldNames[int(bpassCalId)]+"\n"
-            casaCmd = casaCmd + "  standard = 'manual',\n"
-            casaCmd = casaCmd + "  spw = '',\n"
-            casaCmd = casaCmd + "  fluxdensity = "+fluxscaleDictName[0]+"['"+str(bpassCalId)+"']['fitFluxd'],\n"
-            casaCmd = casaCmd + "  spix = "+fluxscaleDictName[0]+"['"+str(bpassCalId)+"']['spidx'][1],\n"  # Added trailing [1] - T. Hunter 2014-08-11
-            casaCmd = casaCmd + "  reffreq = '%fGHz'%(1e-9*"+fluxscaleDictName[0]+"['"+str(bpassCalId)+"']['fitRefFreq']))\n\n" # T. Hunter 2014-08-11
-
-            calTableName1 = msName1+'.bandpass2'
-            casaCmd = casaCmd + "os.system('rm -rf %s.bandpass2') \n"%(msName1) # Added by CLB
+        else: #STANDARD          
+            casaCmd = casaCmd + "os.system('rm -rf %s.bandpass') \n"%(msName1)
             casaCmd = casaCmd + "bandpass(vis = '"+msName1+"',\n"
             casaCmd = casaCmd + "  caltable = '"+calTableName1+"',\n"
             casaCmd = casaCmd + "  field = '"+str(bpassCalId)+"', # "+fieldNames[int(bpassCalId)]+"\n"
             if bpassCalScanList != '': 
-                casaCmd = casaCmd + "  scan = '"+bpassCalScanList+"',\n"
+                casaCmd = casaCmd + "  scan = '"+bpassCalScanList+"',\n"  
             casaCmd = casaCmd + "  solint = 'inf',\n"
             casaCmd = casaCmd + "  combine = 'scan',\n"
             casaCmd = casaCmd + "  refant = '"+refant+"',\n"
-            casaCmd = casaCmd + "  solnorm = False,\n"
+            casaCmd = casaCmd + "  solnorm = "+str(solnorm)+",\n"
             casaCmd = casaCmd + "  bandtype = 'B',\n"
             casaCmd = casaCmd + "  gaintable = '"+msName1+".ap_pre_bandpass')\n"
 
-            if minSciNumChans > 256 and minSciChanWidth < 8E6:
-                casaCmd = casaCmd + "\nos.system('rm -rf %s.bandpass2_smooth20ch') \n"%(msName1)
+            if doplot:
+                casaCmd = casaCmd + "\nif applyonly != True: es.checkCalTable('"+calTableName1+"', msName='"+msName1+"', interactive=False) \n"
+
+            minSciNumChans = min(sciNumChans)
+            minSciChanWidth = min(sciChanWidths)
+
+            if (minSciNumChans > 256 or isBWSW) and minSciChanWidth < 8E6:
+                casaCmd = casaCmd + "\nos.system('rm -rf %s.bandpass_smooth20ch') \n"%(msName1)
                 casaCmd = casaCmd + "\nbandpass(vis = '"+msName1+"',\n"
                 casaCmd = casaCmd + "  caltable = '"+calTableName1+'_smooth20ch'+"',\n"
                 casaCmd = casaCmd + "  field = '"+str(bpassCalId)+"', # "+fieldNames[int(bpassCalId)]+"\n"
                 if bpassCalScanList != '': 
                     casaCmd = casaCmd + "  scan = '"+bpassCalScanList+"',\n"
-                casaCmd = casaCmd + "  solint = 'inf,20ch',\n"
+                if lbc or isBWSW:
+                    casaCmd = casaCmd + "  solint = 'inf,8MHz',\n"
+                else:
+                    casaCmd = casaCmd + "  solint = 'inf,20ch',\n"
+                casaCmd = casaCmd + "  combine = 'scan',\n"
+                casaCmd = casaCmd + "  refant = '"+refant+"',\n"
+                casaCmd = casaCmd + "  solnorm = "+str(solnorm)+",\n"
+                casaCmd = casaCmd + "  bandtype = 'B',\n"
+                casaCmd = casaCmd + "  gaintable = '"+msName1+".ap_pre_bandpass')\n"
+
+
+                if doplot:
+                    casaCmd = casaCmd + "\nif applyonly != True: es.checkCalTable('"+calTableName1+'_smooth20ch'+"', msName='"+msName1+"', interactive=False) \n"
+
+                #use the smoothed table from now on
+                calTableName1 = calTableName1+'_smooth20ch'
+
+
+        calTableName.append(calTableName1)
+
+        if phaseDiff == True:
+            if bpassCalId != ampCalId:
+
+                casaCmd = casaCmd + "\n\n"
+
+                fluxscaleDictName = []
+                casaCmd = casaCmd + doGainCalibration(msName, msName1=msName1, refant=refant, bandpass=calTableName1, calmode2='a', phaseDiff=False, fluxscaleDictName=fluxscaleDictName, iHaveSplitMyScienceSpw=iHaveSplitMyScienceSpw, isBWSW=False, isFullP=isFullP, valueMaps=valueMaps)
+
+                casaCmd = casaCmd + "\nsetjy(vis = '"+msName1+"',\n"
+                casaCmd = casaCmd + "  field = '"+str(bpassCalId)+"', # "+fieldNames[int(bpassCalId)]+"\n"
+                casaCmd = casaCmd + "  standard = 'manual',\n"
+                casaCmd = casaCmd + "  spw = '',\n"
+                casaCmd = casaCmd + "  fluxdensity = "+fluxscaleDictName[0]+"['"+str(bpassCalId)+"']['fitFluxd'],\n"
+                casaCmd = casaCmd + "  spix = "+fluxscaleDictName[0]+"['"+str(bpassCalId)+"']['spidx'][1],\n"  # Added trailing [1] - T. Hunter 2014-08-11
+                casaCmd = casaCmd + "  reffreq = '%fGHz'%(1e-9*"+fluxscaleDictName[0]+"['"+str(bpassCalId)+"']['fitRefFreq']))\n\n" # T. Hunter 2014-08-11
+
+                calTableName1 = msName1+'.bandpass2'
+                casaCmd = casaCmd + "os.system('rm -rf %s.bandpass2') \n"%(msName1) # Added by CLB
+                casaCmd = casaCmd + "bandpass(vis = '"+msName1+"',\n"
+                casaCmd = casaCmd + "  caltable = '"+calTableName1+"',\n"
+                casaCmd = casaCmd + "  field = '"+str(bpassCalId)+"', # "+fieldNames[int(bpassCalId)]+"\n"
+                if bpassCalScanList != '': 
+                    casaCmd = casaCmd + "  scan = '"+bpassCalScanList+"',\n"
+                casaCmd = casaCmd + "  solint = 'inf',\n"
                 casaCmd = casaCmd + "  combine = 'scan',\n"
                 casaCmd = casaCmd + "  refant = '"+refant+"',\n"
                 casaCmd = casaCmd + "  solnorm = False,\n"
                 casaCmd = casaCmd + "  bandtype = 'B',\n"
                 casaCmd = casaCmd + "  gaintable = '"+msName1+".ap_pre_bandpass')\n"
+
+                if minSciNumChans > 256 and minSciChanWidth < 8E6:
+                    casaCmd = casaCmd + "\nos.system('rm -rf %s.bandpass2_smooth20ch') \n"%(msName1)
+                    casaCmd = casaCmd + "\nbandpass(vis = '"+msName1+"',\n"
+                    casaCmd = casaCmd + "  caltable = '"+calTableName1+'_smooth20ch'+"',\n"
+                    casaCmd = casaCmd + "  field = '"+str(bpassCalId)+"', # "+fieldNames[int(bpassCalId)]+"\n"
+                    if bpassCalScanList != '': 
+                        casaCmd = casaCmd + "  scan = '"+bpassCalScanList+"',\n"
+                    casaCmd = casaCmd + "  solint = 'inf,20ch',\n"
+                    casaCmd = casaCmd + "  combine = 'scan',\n"
+                    casaCmd = casaCmd + "  refant = '"+refant+"',\n"
+                    casaCmd = casaCmd + "  solnorm = False,\n"
+                    casaCmd = casaCmd + "  bandtype = 'B',\n"
+                    casaCmd = casaCmd + "  gaintable = '"+msName1+".ap_pre_bandpass')\n"
+                    if doplot == True:
+                        casaCmd = casaCmd + "\nif applyonly != True: es.checkCalTable('"+calTableName1+'_smooth20ch'+"', msName='"+msName1+"', interactive=False) \n"
+
                 if doplot == True:
-                    casaCmd = casaCmd + "\nif applyonly != True: es.checkCalTable('"+calTableName1+'_smooth20ch'+"', msName='"+msName1+"', interactive=False) \n"
+                    casaCmd = casaCmd + "\nif applyonly != True: es.checkCalTable('"+calTableName1+"', msName='"+msName1+"', interactive=False) \n"
 
-            if doplot == True:
-                casaCmd = casaCmd + "\nif applyonly != True: es.checkCalTable('"+calTableName1+"', msName='"+msName1+"', interactive=False) \n"
+                if minSciNumChans > 256 and minSciChanWidth < 8E6:
+                    calTableName1 = calTableName1+'_smooth20ch'
 
-            if minSciNumChans > 256 and minSciChanWidth < 8E6:
-                calTableName1 = calTableName1+'_smooth20ch'
-
-            calTableName[0] = calTableName1
-
+                calTableName[0] = calTableName1
+                
+        # endif phasediff        
+    # endif bootstrap
+                
     return casaCmd
 
 ##################################
 
-def doGainCalibration(msName, msName1='', refant='', bandpass='', gaintypeForAmp='T', doplot=True, calFieldsOnly=True, calmode2='ap', phaseDiff='', phaseDiffCalTableName=[], fluxscaleDictName=[], ampForSci=[], iHaveSplitMyScienceSpw=False, phaseDiffPerSpwSetup=False, isBWSW=None, isFullP=None, valueMaps={}):
+def doGainCalibration(msName, msName1='', refant='', bandpass='', gaintypeForAmp='T', doplot=True, calFieldsOnly=True, calmode2='ap', phaseDiff='', phaseDiffCalTableName=[], fluxscaleDictName=[], ampForSci=[], iHaveSplitMyScienceSpw=False, isBWSW=None, isFullP=None, valueMaps={}):
     """Generate code for the gain calibration step of a calibration script."""
 
     print('\n*** doGainCalibration ***')
+    print('Gathering information ...')
 
     if msName1 == '': msName1 = msName
     if refant == '': 
@@ -3352,378 +4088,202 @@ def doGainCalibration(msName, msName1='', refant='', bandpass='', gaintypeForAmp
 
         if sciFieldIds[0] != '':
 
-            if phaseDiffPerSpwSetup == True:
+            bpassCalId = intentSources['CALIBRATE_BANDPASS']['id']
+            if bpassCalId[0] == '': 
+                casalog.post('ERROR: There is no bandpass calibrator.', 'SEVERE')
+                return False
+            if len(bpassCalId) != 1: 
+                casaCmd = casaCmd + "# Note: there is more than one bandpass calibrator, I'm picking the first one: "+fieldNames[bpassCalId[0]]+".\n"
+            bpassCalId = bpassCalId[0]
 
-                bpassCalId = intentSources['CALIBRATE_BANDPASS']['id']
-                if bpassCalId[0] == '': 
-                    casalog.post('ERROR: There is no bandpass calibrator.', 'SEVERE')
-                    return False
-                if len(bpassCalId) != 1: 
-                    casaCmd = casaCmd + "# Note: there is more than one bandpass calibrator, I'm picking the first one: "+fieldNames[bpassCalId[0]]+".\n"
-                bpassCalId = bpassCalId[0]
-
-                diffGainCalId = ''
-                diffGainCalScanList = ''
-                if 'CALIBRATE_DIFFGAIN' in list(intentSources.keys()):
-                    diffGainCalId = intentSources['CALIBRATE_DIFFGAIN']['id']
-                    if len(diffGainCalId) != 1: 
-                        casaCmd = casaCmd + "# Note: there is more than one diffgain calibrator, I'm picking the first one: "+fieldNames[diffGainCalId[0]]+".\n"
-                    diffGainCalId = diffGainCalId[0]
-                if diffGainCalId == '':
-                    diffGainCalId = bpassCalId
-                else:
-                    mymsmd = msmdtool()
-                    mymsmd.open(msName)
-                    diffGainCalScanList = mymsmd.scansforintent('CALIBRATE_DIFFGAIN#*').tolist()
-                    mymsmd.close()
-                    diffGainCalScanList = [str(j) for j in diffGainCalScanList]
-                    diffGainCalScanList = ','.join(diffGainCalScanList)
-
-                casaCmd = casaCmd + "os.system('rm -rf %s.phasediff_inf') \n"%(msName1)
-                casaCmd = casaCmd + "gaincal(vis = '"+msName1+"',\n"
-                casaCmd = casaCmd + "  caltable = '"+msName1+".phasediff_inf',\n"
-                casaCmd = casaCmd + "  field = '"+str(diffGainCalId)+"',\n"
-                if diffGainCalScanList != '': 
-                    casaCmd = casaCmd + "  scan = '"+diffGainCalScanList+"',\n"
-                casaCmd = casaCmd + "  solint = 'inf',\n"
-                casaCmd = casaCmd + "  combine = 'scan',\n"
-                casaCmd = casaCmd + "  refant = '"+refant+"',\n"
-                if isFullP:
-                    casaCmd = casaCmd + "  refantmode = 'strict',\n"
-                casaCmd = casaCmd + "  gaintype = 'G',\n"
-                casaCmd = casaCmd + "  calmode = 'p',\n"
-                casaCmd = casaCmd + "  gaintable = '"+bandpass+"')\n\n"
-
-                phaseDiffCalTableName.append(msName1+'.phasediff_inf')
-
-                if doplot == True: 
-                    casaCmd = casaCmd + "if applyonly != True: es.checkCalTable('"+msName1+".phasediff_inf', msName='"+msName1+"', interactive=False) \n\n"
-
-                ###
+            diffGainCalId = ''
+            diffGainCalScanList = ''
+            if 'CALIBRATE_DIFFGAIN' in list(intentSources.keys()):
+                diffGainCalId = intentSources['CALIBRATE_DIFFGAIN']['id']
+                if len(diffGainCalId) != 1: 
+                    casaCmd = casaCmd + "# Note: there is more than one diffgain calibrator, I'm picking the first one: "+fieldNames[diffGainCalId[0]]+".\n"
+                diffGainCalId = diffGainCalId[0]
+            if diffGainCalId == '':
+                diffGainCalId = bpassCalId
+            else:
                 mymsmd = msmdtool()
                 mymsmd.open(msName)
-
-                spwIds3 = mymsmd.spwsforintent('CALIBRATE_BANDPASS*').tolist()+mymsmd.spwsforintent('OBSERVE_TARGET*').tolist()
-                spwIds3 = np.unique([j for j in spwIds3 if j not in mymsmd.chanavgspws() and j not in mymsmd.wvrspws()]).tolist()
-
-                spwSetups = {}
-                for i in spwIds3:
-                    scanList3 = str(mymsmd.scansforspw(i).tolist())
-                    if scanList3 not in list(spwSetups.keys()): 
-                        spwSetups[scanList3] = []
-                    spwSetups[scanList3].append(i)
-                spwSetups1 = []
-                for i in list(spwSetups.values()):
-                    if i not in spwSetups1: 
-                        spwSetups1.append(i)
-                spwSetups1.sort(key=lambda x:x[0])
-
-                calspwmap = []
-                for i in range(len(spwSetups1)):
-                    for j in range(len(spwSetups1[i])):
-                        calspwmap.append(min(spwSetups1[i]))
-
-                if iHaveSplitMyScienceSpw == True:
-
-                    for i in range(len(spwSetups1)):
-                        for j in range(len(spwSetups1[i])):
-                            spwSetups1[i][j] = spwIds3.index(spwSetups1[i][j])
-
-                    for i in range(len(calspwmap)):
-                        calspwmap[i] = spwIds3.index(calspwmap[i])
-
-                casaCmd = casaCmd + "calspwmap = "+str(calspwmap)+"\n\n"
-
+                diffGainCalScanList = mymsmd.scansforintent('CALIBRATE_DIFFGAIN#*').tolist()
                 mymsmd.close()
+                diffGainCalScanList = [str(j) for j in diffGainCalScanList]
+                diffGainCalScanList = ','.join(diffGainCalScanList)
 
-                ###
+            casaCmd = casaCmd + "os.system('rm -rf %s.phasediff_inf') \n"%(msName1)
+            casaCmd = casaCmd + "gaincal(vis = '"+msName1+"',\n"
+            casaCmd = casaCmd + "  caltable = '"+msName1+".phasediff_inf',\n"
+            casaCmd = casaCmd + "  field = '"+str(diffGainCalId)+"',\n"
+            if diffGainCalScanList != '': 
+                casaCmd = casaCmd + "  scan = '"+diffGainCalScanList+"',\n"
+            casaCmd = casaCmd + "  solint = 'inf',\n"
+            casaCmd = casaCmd + "  combine = 'scan',\n"
+            casaCmd = casaCmd + "  refant = '"+refant+"',\n"
+            if isFullP:
+                casaCmd = casaCmd + "  refantmode = 'strict',\n"
+            casaCmd = casaCmd + "  gaintype = 'G',\n"
+            casaCmd = casaCmd + "  calmode = 'p',\n"
+            casaCmd = casaCmd + "  gaintable = '"+bandpass+"')\n\n"
 
-                casaCmd = casaCmd + "os.system('rm -rf %s.phase_int') \n"%(msName1)
-                casaCmd = casaCmd + "for spw in "+str(spwSetups1)+":\n"
-                if myCasaVersion > '6.3.0': # accommodate changed gaincal append behaviour in 6.4
-                    casaCmd = casaCmd + "  myappend = False if spw == "+str(spwSetups1[0])+" else True\n"
-                casaCmd = casaCmd + "  gaincal(vis = '"+msName1+"',\n"
-                casaCmd = casaCmd + "    caltable = '"+msName1+".phase_int',\n"
-                casaCmd = casaCmd + "    field = '"+calFieldIds1+"', # "+calFieldNames+"\n"
-                casaCmd = casaCmd + "    solint = 'int',\n"
-                casaCmd = casaCmd + "    spw = ','.join([str(j) for j in spw]),\n"
-                casaCmd = casaCmd + "    combine = 'spw',\n"
-                casaCmd = casaCmd + "    refant = '"+refant+"',\n"
-                if isFullP:
-                    casaCmd = casaCmd + "    refantmode = 'strict',\n"
-                casaCmd = casaCmd + "    gaintype = 'G',\n"
-                casaCmd = casaCmd + "    calmode = 'p',\n"
-                if myCasaVersion > '6.3.0': # accommodate changed gaincal append behaviour in 6.4
-                    casaCmd = casaCmd + "    append = myappend,\n"
-                else:
-                    casaCmd = casaCmd + "    append = True,\n"
-                casaCmd = casaCmd + "    gaintable = ['"+bandpass+"', '"+msName1+".phasediff_inf'])\n\n"
+            phaseDiffCalTableName.append(msName1+'.phasediff_inf')
 
-                if doplot == True: 
-                    casaCmd = casaCmd + "if applyonly != True: es.checkCalTable('"+msName1+".phase_int', msName='"+msName1+"', interactive=False) \n\n"
+            if doplot == True: 
+                casaCmd = casaCmd + "if applyonly != True: es.checkCalTable('"+msName1+".phasediff_inf', msName='"+msName1+"', interactive=False) \n\n"
 
-                casaCmd = casaCmd + "os.system('rm -rf %s.ampli_inf') \n"%(msName1)
-                casaCmd = casaCmd + "for spw in "+str(spwSetups1)+":\n"
-                if myCasaVersion > '6.3.0': # accommodate changed gaincal append behaviour in 6.4
-                    casaCmd = casaCmd + "  myappend = False if spw == "+str(spwSetups1[0])+" else True\n"
-                casaCmd = casaCmd + "  gaincal(vis = '"+msName1+"',\n"
-                casaCmd = casaCmd + "    caltable = '"+msName1+".ampli_inf',\n"
-                casaCmd = casaCmd + "    field = '"+calFieldIds1+"', # "+calFieldNames+"\n"
-                casaCmd = casaCmd + "    solint = 'inf',\n"
-                casaCmd = casaCmd + "    spw = ','.join([str(j) for j in spw]),\n"
-                casaCmd = casaCmd + "    combine = 'spw',\n"
-                casaCmd = casaCmd + "    refant = '"+refant+"',\n"
-                if isFullP:
-                    casaCmd = casaCmd + "    refantmode = 'strict',\n"
-                casaCmd = casaCmd + "    gaintype = '"+gaintypeForAmp+"',\n"
-                casaCmd = casaCmd + "    calmode = 'a',\n"
-                if myCasaVersion > '6.3.0': # accommodate changed gaincal append behaviour in 6.4
-                    casaCmd = casaCmd + "    append = myappend,\n"
-                else:
-                    casaCmd = casaCmd + "    append = True,\n"
-                casaCmd = casaCmd + "    gaintable = ['"+bandpass+"', '"+msName1+".phasediff_inf', '"+msName1+".phase_int'],\n"
-                casaCmd = casaCmd + "    spwmap = [[], [], calspwmap])\n\n"
+            casaCmd = casaCmd + "for i in "+str(calFieldIds)+": # "+calFieldNames+"\n"
+            casaCmd = casaCmd + "  os.system('rm -rf %s.phase_int'+str(i)) \n"%(msName1)
+            casaCmd = casaCmd + "  gaincal(vis = '"+msName1+"',\n"
+            casaCmd = casaCmd + "    caltable = '"+msName1+".phase_int'+str(i),\n"
+            casaCmd = casaCmd + "    field = str(i),\n"
+            casaCmd = casaCmd + "    solint = 'int',\n"
+            casaCmd = casaCmd + "    #combine = 'spw', # change calspwmap below and also combine for phase_inf if you uncomment this\n"
+            casaCmd = casaCmd + "    refant = '"+refant+"',\n"
+            if isFullP:
+                casaCmd = casaCmd + "    refantmode = 'strict',\n"
+            casaCmd = casaCmd + "    gaintype = 'G',\n"
+            casaCmd = casaCmd + "    calmode = 'p',\n"
+            casaCmd = casaCmd + "    append = False,\n"
+            casaCmd = casaCmd + "    gaintable = ['"+bandpass+"', '"+msName1+".phasediff_inf'])\n\n"
 
-                ampForSci.append(msName1+'.ampli_inf')
+            if doplot == True: 
+                casaCmd = casaCmd + "  if applyonly != True: es.checkCalTable('"+msName1+".phase_int'+str(i), msName='"+msName1+"', interactive=False) \n\n"
 
-                if doplot == True: 
-                    casaCmd = casaCmd + "if applyonly != True: es.checkCalTable('"+msName1+".ampli_inf', msName='"+msName1+"', interactive=False) \n\n"
+            ###
+            # calspwmap creation for spw-combined and non-spw-combined phase_int
 
-                casaCmd = casaCmd + "os.system('rm -rf %s.flux_inf') \n"%(msName1)
-                casaCmd = casaCmd + "os.system('rm -rf %s.fluxscale') \n"%(msName1)
-                casaCmd = casaCmd + "mylogfile = casalog.logfile()\n"
-                casaCmd = casaCmd + "casalog.setlogfile('"+msName1+".fluxscale')\n\n"
-                casaCmd = casaCmd + fluxscaleDictName[0] + " = fluxscale(vis = '"+msName1+"',\n"
-                casaCmd = casaCmd + "  caltable = '"+msName1+".ampli_inf',\n"
-                casaCmd = casaCmd + "  fluxtable = '"+msName1+".flux_inf',\n"
-                casaCmd = casaCmd + "  reference = '"+str(bpassCalId)+"', # "+fieldNames[bpassCalId]+"\n"
-                casaCmd = casaCmd + "  refspwmap = calspwmap,\n"
-                casaCmd = casaCmd + "  incremental = True)\n\n"
-                casaCmd = casaCmd + "casalog.setlogfile(mylogfile)\n\n"
-                casaCmd = casaCmd + "if applyonly != True: es.fluxscale2(caltable = '"+msName1+".ampli_inf', removeOutliers=True, msName='"+msName+"', writeToFile=True, preavg=10000)\n\n"
+            mymsmd = msmdtool()
+            mymsmd.open(msName)
 
-                casaCmd = casaCmd + "os.system('rm -rf %s.phase_inf') \n"%(msName1)
-                casaCmd = casaCmd + "for spw in "+str(spwSetups1)+":\n"
-                if myCasaVersion > '6.3.0': # accommodate changed gaincal append behaviour in 6.4
-                    casaCmd = casaCmd + "  myappend = False if spw == "+str(spwSetups1[0])+" else True\n"
-                casaCmd = casaCmd + "  gaincal(vis = '"+msName1+"',\n"
-                casaCmd = casaCmd + "    caltable = '"+msName1+".phase_inf',\n"
-                casaCmd = casaCmd + "    field = '"+calFieldIds1+"', # "+calFieldNames+"\n"
-                casaCmd = casaCmd + "    solint = 'inf',\n"
-                casaCmd = casaCmd + "    spw = ','.join([str(j) for j in spw]),\n"
-                casaCmd = casaCmd + "    combine = 'spw',\n"
-                casaCmd = casaCmd + "    refant = '"+refant+"',\n"
-                if isFullP:
-                    casaCmd = casaCmd + "    refantmode = 'strict',\n"
-                casaCmd = casaCmd + "    gaintype = 'G',\n"
-                casaCmd = casaCmd + "    calmode = 'p',\n"
-                if myCasaVersion > '6.3.0': # accommodate changed gaincal append behaviour in 6.4
-                    casaCmd = casaCmd + "    append = myappend,\n"
-                else:
-                    casaCmd = casaCmd + "    append = True,\n"
-                casaCmd = casaCmd + "    gaintable = ['"+bandpass+"', '"+msName1+".phasediff_inf'])\n\n"
+            spwInfo3 = sfsdr.getSpwInfo(msName, intent='OBSERVE_TARGET|CALIBRATE_BANDPASS', caching=True)
+            spwIds3 = sorted(spwInfo3.keys())
+            spwInfoDGCR = sfsdr.getSpwInfo(msName, intent='CALIBRATE_DIFFGAIN#REFERENCE', caching=True)
+            spwIdsDGCR = sorted(spwInfoDGCR.keys())
+            spwInfoScience = sfsdr.getSpwInfo(msName, intent='OBSERVE_TARGET#ON_SOURCE', caching=True)
+            spwIdsScience = sorted(spwInfoScience.keys())
 
-                if doplot == True: 
-                    casaCmd = casaCmd + "if applyonly != True: es.checkCalTable('"+msName1+".phase_inf', msName='"+msName1+"', interactive=False) \n"
-
-            else: # phaseDiffPerSpwSetup == False
-
-                bpassCalId = intentSources['CALIBRATE_BANDPASS']['id']
-                if bpassCalId[0] == '': 
-                    casalog.post('ERROR: There is no bandpass calibrator.', 'SEVERE')
-                    return False
-                if len(bpassCalId) != 1: 
-                    casaCmd = casaCmd + "# Note: there is more than one bandpass calibrator, I'm picking the first one: "+fieldNames[bpassCalId[0]]+".\n"
-                bpassCalId = bpassCalId[0]
-
-                diffGainCalId = ''
-                diffGainCalScanList = ''
-                if 'CALIBRATE_DIFFGAIN' in list(intentSources.keys()):
-                    diffGainCalId = intentSources['CALIBRATE_DIFFGAIN']['id']
-                    if len(diffGainCalId) != 1: 
-                        casaCmd = casaCmd + "# Note: there is more than one diffgain calibrator, I'm picking the first one: "+fieldNames[diffGainCalId[0]]+".\n"
-                    diffGainCalId = diffGainCalId[0]
-                if diffGainCalId == '':
-                    diffGainCalId = bpassCalId
-                else:
-                    mymsmd = msmdtool()
-                    mymsmd.open(msName)
-                    diffGainCalScanList = mymsmd.scansforintent('CALIBRATE_DIFFGAIN#*').tolist()
-                    mymsmd.close()
-                    diffGainCalScanList = [str(j) for j in diffGainCalScanList]
-                    diffGainCalScanList = ','.join(diffGainCalScanList)
-
-                casaCmd = casaCmd + "os.system('rm -rf %s.phasediff_inf') \n"%(msName1)
-                casaCmd = casaCmd + "gaincal(vis = '"+msName1+"',\n"
-                casaCmd = casaCmd + "  caltable = '"+msName1+".phasediff_inf',\n"
-                casaCmd = casaCmd + "  field = '"+str(diffGainCalId)+"',\n"
-                if diffGainCalScanList != '': 
-                    casaCmd = casaCmd + "  scan = '"+diffGainCalScanList+"',\n"
-                casaCmd = casaCmd + "  solint = 'inf',\n"
-                casaCmd = casaCmd + "  combine = 'scan',\n"
-                casaCmd = casaCmd + "  refant = '"+refant+"',\n"
-                if isFullP:
-                    casaCmd = casaCmd + "  refantmode = 'strict',\n"
-                casaCmd = casaCmd + "  gaintype = 'G',\n"
-                casaCmd = casaCmd + "  calmode = 'p',\n"
-                casaCmd = casaCmd + "  gaintable = '"+bandpass+"')\n\n"
-
-                phaseDiffCalTableName.append(msName1+'.phasediff_inf')
-
-                if doplot == True: 
-                    casaCmd = casaCmd + "if applyonly != True: es.checkCalTable('"+msName1+".phasediff_inf', msName='"+msName1+"', interactive=False) \n\n"
-
-                casaCmd = casaCmd + "for i in "+str(calFieldIds)+": # "+calFieldNames+"\n"
-                casaCmd = casaCmd + "  os.system('rm -rf %s.phase_int'+str(i)) \n"%(msName1)
-                casaCmd = casaCmd + "  gaincal(vis = '"+msName1+"',\n"
-                casaCmd = casaCmd + "    caltable = '"+msName1+".phase_int'+str(i),\n"
-                casaCmd = casaCmd + "    field = str(i),\n"
-                casaCmd = casaCmd + "    solint = 'int',\n"
-                casaCmd = casaCmd + "    #combine = 'spw', # change calspwmap below and also combine for phase_inf if you uncomment this\n"
-                casaCmd = casaCmd + "    refant = '"+refant+"',\n"
-                if isFullP:
-                    casaCmd = casaCmd + "    refantmode = 'strict',\n"
-                casaCmd = casaCmd + "    gaintype = 'G',\n"
-                casaCmd = casaCmd + "    calmode = 'p',\n"
-                casaCmd = casaCmd + "    append = False,\n"
-                casaCmd = casaCmd + "    gaintable = ['"+bandpass+"', '"+msName1+".phasediff_inf'])\n\n"
-
-                if doplot == True: 
-                    casaCmd = casaCmd + "  if applyonly != True: es.checkCalTable('"+msName1+".phase_int'+str(i), msName='"+msName1+"', interactive=False) \n\n"
-
-                ###
-                # calspwmap creation for spw-combined and non-spw-combined phase_int
-
-                mymsmd = msmdtool()
-                mymsmd.open(msName)
-
-                spwInfo3 = sfsdr.getSpwInfo(msName, intent='OBSERVE_TARGET|CALIBRATE_BANDPASS', caching=True)
-                spwIds3 = sorted(spwInfo3.keys())
-                spwInfoDGCR = sfsdr.getSpwInfo(msName, intent='CALIBRATE_DIFFGAIN#REFERENCE', caching=True)
-                spwIdsDGCR = sorted(spwInfoDGCR.keys())
-                spwInfoScience = sfsdr.getSpwInfo(msName, intent='OBSERVE_TARGET#ON_SOURCE', caching=True)
-                spwIdsScience = sorted(spwInfoScience.keys())
-
-                if iHaveSplitMyScienceSpw == True:
-                    numSpws = len(spwIds3)
-                    tmpIds = []
-                    for i in spwIdsDGCR:
-                        tmpIds.append(spwIds3.index(i))
-                    spwIdsDGCR = sorted(tmpIds)
-                    tmpIds = []
-                    for i in spwIdsScience:
-                        tmpIds.append(spwIds3.index(i))
-                    spwIdsScience = sorted(tmpIds)
-                    tmpIds = []
-                    for i in spwIds3:
-                        tmpIds.append(spwIds3.index(i))
-                    spwIds3 = sorted(tmpIds)
-
-                else:
-                    numSpws = max(spwIds3)+2
-
-                calspwmapcomb = [] # version to be used with spw-combination
-
-                # decide whether the narrow or the wide SPWs come first
-                narrowFirst = True
+            if iHaveSplitMyScienceSpw == True:
+                numSpws = len(spwIds3)
+                tmpIds = []
+                for i in spwIdsDGCR:
+                    tmpIds.append(spwIds3.index(i))
+                spwIdsDGCR = sorted(tmpIds)
+                tmpIds = []
                 for i in spwIdsScience:
-                    for j in spwIdsDGCR: 
-                        if i > j:
-                            narrowFirst = False
-                            break
+                    tmpIds.append(spwIds3.index(i))
+                spwIdsScience = sorted(tmpIds)
+                tmpIds = []
+                for i in spwIds3:
+                    tmpIds.append(spwIds3.index(i))
+                spwIds3 = sorted(tmpIds)
 
-                # create calspwmapcomb accordingly
-                minDGCRSpw = min(spwIdsDGCR)
-                minSciSpw = min(spwIdsScience)
-                if narrowFirst:
-                    for i in range(minDGCRSpw):
-                        calspwmapcomb.append(minSciSpw)
-                    for i in range(numSpws-minDGCRSpw):
-                        calspwmapcomb.append(minDGCRSpw)
+            else:
+                numSpws = max(spwIds3)+2
+
+            calspwmapcomb = [] # version to be used with spw-combination
+
+            # decide whether the narrow or the wide SPWs come first
+            narrowFirst = True
+            for i in spwIdsScience:
+                for j in spwIdsDGCR: 
+                    if i > j:
+                        narrowFirst = False
+                        break
+
+            # create calspwmapcomb accordingly
+            minDGCRSpw = min(spwIdsDGCR)
+            minSciSpw = min(spwIdsScience)
+            if narrowFirst:
+                for i in range(minDGCRSpw):
+                    calspwmapcomb.append(minSciSpw)
+                for i in range(numSpws-minDGCRSpw):
+                    calspwmapcomb.append(minDGCRSpw)
+            else:
+                for i in range(minSciSpw):
+                    calspwmapcomb.append(minDGCRSpw)
+                for i in range(numSpws-minSciSpw):
+                    calspwmapcomb.append(minSciSpw)
+
+
+            casaCmd = casaCmd + "# Case combine='spw' in phase_int\n"
+            casaCmd = casaCmd + "#calspwmap = "+repr(calspwmapcomb)+"\n\n"
+            casaCmd = casaCmd + "# Case combine='' in phase_int\n"
+            casaCmd = casaCmd + "calspwmap = list(range("+str(numSpws)+"))\n\n"
+
+            ## create calspwmap for flux scale
+            calspwmapf = []
+
+            for i in range(numSpws):
+                if i in spwIdsScience:
+                    myDGCRSpw = spwIdsDGCR[mymsmd.baseband(i)-1] # wide SPWs are ordered by baseband number
+                    calspwmapf.append(myDGCRSpw)
                 else:
-                    for i in range(minSciSpw):
-                        calspwmapcomb.append(minDGCRSpw)
-                    for i in range(numSpws-minSciSpw):
-                        calspwmapcomb.append(minSciSpw)
+                    calspwmapf.append(i)
 
+            mymsmd.close()        
 
-                casaCmd = casaCmd + "# Case combine='spw' in phase_int\n"
-                casaCmd = casaCmd + "#calspwmap = "+repr(calspwmapcomb)+"\n\n"
-                casaCmd = casaCmd + "# Case combine='' in phase_int\n"
-                casaCmd = casaCmd + "calspwmap = list(range("+str(numSpws)+"))\n\n"
+            ###
 
-                ## create calspwmap for flux scale
-                calspwmapf = []
+            casaCmd = casaCmd + "os.system('rm -rf %s.ampli_inf') \n"%(msName1)
+            casaCmd = casaCmd + "for i in "+str(calFieldIds)+": # "+calFieldNames+"\n"
+            if myCasaVersion > '6.3.0': # accommodate changed gaincal append behaviour in 6.4
+                casaCmd = casaCmd + "  myappend = False if i == "+str(calFieldIds[0])+" else True\n"
+            casaCmd = casaCmd + "  gaincal(vis = '"+msName1+"',\n"
+            casaCmd = casaCmd + "    caltable = '"+msName1+".ampli_inf',\n"
+            casaCmd = casaCmd + "    field = str(i),\n"
+            casaCmd = casaCmd + "    solint = 'inf',\n"
+            casaCmd = casaCmd + "    refant = '"+refant+"',\n"
+            if isFullP:
+                casaCmd = casaCmd + "    refantmode = 'strict',\n"
+            casaCmd = casaCmd + "    gaintype = '"+gaintypeForAmp+"',\n"
+            casaCmd = casaCmd + "    calmode = 'a',\n"
+            if myCasaVersion > '6.3.0': # accommodate changed gaincal append behaviour in 6.4
+                casaCmd = casaCmd + "    append = myappend,\n"
+            else:
+                casaCmd = casaCmd + "    append = True,\n"
+            casaCmd = casaCmd + "    gaintable = ['"+bandpass+"', '"+msName1+".phasediff_inf', '"+msName1+".phase_int'+str(i)],\n"
+            casaCmd = casaCmd + "    spwmap = [[], [], calspwmap])\n\n"
 
-                for i in range(numSpws):
-                    if i in spwIdsScience:
-                        myDGCRSpw = spwIdsDGCR[mymsmd.baseband(i)-1] # wide SPWs are ordered by baseband number
-                        calspwmapf.append(myDGCRSpw)
-                    else:
-                        calspwmapf.append(i)
+            ampForSci.append(msName1+'.ampli_inf')
 
-                mymsmd.close()        
+            if doplot == True: 
+                casaCmd = casaCmd + "if applyonly != True: es.checkCalTable('"+msName1+".ampli_inf', msName='"+msName1+"', interactive=False) \n\n"
 
-                ###
+            casaCmd = casaCmd + "# spwmap for flux inf: matched by baseband to preserve signal path and keep science SPWs statistically independent as in non-BWSW case\n"
+            casaCmd = casaCmd + "calspwmapf = "+repr(calspwmapf)+"\n\n"
 
-                casaCmd = casaCmd + "os.system('rm -rf %s.ampli_inf') \n"%(msName1)
-                casaCmd = casaCmd + "for i in "+str(calFieldIds)+": # "+calFieldNames+"\n"
-                if myCasaVersion > '6.3.0': # accommodate changed gaincal append behaviour in 6.4
-                    casaCmd = casaCmd + "  myappend = False if i == "+str(calFieldIds[0])+" else True\n"
-                casaCmd = casaCmd + "  gaincal(vis = '"+msName1+"',\n"
-                casaCmd = casaCmd + "    caltable = '"+msName1+".ampli_inf',\n"
-                casaCmd = casaCmd + "    field = str(i),\n"
-                casaCmd = casaCmd + "    solint = 'inf',\n"
-                casaCmd = casaCmd + "    refant = '"+refant+"',\n"
-                if isFullP:
-                    casaCmd = casaCmd + "    refantmode = 'strict',\n"
-                casaCmd = casaCmd + "    gaintype = '"+gaintypeForAmp+"',\n"
-                casaCmd = casaCmd + "    calmode = 'a',\n"
-                if myCasaVersion > '6.3.0': # accommodate changed gaincal append behaviour in 6.4
-                    casaCmd = casaCmd + "    append = myappend,\n"
-                else:
-                    casaCmd = casaCmd + "    append = True,\n"
-                casaCmd = casaCmd + "    gaintable = ['"+bandpass+"', '"+msName1+".phasediff_inf', '"+msName1+".phase_int'+str(i)],\n"
-                casaCmd = casaCmd + "    spwmap = [[], [], calspwmap])\n\n"
+            casaCmd = casaCmd + "os.system('rm -rf %s.flux_inf') \n"%(msName1)
+            casaCmd = casaCmd + "os.system('rm -rf %s.fluxscale') \n"%(msName1)
+            casaCmd = casaCmd + "mylogfile = casalog.logfile()\n"
+            casaCmd = casaCmd + "casalog.setlogfile('"+msName1+".fluxscale')\n\n"
+            casaCmd = casaCmd + fluxscaleDictName[0] + " = fluxscale(vis = '"+msName1+"',\n"
+            casaCmd = casaCmd + "  caltable = '"+msName1+".ampli_inf',\n"
+            casaCmd = casaCmd + "  fluxtable = '"+msName1+".flux_inf',\n"
+            casaCmd = casaCmd + "  reference = '"+str(bpassCalId)+"', # "+fieldNames[bpassCalId]+"\n"
+            casaCmd = casaCmd + "  refspwmap = calspwmapf,\n"
+            casaCmd = casaCmd + "  incremental = True)\n\n"
+            casaCmd = casaCmd + "casalog.setlogfile(mylogfile)\n\n"
+            casaCmd = casaCmd + "if applyonly != True: es.fluxscale2(caltable = '"+msName1+".ampli_inf', removeOutliers=True, msName='"+msName+"', writeToFile=True, preavg=10000)\n\n"
 
-                ampForSci.append(msName1+'.ampli_inf')
+            casaCmd = casaCmd + "for i in "+str(phaseCalIds)+": # phasecal\n"
+            casaCmd = casaCmd + "  os.system('rm -rf "+msName1+".phase_inf'+str(i)) \n"
+            casaCmd = casaCmd + "  gaincal(vis = '"+msName1+"',\n"
+            casaCmd = casaCmd + "    caltable = '"+msName1+".phase_inf'+str(i),\n"
+            casaCmd = casaCmd + "    field = str(i),\n"
+            casaCmd = casaCmd + "    solint = 'inf',\n"
+            casaCmd = casaCmd + "    #combine = 'spw',\n"
+            casaCmd = casaCmd + "    refant = '"+refant+"',\n"
+            if isFullP:
+                casaCmd = casaCmd + "    refantmode = 'strict',\n"
+            casaCmd = casaCmd + "    gaintype = 'G',\n"
+            casaCmd = casaCmd + "    calmode = 'p',\n"
+            casaCmd = casaCmd + "    append = False,\n"
+            casaCmd = casaCmd + "    gaintable = ['"+bandpass+"', '"+msName1+".phasediff_inf'])\n\n"
 
-                if doplot == True: 
-                    casaCmd = casaCmd + "if applyonly != True: es.checkCalTable('"+msName1+".ampli_inf', msName='"+msName1+"', interactive=False) \n\n"
-
-                casaCmd = casaCmd + "# spwmap for flux inf: matched by baseband to preserve signal path and keep science SPWs statistically independent as in non-BWSW case\n"
-                casaCmd = casaCmd + "calspwmapf = "+repr(calspwmapf)+"\n\n"
-
-                casaCmd = casaCmd + "os.system('rm -rf %s.flux_inf') \n"%(msName1)
-                casaCmd = casaCmd + "os.system('rm -rf %s.fluxscale') \n"%(msName1)
-                casaCmd = casaCmd + "mylogfile = casalog.logfile()\n"
-                casaCmd = casaCmd + "casalog.setlogfile('"+msName1+".fluxscale')\n\n"
-                casaCmd = casaCmd + fluxscaleDictName[0] + " = fluxscale(vis = '"+msName1+"',\n"
-                casaCmd = casaCmd + "  caltable = '"+msName1+".ampli_inf',\n"
-                casaCmd = casaCmd + "  fluxtable = '"+msName1+".flux_inf',\n"
-                casaCmd = casaCmd + "  reference = '"+str(bpassCalId)+"', # "+fieldNames[bpassCalId]+"\n"
-                casaCmd = casaCmd + "  refspwmap = calspwmapf,\n"
-                casaCmd = casaCmd + "  incremental = True)\n\n"
-                casaCmd = casaCmd + "casalog.setlogfile(mylogfile)\n\n"
-                casaCmd = casaCmd + "if applyonly != True: es.fluxscale2(caltable = '"+msName1+".ampli_inf', removeOutliers=True, msName='"+msName+"', writeToFile=True, preavg=10000)\n\n"
-
-                casaCmd = casaCmd + "for i in "+str(phaseCalIds)+": # phasecal\n"
-                casaCmd = casaCmd + "  os.system('rm -rf "+msName1+".phase_inf'+str(i)) \n"
-                casaCmd = casaCmd + "  gaincal(vis = '"+msName1+"',\n"
-                casaCmd = casaCmd + "    caltable = '"+msName1+".phase_inf'+str(i),\n"
-                casaCmd = casaCmd + "    field = str(i),\n"
-                casaCmd = casaCmd + "    solint = 'inf',\n"
-                casaCmd = casaCmd + "    #combine = 'spw',\n"
-                casaCmd = casaCmd + "    refant = '"+refant+"',\n"
-                if isFullP:
-                    casaCmd = casaCmd + "    refantmode = 'strict',\n"
-                casaCmd = casaCmd + "    gaintype = 'G',\n"
-                casaCmd = casaCmd + "    calmode = 'p',\n"
-                casaCmd = casaCmd + "    append = False,\n"
-                casaCmd = casaCmd + "    gaintable = ['"+bandpass+"', '"+msName1+".phasediff_inf'])\n\n"
-
-                if doplot == True: 
-                    casaCmd = casaCmd + "  if applyonly != True: es.checkCalTable('"+msName1+".phase_inf'+str(i), msName='"+msName1+"', interactive=False) \n"
+            if doplot == True: 
+                casaCmd = casaCmd + "  if applyonly != True: es.checkCalTable('"+msName1+".phase_inf'+str(i), msName='"+msName1+"', interactive=False) \n"
         # endif there are scifields
 
     else: # phaseDiff != True
@@ -3841,6 +4401,10 @@ def doGainCalibration(msName, msName1='', refant='', bandpass='', gaintypeForAmp
             mytb.close()
             print("Running es.getAntennasForFluxscale2('%s', fluxCalId='%s', refant='%s')" % (msName,str(fluxCalId),refant))
             antList1 = sfsdr.getAntennasForFluxscale2(msName, fluxCalId=str(fluxCalId), refant=refant)
+            if antList1 == []:
+                casalog.post("ERROR: es.getAntennasForFluxscale2 returned empty list of antennas.", 'SEVERE')
+                return False
+
 
             if len(antList) == len(antList1):
 
@@ -4076,10 +4640,11 @@ def doGainCalibration(msName, msName1='', refant='', bandpass='', gaintypeForAmp
 
 #####################################
 def doB2BGainCalibrationPartI(msName, msName1='', refant='', bandpass='', doplot=True, iHaveSplitMyScienceSpw=False, valueMaps={},
-                              combineB2BLFspws=False):
+                              combineB2BLFspws=False, combineB2BLFHFspws=False, combineB2BDGCspws=False):
     """Generate code for the first gain calibration step of a calibration script for B2B data."""
 
     print('\n*** doB2BGainCalibrationPartI ***')
+    print('Gathering information ...')
 
     if msName1 == '': msName1 = msName
     if refant == '': 
@@ -4115,6 +4680,9 @@ def doB2BGainCalibrationPartI(msName, msName1='', refant='', bandpass='', doplot
     diffGainCalScanListLow  = ','.join([str(i) for i in mymsmd.scansforintent('CALIBRATE_DIFFGAIN#REFERENCE')])
     diffGainCalScanListHigh = ','.join([str(i) for i in mymsmd.scansforintent(sigintent)])
 
+    # added all diffgainscals - ATM are alone so never have DIFFGAIN intent 
+    diffGainCalScanList = ','.join([str(i) for i in mymsmd.scansforintent('CALIBRATE_DIFFGAIN#*')])
+    
     mymsmd.close()
 
     spwHighDict = sfsdr.getSpwInfo(msName,intent=sigintent, caching=True)
@@ -4127,9 +4695,11 @@ def doB2BGainCalibrationPartI(msName, msName1='', refant='', bandpass='', doplot
     obsTimeRange = mytb.getcol('TIME_RANGE')
     mytb.close()
     obsTimeStart = ((obsTimeRange[0]/86400.0)+2400000.5-2440587.5)*86400.0
-    obsTimeStart = timeUtilities.strftime('%Y-%m-%dT%H:%M:%S', timeUtilities.gmtime(obsTimeStart))
+    obsTimeStart = timeUtilities.strftime('%Y-%m-%dT%H:%M:%S', timeUtilities.gmtime(int(obsTimeStart[0])))
 
     # determine spw mapping
+    # conforming to correct regimes with extra mapping and improved naming
+    
     if iHaveSplitMyScienceSpw == True:
         spwInfo = sfsdr.getSpwInfo(msName, intent='OBSERVE_TARGET|CALIBRATE_BANDPASS', caching=True)
         spwIds = sorted(spwInfo.keys())
@@ -4144,14 +4714,18 @@ def doB2BGainCalibrationPartI(msName, msName1='', refant='', bandpass='', doplot
             spwLowSplit.append(spwIds.index(myspw))
         spwLowStr = ','.join([str(i) for i in spwLowSplit])
 
-        spwB2B = list(range(max(spwHighSplit)+1))
 
-        spwHighest = max(max(spwLowSplit),max(spwHighSplit))
-        if combineB2BLFspws:
-            LFspwB2B = list(range(spwHighest+1))
-        else:
-            LFspwB2B = spwB2B # pointer, not copy!
+        # need to now consider the cases for mapping
 
+        # logic is simplified as we don't need all the maps defined here
+        # we need ONLY consider LFtoHF B2B transfer
+        # and HFtoHF_DGC in Case D
+        # trigger is the same on combineB2BLFspws = True
+        # and now combineB2BDGCspws = True
+        
+        LFtoHF = list(range(max(spwHighSplit)+1))   # only need this for B2B transfer
+
+            
         lowestSpwLow = int(min(spwLowSplit))
         
         if obsTimeStart > '2021-03-01T00:00:00':
@@ -4160,32 +4734,32 @@ def doB2BGainCalibrationPartI(msName, msName1='', refant='', bandpass='', doplot
                 for spwMap in spwLowSplit:  
                     if spwLowDict[spwMap]['basebandNum']==BBnum:
                         if combineB2BLFspws:
-                            spwB2B[spwRep] = lowestSpwLow
-                            LFspwB2B[spwMap] = lowestSpwLow
+                            LFtoHF[spwRep] = lowestSpwLow
                         else:
-                            spwB2B[spwRep] = spwMap
+                            LFtoHF[spwRep] = spwMap  
 
         else:
             for spwId,spwRep in enumerate(spwHighSplit):
                 if combineB2BLFspws:
-                    spwB2B[spwRep] = lowestSpwLow
+                    LFtoHF[spwRep] = lowestSpwLow
                 else:
-                    spwB2B[spwRep] = spwLowSplit[spwId]
-            if combineB2BLFspws:
-                for spwMap in spwLowSplit:
-                    LFspwB2B[spwMap] = lowestSpwLow
+                    LFtoHF[spwRep] = spwLowSplit[spwId]
 
+        # Now Case D
+        # these are HF to HF self
+        if combineB2BDGCspws:
+            HFtoHF_DGC = list(range(max(spwHighSplit)+1))
+            for spwMap in spwHighSplit:
+                HFtoHF_DGC[spwMap] = min(spwHighSplit)  # maps to min of HF index
+
+
+
+                    
     else: # no reindexing took place
         spwHighStr = ','.join([str(i) for i in spwHigh])
         spwLowStr = ','.join([str(i) for i in spwLow])
 
-        spwB2B = list(range(max(spwHigh)+1))
-        spwHighest = max(max(spwLow),max(spwHigh))
-        if combineB2BLFspws:
-            LFspwB2B = list(range(spwHighest+1))
-        else:
-            LFspwB2B = spwB2B # pointer, not copy
-
+        LFtoHF = list(range(max(spwHigh)+1))
         lowestSpwLow = int(min(spwLow))
 
         if obsTimeStart > '2021-03-01T00:00:00':
@@ -4194,28 +4768,37 @@ def doB2BGainCalibrationPartI(msName, msName1='', refant='', bandpass='', doplot
                 for spwMap in spwLow:  
                     if spwLowDict[spwMap]['basebandNum']==BBnum:
                         if combineB2BLFspws:
-                            spwB2B[spwRep] = lowestSpwLow
-                            LFspwB2B[spwMap] = lowestSpwLow
+                            LFtoHF[spwRep] = lowestSpwLow
                         else:
-                            spwB2B[spwRep] = spwMap
+                            LFtoHF[spwRep] = spwMap
         else:
             if combineB2BLFspws: 
                 for spwRep in spwHigh:
-                    spwB2B[spwRep] = lowestSpwLow
-                for spwMap in spwLow:
-                    LFspwB2B[spwMap] =  lowestSpwLow
+                    LFtoHF[spwRep] = lowestSpwLow
             else:
                 for spwId,spwRep in enumerate(spwHigh):
-                    spwB2B[spwRep] = spwLow[spwId]
+                    LFtoHF[spwRep] = spwLow[spwId]
 
+        # Now Case D
+        # these are HF to HF self
+        if combineB2BDGCspws:
+            HFtoHF_DGC = list(range(max(spwHigh)+1))
+            for spwMap in spwHigh:
+                HFtoHF_DGC[spwMap] = min(spwHigh)  # maps to min of HF index
+
+
+                    
     ###
 
     print('diffGainCalScanListLow ', diffGainCalScanListLow)
     print('diffGainCalScanListHigh ', diffGainCalScanListHigh)
     print('spwHighStr ', spwHighStr)
     print('spwLowStr ', spwLowStr)
-    print('spwB2B ', str(spwB2B))
-    print('LFspwB2B ', str(LFspwB2B))
+    print('LFtoHF ', str(LFtoHF))
+
+    if combineB2BDGCspws:
+        print('Combine HF SpWs for B2B solution')
+        print('HFtoHF_DGC ', str(HFtoHF_DGC))
 
     ###
 
@@ -4223,13 +4806,12 @@ def doB2BGainCalibrationPartI(msName, msName1='', refant='', bandpass='', doplot
 
     casaCmd = ''
 
-    casaCmd = casaCmd + "# do a phase offset for LF so all SPW can be merged for better SNR\n" 
-    casaCmd = casaCmd + "os.system('rm -rf "+msName1+".DGCphaselow_phasediff')\n"
+    casaCmd = casaCmd + "# do a phase offset so all respective HF and LF SPW can be merged for better SNR, if required\n" 
+    casaCmd = casaCmd + "os.system('rm -rf "+msName1+".DGCphase_phasediff')\n"
     casaCmd = casaCmd + "gaincal(vis = '"+msName1+"',\n"
-    casaCmd = casaCmd + "  caltable = '"+msName1+".DGCphaselow_phasediff',\n"
+    casaCmd = casaCmd + "  caltable = '"+msName1+".DGCphase_phasediff',\n"
     casaCmd = casaCmd + "  field = '"+str(diffGainCalId)+"',\n"   
-    casaCmd = casaCmd + "  scan = '"+diffGainCalScanListLow+"',\n"
-    casaCmd = casaCmd + "  spw = '"+spwLowStr+"',\n"
+    casaCmd = casaCmd + "  scan = '"+diffGainCalScanList+"',\n"
     casaCmd = casaCmd + "  solint = 'inf',\n"
     casaCmd = casaCmd + "  refant = '"+refant+"',\n"
     casaCmd = casaCmd + "  gaintype = 'G',\n"
@@ -4239,7 +4821,7 @@ def doB2BGainCalibrationPartI(msName, msName1='', refant='', bandpass='', doplot
     casaCmd = casaCmd + "  gaintable = '"+bandpass+"')\n"
 
     if doplot:
-        casaCmd = casaCmd + "\nif applyonly != True: es.checkCalTable('"+msName1+".DGCphaselow_phasediff', msName='"+msName1+"', interactive=False)\n" 
+        casaCmd = casaCmd + "\nif applyonly != True: es.checkCalTable('"+msName1+".DGCphase_phasediff', msName='"+msName1+"', interactive=False)\n" 
 
 
     casaCmd = casaCmd + "\n# LF temporal solutions fast\n"
@@ -4259,7 +4841,7 @@ def doB2BGainCalibrationPartI(msName, msName1='', refant='', bandpass='', doplot
         casaCmd = casaCmd + "  combine = 'spw',\n"
     casaCmd = casaCmd + "  refantmode = 'strict',\n"
     casaCmd = casaCmd + "  interp = ['linear','linear'],\n"
-    casaCmd = casaCmd + "  gaintable = ['"+bandpass+"', '"+msName1+".DGCphaselow_phasediff'],\n"
+    casaCmd = casaCmd + "  gaintable = ['"+bandpass+"', '"+msName1+".DGCphase_phasediff'],\n"
     casaCmd = casaCmd + "  gainfield = ['',''])\n"
 
     if doplot:
@@ -4281,7 +4863,7 @@ def doB2BGainCalibrationPartI(msName, msName1='', refant='', bandpass='', doplot
         casaCmd = casaCmd + "  combine = 'spw',\n"
     casaCmd = casaCmd + "  refantmode = 'strict',\n"
     casaCmd = casaCmd + "  interp = ['linear','linear'],\n"
-    casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphaselow_phasediff'],\n"
+    casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphase_phasediff'],\n"
     casaCmd = casaCmd + "  gainfield = ['',''])\n"
 
     if doplot:
@@ -4302,10 +4884,13 @@ def doB2BGainCalibrationPartI(msName, msName1='', refant='', bandpass='', doplot
     casaCmd = casaCmd + "  gaintype = 'G',\n"
     casaCmd = casaCmd + "  calmode = 'p',\n"
     casaCmd = casaCmd + "  minsnr = 3.0,\n"
+    if combineB2BLFHFspws:
+        casaCmd = casaCmd + "  combine = 'spw',\n"
     casaCmd = casaCmd + "  refantmode = 'strict',\n"
     casaCmd = casaCmd + "  interp = ['linear','linear'],\n"
-    casaCmd = casaCmd + "  gaintable = '"+bandpass+"',\n"
-    casaCmd = casaCmd + "  gainfield = [''])\n"
+    casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphase_phasediff'],\n"
+    casaCmd = casaCmd + "  gainfield = ['',''])\n"
+
 
     if doplot:
         casaCmd = casaCmd + "\nif applyonly != True: es.checkCalTable('"+msName1+".DGCphasehigh_int', msName='"+msName1+"', interactive=False)\n" 
@@ -4327,11 +4912,14 @@ def doB2BGainCalibrationPartI(msName, msName1='', refant='', bandpass='', doplot
     casaCmd = casaCmd + "  gaintype = 'G',\n"
     casaCmd = casaCmd + "  calmode = 'p',\n"
     casaCmd = casaCmd + "  minsnr=3.0,\n"
-    casaCmd = casaCmd + "  combine='scan',\n"
-    casaCmd = casaCmd + "  interp=['linear','linearPD'],\n"
-    casaCmd = casaCmd + "  spwmap=[[],"+str(spwB2B)+"],\n"
-    casaCmd = casaCmd + "  gainfield = ['',''],\n"  
-    casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphaselow_inf'])\n"
+    if combineB2BDGCspws:
+        casaCmd = casaCmd + "  combine = 'scan,spw',\n"
+    else:
+        casaCmd = casaCmd + "  combine='scan',\n"
+    casaCmd = casaCmd + "  interp=['linear','linear','linearPD'],\n"
+    casaCmd = casaCmd + "  spwmap=[[],[],"+str(LFtoHF)+"],\n"
+    casaCmd = casaCmd + "  gainfield = ['','',''],\n"  
+    casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphase_phasediff','"+msName1+".DGCphaselow_inf'])\n"
 
     if doplot:
         casaCmd = casaCmd + "\nif applyonly != True: es.checkCalTable('"+msName1+".DGCoffset_multi', msName='"+msName1+"', interactive=False)\n"
@@ -4350,11 +4938,16 @@ def doB2BGainCalibrationPartI(msName, msName1='', refant='', bandpass='', doplot
         casaCmd = casaCmd + "    refantmode = 'strict',\n"
         casaCmd = casaCmd + "    gaintype = 'G',\n"
         casaCmd = casaCmd + "    calmode = 'p',\n"
+        if combineB2BLFHFspws:
+            casaCmd = casaCmd + "    #combine='spw', # NOTE: uncomment if SNR is too low for the residual solns to be useful in checking\n"
         casaCmd = casaCmd + "    minsnr=3.0,\n"
-        casaCmd = casaCmd + "    interp=['linear','linearPD','linear'],\n"
-        casaCmd = casaCmd + "    spwmap=[[],"+str(spwB2B)+",[]],\n"
-        casaCmd = casaCmd + "    gainfield = ['','',''],\n"
-        casaCmd = casaCmd + "    gaintable = ['"+bandpass+"','"+msName1+".DGCphaselow_inf','"+msName1+".DGCoffset_multi'])\n"
+        casaCmd = casaCmd + "    interp=['linear','linear','linearPD','linear'],\n"
+        if combineB2BDGCspws:
+            casaCmd = casaCmd + "    spwmap=[[],[],"+str(LFtoHF)+","+str(HFtoHF_DGC)+"],\n"
+        else:
+            casaCmd = casaCmd + "    spwmap=[[],[],"+str(LFtoHF)+",[]],\n"
+        casaCmd = casaCmd + "    gainfield = ['','','',''],\n"
+        casaCmd = casaCmd + "    gaintable = ['"+bandpass+"','"+msName1+".DGCphase_phasediff','"+msName1+".DGCphaselow_inf','"+msName1+".DGCoffset_multi'])\n"
 
         casaCmd = casaCmd + "\nif applyonly != True: es.checkCalTable('"+msName1+".DGCresidual_offset_multi', msName='"+msName1+"', interactive=False)\n"
 
@@ -4371,11 +4964,16 @@ def doB2BGainCalibrationPartI(msName, msName1='', refant='', bandpass='', doplot
         casaCmd = casaCmd + "    refantmode = 'strict',\n"
         casaCmd = casaCmd + "    gaintype = 'G',\n"
         casaCmd = casaCmd + "    calmode = 'p',\n"
+        if combineB2BLFHFspws:
+            casaCmd = casaCmd + "    combine='spw', # SNR is probably too low; need combine for 'int' checking\n"        
         casaCmd = casaCmd + "    minsnr=3.0,\n"
-        casaCmd = casaCmd + "    interp=['linear','linearPD','linear'],\n"
-        casaCmd = casaCmd + "    spwmap=[[],"+str(spwB2B)+",[]],\n"
-        casaCmd = casaCmd + "    gainfield = ['','',''],\n"
-        casaCmd = casaCmd + "    gaintable = ['"+bandpass+"','"+msName1+".DGCphaselow_inf','"+msName1+".DGCoffset_multi'])\n"
+        casaCmd = casaCmd + "    interp=['linear','linear','linearPD','linear'],\n"
+        if combineB2BDGCspws:
+            casaCmd = casaCmd + "    spwmap=[[],[],"+str(LFtoHF)+","+str(HFtoHF_DGC)+"],\n"
+        else:
+            casaCmd = casaCmd + "    spwmap=[[],[],"+str(LFtoHF)+",[]],\n"
+        casaCmd = casaCmd + "    gainfield = ['','','',''],\n"
+        casaCmd = casaCmd + "    gaintable = ['"+bandpass+"','"+msName1+".DGCphase_phasediff','"+msName1+".DGCphaselow_inf','"+msName1+".DGCoffset_multi'])\n"
 
         casaCmd = casaCmd + "\nif applyonly != True: es.checkCalTable('"+msName1+".DGCresidual_offset_multi_int', msName='"+msName1+"', interactive=False)\n"
     #endif doplot
@@ -4385,10 +4983,11 @@ def doB2BGainCalibrationPartI(msName, msName1='', refant='', bandpass='', doplot
 
 #####################################
 def doB2BGainCalibrationPartII(msName, msName1='', refant='', bandpass='', doplot=True, ampForSci=[], iHaveSplitMyScienceSpw=False, valueMaps={},
-                               combineB2BLFspws=False):
+                               combineB2BLFspws=False, combineB2BLFHFspws=False, combineB2BDGCspws=False):
     """Generate code for the second gain calibration step of a calibration script for B2B data."""
 
     print('\n*** doB2BGainCalibrationPartII ***')
+    print('Gathering information ...')
 
     if msName1 == '': msName1 = msName
     if refant == '': 
@@ -4445,9 +5044,23 @@ def doB2BGainCalibrationPartII(msName, msName1='', refant='', bandpass='', doplo
     mymsmd = msmdtool()
     mymsmd.open(msName)
     fluxCalScanList = ','.join([str(i) for i in mymsmd.scansforintent('CALIBRATE_FLUX#ON_SOURCE')])
-    diffGainCalScanListLow = ','.join([str(i) for i in mymsmd.scansforintent('CALIBRATE_DIFFGAIN#REFERENCE')])
-    diffGainCalScanListHigh = ','.join([str(i) for i in mymsmd.scansforintent(sigintent)])
+    diffGainCalScansLow = [i for i in mymsmd.scansforintent('CALIBRATE_DIFFGAIN#REFERENCE')]
+    diffGainCalScansHigh = [i for i in mymsmd.scansforintent(sigintent)]
+    diffGainCalScanListLow_groups = [','.join(map(str, group))
+                                     for group in np.split(diffGainCalScansLow,
+                                                           np.where(np.diff(diffGainCalScansLow) > 3)[0] + 1)]
+    diffGainCalScanListHigh_groups = [','.join(map(str, group))
+                                     for group in np.split(diffGainCalScansHigh,
+                                                           np.where(np.diff(diffGainCalScansHigh) > 3)[0] + 1)]
+    bandpassScans = [str(i) for i in mymsmd.scansforintent('CALIBRATE_BANDPASS#ON_SOURCE')]
     mymsmd.close()
+    if len(bandpassScans) != 2:
+        casalog.post('ERROR: Found '+str(len(bandpassScans))+' BANDPASS scans:'+str(bandpassScans)+', expected two (one LF, one HF).', 'SEVERE')
+        return False
+    else:
+        bandpassScanListLow = bandpassScans[0]
+        bandpassScanListHigh = bandpassScans[1]
+    
     if fluxCalLFId == fluxCalId and fcCoversHFandLF:
         fluxCalLFScanList = fluxCalScanList
     else:
@@ -4463,9 +5076,11 @@ def doB2BGainCalibrationPartII(msName, msName1='', refant='', bandpass='', doplo
     obsTimeRange = mytb.getcol('TIME_RANGE')
     mytb.close()
     obsTimeStart = ((obsTimeRange[0]/86400.0)+2400000.5-2440587.5)*86400.0
-    obsTimeStart = timeUtilities.strftime('%Y-%m-%dT%H:%M:%S', timeUtilities.gmtime(obsTimeStart))
+    obsTimeStart = timeUtilities.strftime('%Y-%m-%dT%H:%M:%S', timeUtilities.gmtime(int(obsTimeStart[0])))
 
-    # determine spw mapping
+    ## only doing LF combine 
+    ## for accounting for possible HF combine that can be done via CASE C
+    
     if iHaveSplitMyScienceSpw == True:
         spwInfo = sfsdr.getSpwInfo(msName, intent='OBSERVE_TARGET|CALIBRATE_BANDPASS', caching=True)
         spwIds = sorted(spwInfo.keys())
@@ -4479,40 +5094,36 @@ def doB2BGainCalibrationPartII(msName, msName1='', refant='', bandpass='', doplo
         for myspw in spwLow:
             spwLowSplit.append(spwIds.index(myspw))
         spwLowStr = ','.join([str(i) for i in spwLowSplit])
-
-        spwHighest = max(max(spwLowSplit),max(spwHighSplit))
-        LFspwB2B = list(range(spwHighest+1))
-
-        lowestSpwLow = int(min(spwLowSplit))
         
-        if obsTimeStart > '2021-03-01T00:00:00':
-            for spwRep in spwHighSplit: 
-                BBnum = spwHighDict[spwRep]['basebandNum'] 
-                for spwMap in spwLowSplit:  
-                    if spwLowDict[spwMap]['basebandNum']==BBnum:
-                        LFspwB2B[spwMap] = lowestSpwLow
-        else:
-            for spwMap in spwLowSplit:
-                LFspwB2B[spwMap] =  lowestSpwLow
+        LFtoLF = list(range(max(spwLowSplit)+1))
+        HFtoHF = list(range(max(spwHighSplit)+1))
 
+
+        # no baseband mapping required for LFtoLF and HftoHF
+        if combineB2BLFspws:
+            for spwMap in spwLowSplit:
+                LFtoLF[spwMap] =  int(min(spwLowSplit))      
+        if combineB2BLFHFspws:
+            for spwMap in spwHighSplit:
+                HFtoHF[spwMap] =  int(min(spwHighSplit))                                       
+
+                
     else: # no reindexing took place
         spwHighStr = ','.join([str(i) for i in spwHigh])
         spwLowStr = ','.join([str(i) for i in spwLow])
 
-        spwHighest = max(max(spwLow),max(spwHigh))
-        LFspwB2B = list(range(spwHighest+1))
+        LFtoLF = list(range(max(spwLow)+1))
+        HFtoHF = list(range(max(spwHigh)+1))                                      
 
-        lowestSpwLow = int(min(spwLow))
-
-        if obsTimeStart > '2021-03-01T00:00:00':
-            for spwRep in spwHigh: 
-                BBnum = spwHighDict[spwRep]['basebandNum']
-                for spwMap in spwLow:  
-                    if spwLowDict[spwMap]['basebandNum']==BBnum:
-                        LFspwB2B[spwMap] = lowestSpwLow
-        else:
+        # no baseband mapping required for LFtoLF and HFtoHF
+        if combineB2BLFspws:
             for spwMap in spwLow:
-                LFspwB2B[spwMap] = lowestSpwLow
+                LFtoLF[spwMap] =  int(min(spwLow))     
+        if combineB2BLFHFspws:
+            for spwMap in spwHigh:
+                HFtoHF[spwMap] =  int(min(spwHigh))                   
+
+
     ###
 
 
@@ -4520,9 +5131,11 @@ def doB2BGainCalibrationPartII(msName, msName1='', refant='', bandpass='', doplo
     print('fluxCalLFScanList ', fluxCalLFScanList)
     print('spwHighStr ', spwHighStr)
     print('spwLowStr ', spwLowStr)
-    if combineB2BLFspws:
-        print('LFspwB2B ', str(LFspwB2B))
 
+    if combineB2BLFspws:
+        print('LFtoLF ', str(LFtoLF))
+    if combineB2BLFHFspws:
+        print('HFtoHF ', str(HFtoHF))                                      
     ###
 
     print('Writing code ...')
@@ -4543,7 +5156,7 @@ def doB2BGainCalibrationPartII(msName, msName1='', refant='', bandpass='', doplo
     casaCmd = casaCmd + "  gaintype = 'G',\n"
     casaCmd = casaCmd + "  calmode = 'p',\n"
     casaCmd = casaCmd + "  minsnr = 3.0,\n"
-    casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphaselow_phasediff'])\n"
+    casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphase_phasediff'])\n"
 
     casaCmd = casaCmd + "\nif applyonly != True: es.checkCalTable('"+msName1+".phaselow_int', msName='"+msName1+"', interactive=False)\n" 
 
@@ -4561,7 +5174,7 @@ def doB2BGainCalibrationPartII(msName, msName1='', refant='', bandpass='', doplo
     casaCmd = casaCmd + "  gaintype = 'G',\n"
     casaCmd = casaCmd + "  calmode = 'p',\n"
     casaCmd = casaCmd + "  minsnr = 3.0,\n"
-    casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphaselow_phasediff'])\n"
+    casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphase_phasediff'])\n"
  
     casaCmd = casaCmd + "\nif applyonly != True: es.checkCalTable('"+msName1+".phaselow_inf', msName='"+msName1+"', interactive=False)\n"
 
@@ -4577,7 +5190,9 @@ def doB2BGainCalibrationPartII(msName, msName1='', refant='', bandpass='', doplo
     casaCmd = casaCmd + "  gaintype = 'G',\n"
     casaCmd = casaCmd + "  calmode = 'p',\n"
     casaCmd = casaCmd + "  minsnr = 3.0,\n"
-    casaCmd = casaCmd + "  gaintable = '"+bandpass+"')\n"
+    if combineB2BLFHFspws:
+        casaCmd = casaCmd + "  combine='spw',\n"                                      
+    casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphase_phasediff'])\n"
         
     casaCmd = casaCmd + "\nif applyonly != True: es.checkCalTable('"+msName1+".phasehigh_int', msName='"+msName1+"', interactive=False)\n" 
 
@@ -4585,14 +5200,12 @@ def doB2BGainCalibrationPartII(msName, msName1='', refant='', bandpass='', doplo
     casaCmd = casaCmd + "os.system('rm -rf "+msName1+".ampli_inf')\n" 
     casaCmd = casaCmd + "gaincal(vis = '"+msName1+"',\n"
     casaCmd = casaCmd + "  caltable = '"+msName1+".ampli_inf',\n"  
-    if fluxCalId == diffGainCalId:
+    if fluxCalId == bpCalId:
         casaCmd = casaCmd + "  field = '"+str(fluxCalId)+"',\n"
+        casaCmd = casaCmd + "  scan = '"+bandpassScanListHigh+"',\n" 
     else:
-        casaCmd = casaCmd + "  field = '"+str(fluxCalId)+","+str(diffGainCalId)+"',\n"
-    if fluxCalScanList == diffGainCalScanListHigh:
-        casaCmd = casaCmd + "  scan = '"+fluxCalScanList+"',\n" 
-    else:
-        casaCmd = casaCmd + "  scan = '"+fluxCalScanList+","+diffGainCalScanListHigh+"',\n" 
+        casaCmd = casaCmd + "  field = '"+str(fluxCalId)+","+str(bpCalId)+"',\n"
+        casaCmd = casaCmd + "  scan = '"+fluxCalScanList+","+bandpassScanListHigh+"',\n" 
     casaCmd = casaCmd + "  spw = '"+spwHighStr+"',\n"
     casaCmd = casaCmd + "  solint = 'inf',\n"  
     casaCmd = casaCmd + "  combine = 'scan',\n"  
@@ -4600,33 +5213,73 @@ def doB2BGainCalibrationPartII(msName, msName1='', refant='', bandpass='', doplo
     casaCmd = casaCmd + "  gaintype = 'T',\n"
     casaCmd = casaCmd + "  calmode = 'a',\n"
     casaCmd = casaCmd + "  minsnr = 3.0,\n"
-    casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".phasehigh_int'],\n"
-    casaCmd = casaCmd + "  gainfield = ['"+str(bpCalId)+"',''])\n"
+    casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphase_phasediff','"+msName1+".phasehigh_int'],\n"
+    if combineB2BLFHFspws:
+        casaCmd = casaCmd + "  spwmap = [[],[],"+str(HFtoHF)+"],\n"
+    casaCmd = casaCmd + "  gainfield = ['"+str(bpCalId)+"','',''])\n"
 
+    for i in range(len(diffGainCalScanListHigh_groups)):
+        casaCmd = casaCmd + "\n# Amplitude calibration HF - diffgain, append\n"
+        casaCmd = casaCmd + "gaincal(vis = '"+msName1+"',\n"
+        casaCmd = casaCmd + "  caltable = '"+msName1+".ampli_inf',\n"  
+        casaCmd = casaCmd + "  field = '"+str(diffGainCalId)+"',\n"
+        casaCmd = casaCmd + "  scan = '"+diffGainCalScanListHigh_groups[i]+"',\n" 
+        casaCmd = casaCmd + "  spw = '"+spwHighStr+"',\n"
+        casaCmd = casaCmd + "  solint = 'inf',\n"  
+        casaCmd = casaCmd + "  combine = 'scan',\n"  
+        casaCmd = casaCmd + "  refant = '"+refant+"',\n" 
+        casaCmd = casaCmd + "  gaintype = 'T',\n"
+        casaCmd = casaCmd + "  calmode = 'a',\n"
+        casaCmd = casaCmd + "  minsnr = 3.0,\n"
+        casaCmd = casaCmd + "  append = True,\n"
+        casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphase_phasediff','"+msName1+".phasehigh_int'],\n"
+        if combineB2BLFHFspws:
+            casaCmd = casaCmd + "  spwmap = [[],[],"+str(HFtoHF)+"],\n"
+        casaCmd = casaCmd + "  gainfield = ['"+str(bpCalId)+"','',''])\n"
+
+    
     casaCmd = casaCmd + "\n# Amplitude calibration LF, append\n"
     casaCmd = casaCmd + "gaincal(vis = '"+msName1+"',\n"
     casaCmd = casaCmd + "  caltable = '"+msName1+".ampli_inf',\n"  
-    if fluxCalLFId == diffGainCalId:
-        casaCmd = casaCmd + "  field = '"+str(fluxCalLFId)+"',\n"
+    if fluxCalId == bpCalId:
+        casaCmd = casaCmd + "  field = '"+str(fluxCalId)+"',\n"
+        casaCmd = casaCmd + "  scan = '"+bandpassScanListLow+"',\n" 
     else:
-        casaCmd = casaCmd + "  field = '"+str(fluxCalLFId)+","+str(diffGainCalId)+"',\n"
-    if fluxCalLFScanList == diffGainCalScanListLow:
-        casaCmd = casaCmd + "  scan = '"+fluxCalLFScanList+"',\n" 
-    else:
-        casaCmd = casaCmd + "  scan = '"+fluxCalLFScanList+","+diffGainCalScanListLow+"',\n" 
+        casaCmd = casaCmd + "  field = '"+str(fluxCalId)+","+str(bpCalId)+"',\n"
+        casaCmd = casaCmd + "  scan = '"+fluxCalScanList+","+bandpassScanListLow+"',\n" 
     casaCmd = casaCmd + "  spw = '"+spwLowStr+"',\n"
     casaCmd = casaCmd + "  solint = 'inf',\n"  
     casaCmd = casaCmd + "  combine = 'scan',\n"  
     casaCmd = casaCmd + "  refant = '"+refant+"',\n" 
     casaCmd = casaCmd + "  gaintype = 'T',\n"
     casaCmd = casaCmd + "  calmode = 'a',\n"
-    casaCmd = casaCmd + "  append = True,\n"
     casaCmd = casaCmd + "  minsnr = 3.0,\n"
-    casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphaselow_phasediff','"+msName1+".phaselow_int'],\n"
+    casaCmd = casaCmd + "  append = True,\n"
+    casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphase_phasediff','"+msName1+".phaselow_int'],\n"
     if combineB2BLFspws:
-        casaCmd = casaCmd + "  spwmap = [[],[],"+str(LFspwB2B)+"],\n"
+        casaCmd = casaCmd + "  spwmap = [[],[],"+str(LFtoLF)+"],\n"
     casaCmd = casaCmd + "  gainfield = ['"+str(bpCalId)+"','',''])\n"
 
+    for i in range(len(diffGainCalScanListLow_groups)):
+        casaCmd = casaCmd + "\n# Amplitude calibration LF - diffgain, append\n"
+        casaCmd = casaCmd + "gaincal(vis = '"+msName1+"',\n"
+        casaCmd = casaCmd + "  caltable = '"+msName1+".ampli_inf',\n"  
+        casaCmd = casaCmd + "  field = '"+str(diffGainCalId)+"',\n"
+        casaCmd = casaCmd + "  scan = '"+diffGainCalScanListLow_groups[i]+"',\n" 
+        casaCmd = casaCmd + "  spw = '"+spwLowStr+"',\n"
+        casaCmd = casaCmd + "  solint = 'inf',\n"  
+        casaCmd = casaCmd + "  combine = 'scan',\n"  
+        casaCmd = casaCmd + "  refant = '"+refant+"',\n" 
+        casaCmd = casaCmd + "  gaintype = 'T',\n"
+        casaCmd = casaCmd + "  calmode = 'a',\n"
+        casaCmd = casaCmd + "  minsnr = 3.0,\n"
+        casaCmd = casaCmd + "  append = True,\n"
+        casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphase_phasediff','"+msName1+".phaselow_int'],\n"
+        if combineB2BLFspws:
+            casaCmd = casaCmd + "  spwmap = [[],[],"+str(LFtoLF)+"],\n"
+        casaCmd = casaCmd + "  gainfield = ['"+str(bpCalId)+"','',''])\n"
+
+    
     casaCmd = casaCmd + "\nif applyonly != True: es.checkCalTable('"+msName1+".ampli_inf', msName='"+msName1+"', interactive=False)\n" 
     if fluxCalId != diffGainCalId:
         casaCmd = casaCmd + "\nos.system('rm -rf %s.flux_inf') \n"%(msName1)
@@ -4644,10 +5297,11 @@ def doB2BGainCalibrationPartII(msName, msName1='', refant='', bandpass='', doplo
 
 #####################################
 
-def doApplyBandpassAndGainCalTables(msName, msName1='', iHaveSplitMyScienceSpw=False, bandpass='', phaseForCal='', phaseForSci='', flux='', phaseDiffCalTableName='', ampForSci='', useForLoop=True, phaseDiffPerSpwSetup=False, valueMaps={}):
+def doApplyBandpassAndGainCalTables(msName, msName1='', iHaveSplitMyScienceSpw=False, bandpass='', phaseForCal='', phaseForSci='', flux='', phaseDiffCalTableName='', ampForSci='', useForLoop=True, renorm='', valueMaps={}):
     """Generate code for the final applycal step for the given MS (standard cal setup and BWSW case)"""
 
     print('\n*** doApplyBandpassAndGainCalTables ***')
+    print('Gathering information ...')
 
     casaCmd = ''
 
@@ -4688,109 +5342,72 @@ def doApplyBandpassAndGainCalTables(msName, msName1='', iHaveSplitMyScienceSpw=F
 
     if len(phaseDiffCalTableName) != 0:
 
-        if phaseDiffPerSpwSetup == True:
-            mymsmd = msmdtool()
-            mymsmd.open(msName)
+        # calspwmap creation for spw-combined and non-spw-combined phase_int
 
-            spwIds3 = mymsmd.spwsforintent('CALIBRATE_BANDPASS*').tolist()+mymsmd.spwsforintent('OBSERVE_TARGET*').tolist()
-            spwIds3 = np.unique([j for j in spwIds3 if j not in mymsmd.chanavgspws() and j not in mymsmd.wvrspws()]).tolist()
+        mymsmd = msmdtool()
+        mymsmd.open(msName)
 
-            spwSetups = {}
-            for i in spwIds3:
-                scanList3 = str(mymsmd.scansforspw(i).tolist())
-                if scanList3 not in list(spwSetups.keys()): spwSetups[scanList3] = []
-                spwSetups[scanList3].append(i)
-            spwSetups1 = []
-            for i in list(spwSetups.values()):
-                if i not in spwSetups1: spwSetups1.append(i)
-            spwSetups1.sort(key=lambda x:x[0])
+        spwInfo3 = sfsdr.getSpwInfo(msName, intent='OBSERVE_TARGET|CALIBRATE_BANDPASS', caching=True)
+        spwIds3 = sorted(spwInfo3.keys())
+        spwInfoDGCR = sfsdr.getSpwInfo(msName, intent='CALIBRATE_DIFFGAIN#REFERENCE', caching=True)
+        spwIdsDGCR = sorted(spwInfoDGCR.keys())
+        spwInfoScience = sfsdr.getSpwInfo(msName, intent='OBSERVE_TARGET#ON_SOURCE', caching=True)
+        spwIdsScience = sorted(spwInfoScience.keys())
 
-            calspwmap = []
-            for i in range(len(spwSetups1)):
-                for j in range(len(spwSetups1[i])):
-                    calspwmap.append(min(spwSetups1[i]))
-
-            if iHaveSplitMyScienceSpw == True: ###HERE
-
-                for i in range(len(spwSetups1)):
-                    for j in range(len(spwSetups1[i])):
-                        spwSetups1[i][j] = spwIds3.index(spwSetups1[i][j])
-
-                for i in range(len(calspwmap)):
-                    calspwmap[i] = spwIds3.index(calspwmap[i])
-
-            casaCmd = casaCmd + "calspwmap = "+str(calspwmap)+"\n\n"
-
-            mymsmd.close()
-
-        else: # BWSW will be handled by this
-
-            # calspwmap creation for spw-combined and non-spw-combined phase_int
-
-            mymsmd = msmdtool()
-            mymsmd.open(msName)
-
-            spwInfo3 = sfsdr.getSpwInfo(msName, intent='OBSERVE_TARGET|CALIBRATE_BANDPASS', caching=True)
-            spwIds3 = sorted(spwInfo3.keys())
-            spwInfoDGCR = sfsdr.getSpwInfo(msName, intent='CALIBRATE_DIFFGAIN#REFERENCE', caching=True)
-            spwIdsDGCR = sorted(spwInfoDGCR.keys())
-            spwInfoScience = sfsdr.getSpwInfo(msName, intent='OBSERVE_TARGET#ON_SOURCE', caching=True)
-            spwIdsScience = sorted(spwInfoScience.keys())
-
-            if iHaveSplitMyScienceSpw == True:
-                numSpws = len(spwIds3)
-                tmpIds = []
-                for i in spwIdsDGCR:
-                    tmpIds.append(spwIds3.index(i))
-                spwIdsDGCR = sorted(tmpIds)
-                tmpIds = []
-                for i in spwIdsScience:
-                    tmpIds.append(spwIds3.index(i))
-                spwIdsScience = sorted(tmpIds)
-                tmpIds = []
-                for i in spwIds3:
-                    tmpIds.append(spwIds3.index(i))
-                spwIds3 = sorted(tmpIds)
-
-            else:
-                numSpws = max(spwIds3)+2
-
-            calspwmapcomb = [] # version to be used with spw-combination
-
-            # decide whether the narrow or the wide SPWs come first
-            narrowFirst = True
+        if iHaveSplitMyScienceSpw == True:
+            numSpws = len(spwIds3)
+            tmpIds = []
+            for i in spwIdsDGCR:
+                tmpIds.append(spwIds3.index(i))
+            spwIdsDGCR = sorted(tmpIds)
+            tmpIds = []
             for i in spwIdsScience:
-                for j in spwIdsDGCR: 
-                    if i > j:
-                        narrowFirst = False
-                        break
+                tmpIds.append(spwIds3.index(i))
+            spwIdsScience = sorted(tmpIds)
+            tmpIds = []
+            for i in spwIds3:
+                tmpIds.append(spwIds3.index(i))
+            spwIds3 = sorted(tmpIds)
 
-            # create calspwmapcomb accordingly
-            minDGCRSpw = min(spwIdsDGCR)
-            minSciSpw = min(spwIdsScience)
-            if narrowFirst:
-                for i in range(minDGCRSpw):
-                    calspwmapcomb.append(minSciSpw)
-                for i in range(numSpws-minDGCRSpw):
-                    calspwmapcomb.append(minDGCRSpw)
+        else:
+            numSpws = max(spwIds3)+2
+
+        calspwmapcomb = [] # version to be used with spw-combination
+
+        # decide whether the narrow or the wide SPWs come first
+        narrowFirst = True
+        for i in spwIdsScience:
+            for j in spwIdsDGCR: 
+                if i > j:
+                    narrowFirst = False
+                    break
+
+        # create calspwmapcomb accordingly
+        minDGCRSpw = min(spwIdsDGCR)
+        minSciSpw = min(spwIdsScience)
+        if narrowFirst:
+            for i in range(minDGCRSpw):
+                calspwmapcomb.append(minSciSpw)
+            for i in range(numSpws-minDGCRSpw):
+                calspwmapcomb.append(minDGCRSpw)
+        else:
+            for i in range(minSciSpw):
+                calspwmapcomb.append(minDGCRSpw)
+            for i in range(numSpws-minSciSpw):
+                calspwmapcomb.append(minSciSpw)
+
+
+        ## create calspwmap for phase and flux 
+        calspwmapf = []
+
+        for i in range(numSpws):
+            if i in spwIdsScience:
+                myDGCRSpw = spwIdsDGCR[mymsmd.baseband(i)-1] # wide SPWs are ordered by baseband number
+                calspwmapf.append(myDGCRSpw)
             else:
-                for i in range(minSciSpw):
-                    calspwmapcomb.append(minDGCRSpw)
-                for i in range(numSpws-minSciSpw):
-                    calspwmapcomb.append(minSciSpw)
+                calspwmapf.append(i)
 
-
-            ## create calspwmap for phase and flux 
-            calspwmapf = []
-
-            for i in range(numSpws):
-                if i in spwIdsScience:
-                    myDGCRSpw = spwIdsDGCR[mymsmd.baseband(i)-1] # wide SPWs are ordered by baseband number
-                    calspwmapf.append(myDGCRSpw)
-                else:
-                    calspwmapf.append(i)
-
-            mymsmd.close()        
+        mymsmd.close()        
 
 
     phaseCal = sfsdr.getPhaseCal(msName, valueMaps=valueMaps)
@@ -4859,35 +5476,31 @@ def doApplyBandpassAndGainCalTables(msName, msName1='', iHaveSplitMyScienceSpw=F
                 bpassCalId = phaseOnlyCalId[0]
 
 
-            if phaseDiffPerSpwSetup != True:        
-                casaCmd = casaCmd + "# Case combine='spw' in phase_int\n"
-                casaCmd = casaCmd + "#calspwmap = {"+str(bpassCalId)+": "+repr(calspwmapcomb)
-                for i in calFieldIds + phaseCalFieldIds:
-                    if i == bpassCalId: continue
-                    if i in phaseCalFieldIds:
-                        casaCmd = casaCmd + ",\n" + "#             "+str(i)+": "+repr([minDGCRSpw for i in range(numSpws)])
-                    else:
-                        casaCmd = casaCmd + ",\n" + "#             "+str(i)+": "+repr(calspwmapcomb)
-                casaCmd = casaCmd + "}\n\n"
+            casaCmd = casaCmd + "# Case combine='spw' in phase_int\n"
+            casaCmd = casaCmd + "#calspwmap = {"+str(bpassCalId)+": "+repr(calspwmapcomb)
+            for i in calFieldIds + phaseCalFieldIds:
+                if i == bpassCalId: continue
+                if i in phaseCalFieldIds:
+                    casaCmd = casaCmd + ",\n" + "#             "+str(i)+": "+repr([minDGCRSpw for i in range(numSpws)])
+                else:
+                    casaCmd = casaCmd + ",\n" + "#             "+str(i)+": "+repr(calspwmapcomb)
+            casaCmd = casaCmd + "}\n\n"
 
-                casaCmd = casaCmd + "# Case combine='' in phase_int\n"
-                casaCmd = casaCmd + "calspwmap = {"+str(bpassCalId)+": list(range("+str(numSpws)+"))"
-                for i in calFieldIds+phaseCalFieldIds:
-                    if i == bpassCalId: continue
-                    if i in phaseCalFieldIds:
-                        casaCmd = casaCmd + ",\n" + "             "+str(i)+": "+repr(calspwmapf)
-                    else:
-                        casaCmd = casaCmd + ",\n" + "             "+str(i)+": list(range("+str(numSpws)+"))"
-                casaCmd = casaCmd + "}\n\n"
+            casaCmd = casaCmd + "# Case combine='' in phase_int\n"
+            casaCmd = casaCmd + "calspwmap = {"+str(bpassCalId)+": list(range("+str(numSpws)+"))"
+            for i in calFieldIds+phaseCalFieldIds:
+                if i == bpassCalId: continue
+                if i in phaseCalFieldIds:
+                    casaCmd = casaCmd + ",\n" + "             "+str(i)+": "+repr(calspwmapf)
+                else:
+                    casaCmd = casaCmd + ",\n" + "             "+str(i)+": list(range("+str(numSpws)+"))"
+            casaCmd = casaCmd + "}\n\n"
 
             casaCmd = casaCmd + "# spwmap for flux_inf and ampli_inf: matched by baseband to preserve signal path and keep science SPWs statistically independent as in non-BWSW case\n"
             casaCmd = casaCmd + "calspwmapf = "+repr(calspwmapf)+"\n\n"
 
-            if phaseDiffPerSpwSetup == True:            
-                gainTable.append(phaseForCal)
-            else:
-                gainTableBase = gainTable.copy()
-                gainTable.append(phaseForCal+str(bpassCalId))
+            gainTableBase = gainTable.copy()
+            gainTable.append(phaseForCal+str(bpassCalId))
 
             casaCmd = casaCmd + "applycal(vis = '"+msName1+"',\n"
             casaCmd = casaCmd + "  field = '"+str(bpassCalId)+"', # "+fieldNames[bpassCalId]+"\n"
@@ -4895,10 +5508,7 @@ def doApplyBandpassAndGainCalTables(msName, msName1='', iHaveSplitMyScienceSpw=F
             casaCmd = casaCmd + "  gainfield = ['"+str(bpassCalId)+"', '', '"+str(bpassCalId)+"'],\n"
             casaCmd = casaCmd + "  interp = [],\n"
 
-            if phaseDiffPerSpwSetup == True:
-                casaCmd = casaCmd + "  spwmap = [[], [], calspwmap],\n"
-            else:
-                casaCmd = casaCmd + "  spwmap = [[], [], calspwmap["+str(bpassCalId)+"]],\n"
+            casaCmd = casaCmd + "  spwmap = [[], [], calspwmap["+str(bpassCalId)+"]],\n"
 
             casaCmd = casaCmd + "  calwt = True,\n"
             casaCmd = casaCmd + "  flagbackup = False)\n\n"
@@ -4909,24 +5519,18 @@ def doApplyBandpassAndGainCalTables(msName, msName1='', iHaveSplitMyScienceSpw=F
 
                 if i == bpassCalId: continue
 
-                if phaseDiffPerSpwSetup != True:
-                    gainTable = gainTableBase.copy()
-                    gainTable.append(phaseForCal+str(i))
-                    gainTable.append(ampForSci[0])
-                    gainTable.append(flux)
+                gainTable = gainTableBase.copy()
+                gainTable.append(phaseForCal+str(i))
+                gainTable.append(ampForSci[0])
+                gainTable.append(flux)
 
                 casaCmd = casaCmd + "applycal(vis = '"+msName1+"',\n"
                 casaCmd = casaCmd + "  field = '"+str(i)+"', # "+fieldNames[i]+"\n"
                 casaCmd = casaCmd + "  gaintable = "+str(gainTable)+",\n"
 
-                if phaseDiffPerSpwSetup == True:
-                    casaCmd = casaCmd + "  gainfield = ['', '', '"+str(i)+"', '"+str(i)+"'],\n"
-                    casaCmd = casaCmd + "  interp = ['', 'nearest', 'linearPD', ''],\n"
-                    casaCmd = casaCmd + "  spwmap = [[], [], calspwmap, calspwmap],\n"
-                else:
-                    casaCmd = casaCmd + "  gainfield = ['', '', '"+str(i)+"', '"+str(i)+"', '"+str(i)+"'],\n"
-                    casaCmd = casaCmd + "  interp = ['', 'nearest', 'linearPD', '', 'linear'],\n"
-                    casaCmd = casaCmd + "  spwmap = [[], [], calspwmap["+str(i)+"], calspwmapf, calspwmapf],\n"
+                casaCmd = casaCmd + "  gainfield = ['', '', '"+str(i)+"', '"+str(i)+"', '"+str(i)+"'],\n"
+                casaCmd = casaCmd + "  interp = ['', 'nearest', 'linearPD', '', 'linear'],\n"
+                casaCmd = casaCmd + "  spwmap = [[], [], calspwmap["+str(i)+"], calspwmapf, calspwmapf],\n"
 
                 casaCmd = casaCmd + "  calwt = True,\n"
                 casaCmd = casaCmd + "  flagbackup = False)\n\n"
@@ -4934,33 +5538,25 @@ def doApplyBandpassAndGainCalTables(msName, msName1='', iHaveSplitMyScienceSpw=F
     gainTable = []
     gainTable.append(bandpass)
 
-    if re.search('^3.3', aU.getCasaVersion()) == None:
-        gainTableInterp = "'linear,linear'"
-    else:
-        gainTableInterp = "'linear'"
+    gainTableInterp = "'linear'"
 
     if len(phaseDiffCalTableName) != 0:
 
         if len(ampForSci) != 1: sys.exit('ERROR: missing table')
 
         gainTable.append(phaseDiffCalTableName[0])
-        if phaseDiffPerSpwSetup == True:
-            gainTable.append(phaseForSci)
-            gainTable.append(ampForSci[0])
-            gainTable.append(flux)
-            gainTableInterp = "['', 'nearest', 'linearPD', '', '']"
-        else: # BWSW is this branch
-            gainTable.append(phaseForSci+str(phaseCalFieldIds[0]))
-            gainTable.append(ampForSci[0])
-            gainTable.append(flux)
-            gainTableInterp = "['', 'nearest', 'linearPD', '', 'linear']"
 
+        gainTable.append(phaseForSci+str(phaseCalFieldIds[0]))
+        gainTable.append(ampForSci[0])
+        gainTable.append(flux)
+        gainTableInterp = "['', 'nearest', 'linearPD', '', 'linear']"
 
     else:
 
         gainTable.append(phaseForSci)
         gainTable.append(flux)
-
+        gainTableInterp = "['linear','linear','linear']"
+    
     for i in phaseCalFieldIds:
 
         sciFieldIds = []
@@ -4985,52 +5581,88 @@ def doApplyBandpassAndGainCalTables(msName, msName1='', iHaveSplitMyScienceSpw=F
         else:
             sciFieldIds1 = str(sciFieldIds[0])
 
-        if phaseDiffPerSpwSetup == True:
-            mymsmd = msmdtool()
-            mymsmd.open(msName)
-
-            spwIds4 = mymsmd.spwsforfield(i).tolist()
-            spwIds4 = [j for j in spwIds4 if j not in mymsmd.chanavgspws() and j in spwIds3]
-
-            calspwmap = []
-            for k in range(len(spwSetups1)):
-                for j in range(len(spwSetups1[k])):
-                    calspwmap.append(min(spwIds4))
-
-            if iHaveSplitMyScienceSpw == True: ###HERE
-
-                for k in range(len(calspwmap)):
-                    calspwmap[k] = spwIds3.index(calspwmap[k])
-
-            casaCmd = casaCmd + "calspwmap = "+str(calspwmap)+"\n\n"
-
-            mymsmd.close()
-
-        casaCmd = casaCmd + "\napplycal(vis = '"+msName1+"',\n"
-        casaCmd = casaCmd + "  field = '"+str(i)+","+sciFieldIds1+"', # "+sciFieldNames+"\n"
-        casaCmd = casaCmd + "  gaintable = "+str(gainTable)+",\n"
-        if len(phaseDiffCalTableName) != 0:
-            casaCmd = casaCmd + "  gainfield = ['', '', '"+str(i)+"', '"+str(i)+"', '"+str(i)+"'], # "+fieldNames[i]+"\n"
-        else:
-            casaCmd = casaCmd + "  gainfield = ['', '"+str(i)+"', '"+str(i)+"'], # "+fieldNames[i]+"\n"
-        casaCmd = casaCmd + "  interp = "+gainTableInterp+",\n"
-        if len(phaseDiffCalTableName) != 0:
-            if phaseDiffPerSpwSetup == True:
-                casaCmd = casaCmd + "  spwmap = [[], [], calspwmap, calspwmap, calspwmap],\n"
+        if renorm=='': # no renorm caltable
+   
+            casaCmd = casaCmd + "\napplycal(vis = '"+msName1+"',\n"
+            casaCmd = casaCmd + "  field = '"+str(i)+","+sciFieldIds1+"', # "+sciFieldNames+"\n"
+            casaCmd = casaCmd + "  gaintable = "+str(gainTable)+",\n"
+            if len(phaseDiffCalTableName) != 0:
+                casaCmd = casaCmd + "  gainfield = ['', '', '"+str(i)+"', '"+str(i)+"', '"+str(i)+"'], # "+fieldNames[i]+"\n"
             else:
+                casaCmd = casaCmd + "  gainfield = ['', '"+str(i)+"', '"+str(i)+"'], # "+fieldNames[i]+"\n"
+            casaCmd = casaCmd + "  interp = "+gainTableInterp+",\n"
+            if len(phaseDiffCalTableName) != 0:
                 casaCmd = casaCmd + "  spwmap = [[], [], calspwmap["+str(i)+"], calspwmapf, calspwmapf],\n"
 
-        casaCmd = casaCmd + "  calwt = True,\n"
-        casaCmd = casaCmd + "  flagbackup = False)\n"
+            casaCmd = casaCmd + "  calwt = True,\n"
+            casaCmd = casaCmd + "  flagbackup = False)\n"
 
+        else: # we have a renormalization caltable; need to separate phasecalfields from scifields
+            
+            casaCmd = casaCmd + "\nif applyRenorm:\n"
+            casaCmd = casaCmd + "  applycal(vis = '"+msName1+"',\n"
+            casaCmd = casaCmd + "    field = '"+str(i)+"', # phasecal\n"
+            casaCmd = casaCmd + "    gaintable = "+str(gainTable)+",\n"
+            if len(phaseDiffCalTableName) != 0:
+                casaCmd = casaCmd + "    gainfield = ['', '', '"+str(i)+"', '"+str(i)+"', '"+str(i)+"'], # "+fieldNames[i]+"\n"
+            else:
+                casaCmd = casaCmd + "    gainfield = ['', '"+str(i)+"', '"+str(i)+"'], # "+fieldNames[i]+"\n"
+            casaCmd = casaCmd + "    interp = "+gainTableInterp+",\n"
+            if len(phaseDiffCalTableName) != 0:
+                casaCmd = casaCmd + "    spwmap = [[], [], calspwmap["+str(i)+"], calspwmapf, calspwmapf],\n"
+
+            casaCmd = casaCmd + "    calwt = True,\n"
+            casaCmd = casaCmd + "    flagbackup = False)\n\n"
+
+            gtable2 = gainTable.copy()
+            gtable2.append(renorm)
+            if len(phaseDiffCalTableName) != 0:
+                gainTableInterp2 = "['', 'nearest', 'linearPD', '', 'linear', 'linear']"
+            else:
+                gainTableInterp2 = "['linear','linear','linear','linear']"
+
+            casaCmd = casaCmd + "\n  applycal(vis = '"+msName1+"',\n"
+            casaCmd = casaCmd + "    field = '"+sciFieldIds1+"', # "+sciFieldNames+"\n"
+            casaCmd = casaCmd + "    gaintable = "+str(gtable2)+",\n"
+            if len(phaseDiffCalTableName) != 0:
+                casaCmd = casaCmd + "    gainfield = ['', '', '"+str(i)+"', '"+str(i)+"', '"+str(i)+"', ''], # "+fieldNames[i]+"\n"
+            else:
+                casaCmd = casaCmd + "    gainfield = ['', '"+str(i)+"', '"+str(i)+"', ''], # "+fieldNames[i]+"\n"
+            casaCmd = casaCmd + "    interp = "+gainTableInterp2+",\n"
+            if len(phaseDiffCalTableName) != 0:
+                casaCmd = casaCmd + "    spwmap = [[], [], calspwmap["+str(i)+"], calspwmapf, calspwmapf, []],\n"
+
+            casaCmd = casaCmd + "    calwt = True,\n"
+            casaCmd = casaCmd + "    flagbackup = False)\n"
+
+            # also cover the case that renorm was found _not_ to be necessary
+            
+            casaCmd = casaCmd + "\nelse: # no renorm\n"
+            casaCmd = casaCmd + "  applycal(vis = '"+msName1+"',\n"
+            casaCmd = casaCmd + "    field = '"+str(i)+","+sciFieldIds1+"', # "+sciFieldNames+"\n"
+            casaCmd = casaCmd + "    gaintable = "+str(gainTable)+",\n"
+            if len(phaseDiffCalTableName) != 0:
+                casaCmd = casaCmd + "    gainfield = ['', '', '"+str(i)+"', '"+str(i)+"', '"+str(i)+"'], # "+fieldNames[i]+"\n"
+            else:
+                casaCmd = casaCmd + "    gainfield = ['', '"+str(i)+"', '"+str(i)+"'], # "+fieldNames[i]+"\n"
+            casaCmd = casaCmd + "    interp = "+gainTableInterp+",\n"
+            if len(phaseDiffCalTableName) != 0:
+                casaCmd = casaCmd + "    spwmap = [[], [], calspwmap["+str(i)+"], calspwmapf, calspwmapf],\n"
+
+            casaCmd = casaCmd + "    calwt = True,\n"
+            casaCmd = casaCmd + "    flagbackup = False)\n"
+
+
+            
     return casaCmd
 
 #####################################
-def doApplyB2BBandpassAndGainCalTables(msName, msName1='', iHaveSplitMyScienceSpw=False, bandpass='', valueMaps={},
-                                       combineB2BLFspws=False):
+def doApplyB2BBandpassAndGainCalTables(msName, msName1='', iHaveSplitMyScienceSpw=False, bandpass='', renorm='', valueMaps={},
+                                       combineB2BLFspws=False, combineB2BLFHFspws=False, combineB2BDGCspws=False):
     """Generate code for the final applycal step for the given MS (B2B case)"""
 
     print('\n*** doApplyB2BBandpassAndGainCalTables ***')
+    print('Gathering information ...')
 
     if msName1 == '': msName1 = msName
 
@@ -5096,11 +5728,11 @@ def doApplyB2BBandpassAndGainCalTables(msName, msName1='', iHaveSplitMyScienceSp
     obsTimeRange = mytb.getcol('TIME_RANGE')
     mytb.close()
     obsTimeStart = ((obsTimeRange[0]/86400.0)+2400000.5-2440587.5)*86400.0
-    obsTimeStart = timeUtilities.strftime('%Y-%m-%dT%H:%M:%S', timeUtilities.gmtime(obsTimeStart))
+    obsTimeStart = timeUtilities.strftime('%Y-%m-%dT%H:%M:%S', timeUtilities.gmtime(int(obsTimeStart[0])))
 
 
 
-    # determine spw mapping
+    # determine spw mapping 
     if iHaveSplitMyScienceSpw == True:
         spwInfo = sfsdr.getSpwInfo(msName, intent='OBSERVE_TARGET|CALIBRATE_BANDPASS', caching=True)
         spwIds = sorted(spwInfo.keys())
@@ -5115,14 +5747,11 @@ def doApplyB2BBandpassAndGainCalTables(msName, msName1='', iHaveSplitMyScienceSp
             spwLowSplit.append(spwIds.index(myspw))
         spwLowStr = ','.join([str(i) for i in spwLowSplit])
 
-        spwB2B = list(range(max(spwHighSplit)+1))
-
-        spwHighest = max(max(spwLowSplit),max(spwHighSplit))
-        if combineB2BLFspws:
-            LFspwB2B = list(range(spwHighest+1))
-        else:
-            LFspwB2B = spwB2B # pointer, not copy!
-            
+        LFtoHF = list(range(max(spwHighSplit)+1))
+        LFtoLF  = list(range(max(spwLowSplit)+1))
+        HFtoHF  = list(range(max(spwHighSplit)+1))
+        HFtoHF_DGC  = list(range(max(spwHighSplit)+1))
+                    
 
         lowestSpwLow = int(min(spwLowSplit))
         
@@ -5132,31 +5761,38 @@ def doApplyB2BBandpassAndGainCalTables(msName, msName1='', iHaveSplitMyScienceSp
                 for spwMap in spwLowSplit:  
                     if spwLowDict[spwMap]['basebandNum']==BBnum:
                         if combineB2BLFspws: 
-                            spwB2B[spwRep] = lowestSpwLow
-                            LFspwB2B[spwMap] = lowestSpwLow
+                            LFtoHF[spwRep] = lowestSpwLow
                         else:
-                            spwB2B[spwRep] = spwMap
+                            LFtoHF[spwRep] = spwMap
+                            
         else:
             if combineB2BLFspws: 
                 for spwRep in spwHighSplit:
-                    spwB2B[spwRep] = lowestSpwLow
-                for spwMap in spwLowSplit:
-                    LFspwB2B[spwMap] =  lowestSpwLow
+                    LFtoHF[spwRep] = lowestSpwLow
             else:
                 for spwId,spwRep in enumerate(spwHighSplit):
-                    spwB2B[spwRep] = spwLowSplit[spwId]
+                    LFtoHF[spwRep] = spwLowSplit[spwId]
+
+        # LFtoLF, HFtoHF, and HFtoHF_DGC are 'easy' mappings
+        if combineB2BLFspws:
+            for spwMap in spwLowSplit:
+                LFtoLF[spwMap] = min(spwLowSplit)  # maps to min of HF index
+        if combineB2BLFHFspws:
+            for spwMap in spwHighSplit:
+                HFtoHF[spwMap] = min(spwHighSplit)  # maps to min of HF index
+        if combineB2BDGCspws:
+            for spwMap in spwHighSplit:
+                HFtoHF_DGC[spwMap] = min(spwHighSplit)  # maps to min of HF index
 
     else: # no reindexing took place
         spwHighStr = ','.join([str(i) for i in spwHigh])
         spwLowStr = ','.join([str(i) for i in spwLow])
 
-        spwB2B = list(range(max(spwHigh)+1))
-        spwHighest = max(max(spwLow),max(spwHigh))
-        if combineB2BLFspws: 
-            LFspwB2B = list(range(spwHighest+1))
-        else:
-            LFspwB2B = spwB2B # pointer, not copy!
-
+        LFtoHF = list(range(max(spwHigh)+1))
+        LFtoLF  = list(range(max(spwLow)+1))
+        HFtoHF  = list(range(max(spwHigh)+1))
+        HFtoHF_DGC  = list(range(max(spwHigh)+1))
+        
         lowestSpwLow = int(min(spwLow))
 
         if obsTimeStart > '2021-03-01T00:00:00':
@@ -5165,20 +5801,27 @@ def doApplyB2BBandpassAndGainCalTables(msName, msName1='', iHaveSplitMyScienceSp
                 for spwMap in spwLow:  
                     if spwLowDict[spwMap]['basebandNum']==BBnum:
                         if combineB2BLFspws:
-                            spwB2B[spwRep] = lowestSpwLow
-                            LFspwB2B[spwMap] = lowestSpwLow
+                             LFtoHF[spwRep] = lowestSpwLow
                         else:
-                            spwB2B[spwRep] = spwMap
+                            LFtoHF[spwRep] = spwMap
         else:
             if combineB2BLFspws:
                 for spwRep in spwHigh:
-                    spwB2B[spwRep] = lowestSpwLow
-                for spwMap in spwLow:
-                    LFspwB2B[spwMap] = lowestSpwLow
+                    LFtoHF[spwRep] = lowestSpwLow
             else:
                 for spwId,spwRep in enumerate(spwHigh):
-                    spwB2B[spwRep] = spwLow[spwId]
+                    LFtoHF[spwRep] = spwLow[spwId]
 
+        # LFtoLF, HFtoHF, and HFtoHF_DGC are 'easy' mappings
+        if combineB2BLFspws:
+            for spwMap in spwLow:
+                LFtoLF[spwMap] = min(spwLow)  # maps to min of HF index
+        if combineB2BLFHFspws:
+            for spwMap in spwHigh:
+                HFtoHF[spwMap] = min(spwHigh)  # maps to min of HF index
+        if combineB2BDGCspws:
+            for spwMap in spwHigh:
+                HFtoHF_DGC[spwMap] = min(spwHigh)  # maps to min of HF index
 
 
     print('bpCalScanList ', bpCalScanList)
@@ -5187,9 +5830,14 @@ def doApplyB2BBandpassAndGainCalTables(msName, msName1='', iHaveSplitMyScienceSp
     print('diffGainCalScanListHigh ', diffGainCalScanListHigh)
     print('spwHighStr ', spwHighStr)
     print('spwLowStr ', spwLowStr)
-    print('spwB2B ', spwB2B)
-    print('LFspwB2B ', LFspwB2B)
 
+    print('LFtoHF ', LFtoHF)
+    if combineB2BLFspws:
+        print('LFtoLF ', LFtoLF)
+    if combineB2BLFHFspws:
+        print('HFtoHF ', HFtoHF)
+    if combineB2BDGCspws:
+        print('HFtoHF_DGC ', HFtoHF_DGC)
     ###
 
     print('Writing code ...')
@@ -5203,18 +5851,22 @@ def doApplyB2BBandpassAndGainCalTables(msName, msName1='', iHaveSplitMyScienceSp
         casaCmd = casaCmd + "  field = '"+str(bpCalId)+"',\n"
         casaCmd = casaCmd + "  spw = '"+spwHighStr+"',\n"
         casaCmd = casaCmd + "  scan = '"+bpCalScanList+"',\n"
-        casaCmd = casaCmd + "  interp=['linear','linear','linear'],\n"
-        casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".phasehigh_int','"+msName1+".ampli_inf'],\n"
-        casaCmd = casaCmd + "  gainfield = ['"+str(bpCalId)+"', '"+str(bpCalId)+"', '"+str(fluxCalId)+"'])\n"
+        casaCmd = casaCmd + "  interp=['linear','linear','linear','linear'],\n"
+        if combineB2BLFHFspws:
+            casaCmd = casaCmd + "  spwmap = [[],[],"+str(HFtoHF)+",[]],\n"
+        casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphase_phasediff','"+msName1+".phasehigh_int','"+msName1+".ampli_inf'],\n"
+        casaCmd = casaCmd + "  gainfield = ['"+str(bpCalId)+"', '', '"+str(bpCalId)+"', '"+str(fluxCalId)+"'])\n"
 
         casaCmd = casaCmd + "\n# calibrating the fluxcalibrator\n"
         casaCmd = casaCmd + "applycal(vis = '"+msName1+"',\n"
         casaCmd = casaCmd + "  field = '"+str(fluxCalId)+"',\n"
         casaCmd = casaCmd + "  spw = '"+spwHighStr+"',\n" 
         casaCmd = casaCmd + "  scan = '"+fluxCalScanList+"',\n"
-        casaCmd = casaCmd + "  interp=['linear','linear','linear'],\n"
-        casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".phasehigh_int','"+msName1+".ampli_inf'],\n"
-        casaCmd = casaCmd + "  gainfield = ['"+str(bpCalId)+"', '"+str(fluxCalId)+"', '"+str(fluxCalId)+"'])\n"
+        casaCmd = casaCmd + "  interp=['linear','linear','linear','linear'],\n"
+        if combineB2BLFHFspws:
+            casaCmd = casaCmd + "  spwmap = [[],[],"+str(HFtoHF)+",[]],\n"
+        casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphase_phasediff','"+msName1+".phasehigh_int','"+msName1+".ampli_inf'],\n"
+        casaCmd = casaCmd + "  gainfield = ['"+str(bpCalId)+"', '','"+str(fluxCalId)+"', '"+str(fluxCalId)+"'])\n"
 
     else:
         casaCmd = casaCmd + "# calibrating the bandpass/fluxcalibrator\n"
@@ -5222,42 +5874,80 @@ def doApplyB2BBandpassAndGainCalTables(msName, msName1='', iHaveSplitMyScienceSp
         casaCmd = casaCmd + "  field = '"+str(bpCalId)+"',\n"
         casaCmd = casaCmd + "  spw = '"+spwHighStr+"',\n"
         casaCmd = casaCmd + "  scan = '"+bpCalScanList+"',\n"
-        casaCmd = casaCmd + "  interp=['linear','linear','linear'],\n"
-        casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".phasehigh_int','"+msName1+".ampli_inf'],\n"
-        casaCmd = casaCmd + "  gainfield = ['"+str(bpCalId)+"', '"+str(bpCalId)+"', '"+str(fluxCalId)+"'])\n"
+        casaCmd = casaCmd + "  interp=['linear','linear','linear''linear'],\n"
+        if combineB2BLFHFspws:
+            casaCmd = casaCmd + "  spwmap = [[],[],"+str(HFtoHF)+",[]],\n"        
+        casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphase_phasediff','"+msName1+".phasehigh_int','"+msName1+".ampli_inf'],\n"
+        casaCmd = casaCmd + "  gainfield = ['"+str(bpCalId)+"', '', '"+str(bpCalId)+"', '"+str(fluxCalId)+"'])\n"
 
     # DGC is corrected with the LF phases
     # note we need to specify the scans, because if the DGC = BP, then the
-    # previous BP correction is over written
+    # previous BP correction is overwritten
 
     casaCmd = casaCmd + "\n# calibrating the DGC with the LF phases\n"
     casaCmd = casaCmd + "applycal(vis = '"+msName1+"',\n"
     casaCmd = casaCmd + "  field = '"+str(diffGainCalId)+"',\n"
     casaCmd = casaCmd + "  spw = '"+spwHighStr+"',\n"
     casaCmd = casaCmd + "  scan = '"+diffGainCalScanListHigh+"',\n"
-    casaCmd = casaCmd + "  interp=['linear','linearPD','linear','linear'],\n"
-    casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".phaselow_inf','"+msName1+".DGCoffset_multi','"+msName1+".ampli_inf'],\n"
-    casaCmd = casaCmd + "  spwmap = [[],"+str(spwB2B)+",[],[]],\n"
-    casaCmd = casaCmd + "  gainfield = ['"+str(bpCalId)+"','"+str(diffGainCalId)+"','"+str(diffGainCalId)+"','"+str(fluxCalId)+"'])\n"
+    casaCmd = casaCmd + "  interp=['linear','linear','linearPD','linear','linear'],\n"
+    casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphase_phasediff','"+msName1+".phaselow_inf','"+msName1+".DGCoffset_multi','"+msName1+".ampli_inf'],\n"
+    if combineB2BDGCspws:
+        casaCmd = casaCmd + "  spwmap = [[],[],"+str(LFtoHF)+","+str(HFtoHF_DGC)+",[]],\n"
+    else:
+        casaCmd = casaCmd + "  spwmap = [[],[],"+str(LFtoHF)+",[],[]],\n"
+    casaCmd = casaCmd + "  gainfield = ['"+str(bpCalId)+"','','"+str(diffGainCalId)+"','"+str(diffGainCalId)+"','"+str(fluxCalId)+"'])\n"
 
-    casaCmd = casaCmd + "\n## calibrating the target\n"
-    casaCmd = casaCmd + "applycal(vis = '"+msName1+"',\n"
-    casaCmd = casaCmd + "  field = '"+targetIdStr+"',\n"
-    casaCmd = casaCmd + "  spw = '"+spwHighStr+"',\n" 
-    casaCmd = casaCmd + "  interp = ['linear','linearPD', 'linear','linear'],\n"
-    casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".phaselow_inf','"+msName1+".DGCoffset_multi','"+msName1+".ampli_inf'],\n"
-    casaCmd = casaCmd + "  spwmap = [[],"+str(spwB2B)+",[],[]],\n"
-    casaCmd = casaCmd + "  gainfield = ['"+str(bpCalId)+"', '"+str(phaseCalId)+"','"+str(diffGainCalId)+"','"+str(fluxCalId)+"'])\n"
+
+    if renorm=='': # no renormalisation
+        casaCmd = casaCmd + "\n## calibrating the target\n"
+        casaCmd = casaCmd + "applycal(vis = '"+msName1+"',\n"
+        casaCmd = casaCmd + "  field = '"+targetIdStr+"',\n"
+        casaCmd = casaCmd + "  spw = '"+spwHighStr+"',\n" 
+        casaCmd = casaCmd + "  interp = ['linear','linear','linearPD', 'linear','linear'],\n"
+        casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphase_phasediff','"+msName1+".phaselow_inf','"+msName1+".DGCoffset_multi','"+msName1+".ampli_inf'],\n"
+        if combineB2BDGCspws:
+            casaCmd = casaCmd + "  spwmap = [[],[],"+str(LFtoHF)+","+str(HFtoHF_DGC)+",[]],\n"
+        else:
+            casaCmd = casaCmd + "  spwmap = [[],[],"+str(LFtoHF)+",[],[]],\n"        
+        casaCmd = casaCmd + "  gainfield = ['"+str(bpCalId)+"', '', '"+str(phaseCalId)+"','"+str(diffGainCalId)+"','"+str(fluxCalId)+"'])\n"
+    else: # with renorm caltable
+        casaCmd = casaCmd + "\n## calibrating the target\n"
+        casaCmd = casaCmd + "if applyRenorm:\n"
+        casaCmd = casaCmd + "  applycal(vis = '"+msName1+"',\n"
+        casaCmd = casaCmd + "    field = '"+targetIdStr+"',\n"
+        casaCmd = casaCmd + "    spw = '"+spwHighStr+"',\n" 
+        casaCmd = casaCmd + "    interp = ['linear','linear','linearPD', 'linear','linear','linear'],\n"
+        casaCmd = casaCmd + "    gaintable = ['"+bandpass+"','"+msName1+".DGCphase_phasediff','"+msName1+".phaselow_inf','"+msName1+".DGCoffset_multi','"+msName1+".ampli_inf','"+renorm+"'],\n"
+        if combineB2BDGCspws:
+            casaCmd = casaCmd + "    spwmap = [[],[],"+str(LFtoHF)+","+str(HFtoHF_DGC)+",[],[]],\n"
+        else:
+            casaCmd = casaCmd + "    spwmap = [[],[],"+str(LFtoHF)+",[],[],[]],\n"
+        casaCmd = casaCmd + "    gainfield = ['"+str(bpCalId)+"', '', '"+str(phaseCalId)+"','"+str(diffGainCalId)+"','"+str(fluxCalId)+"',''])\n"
+        casaCmd = casaCmd + "else:\n"
+        casaCmd = casaCmd + "  applycal(vis = '"+msName1+"',\n"
+        casaCmd = casaCmd + "    field = '"+targetIdStr+"',\n"
+        casaCmd = casaCmd + "    spw = '"+spwHighStr+"',\n" 
+        casaCmd = casaCmd + "    interp = ['linear','linear','linearPD', 'linear','linear'],\n"
+        casaCmd = casaCmd + "    gaintable = ['"+bandpass+"','"+msName1+".DGCphase_phasediff','"+msName1+".phaselow_inf','"+msName1+".DGCoffset_multi','"+msName1+".ampli_inf'],\n"
+        if combineB2BDGCspws:
+            casaCmd = casaCmd + "    spwmap = [[],[],"+str(LFtoHF)+","+str(HFtoHF_DGC)+",[]],\n"
+        else:
+            casaCmd = casaCmd + "    spwmap = [[],[],"+str(LFtoHF)+",[],[]],\n"
+        casaCmd = casaCmd + "    gainfield = ['"+str(bpCalId)+"', '', '"+str(phaseCalId)+"','"+str(diffGainCalId)+"','"+str(fluxCalId)+"'])\n"
 
     casaCmd = casaCmd + "\n## calibrating the checksource\n"
     casaCmd = casaCmd + "applycal(vis = '"+msName1+"',\n"
     casaCmd = casaCmd + "  field = '"+str(checkSourceId)+"',\n"
-    casaCmd = casaCmd + "  spw = '"+spwHighStr+"',\n" 
-    casaCmd = casaCmd + "  interp = ['linear','linearPD','linear','linear'],\n"
-    casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".phaselow_inf','"+msName1+".DGCoffset_multi','"+msName1+".ampli_inf'],\n"
-    casaCmd = casaCmd + "  spwmap = [[],"+str(spwB2B)+",[],[]],\n"
-    casaCmd = casaCmd + "  gainfield = ['"+str(bpCalId)+"','"+str(phaseCalId)+"','"+str(diffGainCalId)+"','"+str(fluxCalId)+"'])\n"
+    casaCmd = casaCmd + "  spw = '"+spwHighStr+"',\n"
+    casaCmd = casaCmd + "  interp = ['linear','linear','linearPD', 'linear','linear'],\n"
+    casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphase_phasediff','"+msName1+".phaselow_inf','"+msName1+".DGCoffset_multi','"+msName1+".ampli_inf'],\n"
+    if combineB2BDGCspws:
+        casaCmd = casaCmd + "  spwmap = [[],[],"+str(LFtoHF)+","+str(HFtoHF_DGC)+",[]],\n"
+    else:
+        casaCmd = casaCmd + "  spwmap = [[],[],"+str(LFtoHF)+",[],[]],\n"        
+    casaCmd = casaCmd + "  gainfield = ['"+str(bpCalId)+"', '', '"+str(phaseCalId)+"','"+str(diffGainCalId)+"','"+str(fluxCalId)+"'])\n"
 
+    
     # LF data calibration
 
     casaCmd = casaCmd + "\n## calibration of the LF data\n"
@@ -5270,9 +5960,9 @@ def doApplyB2BBandpassAndGainCalTables(msName, msName1='', iHaveSplitMyScienceSp
         casaCmd = casaCmd + "  spw = '"+spwLowStr+"',\n"
         casaCmd = casaCmd + "  scan = '"+bpCalScanList+"',\n"
         casaCmd = casaCmd + "  interp=['linear','linear','linear','linear'],\n"
-        casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphaselow_phasediff','"+msName1+".phaselow_int','"+msName1+".ampli_inf'],\n"
+        casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphase_phasediff','"+msName1+".phaselow_int','"+msName1+".ampli_inf'],\n"
         if combineB2BLFspws:
-            casaCmd = casaCmd + "  spwmap = [[],[],"+str(LFspwB2B)+",[]],\n"
+            casaCmd = casaCmd + "  spwmap = [[],[],"+str(LFtoLF)+",[]],\n"
         casaCmd = casaCmd + "  gainfield = ['"+str(bpCalId)+"','', '"+str(bpCalId)+"', '"+str(fluxCalId)+"'])\n"
 
         casaCmd = casaCmd + "\n# calibrating the fluxcalibrator LF\n"
@@ -5281,9 +5971,9 @@ def doApplyB2BBandpassAndGainCalTables(msName, msName1='', iHaveSplitMyScienceSp
         casaCmd = casaCmd + "  spw = '"+spwLowStr+"',\n" 
         casaCmd = casaCmd + "  scan = '"+fluxCalScanList+"',\n"
         casaCmd = casaCmd + "  interp=['linear','linear','linear','linear'],\n"
-        casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphaselow_phasediff','"+msName1+".phaselow_int','"+msName1+".ampli_inf'],\n"
+        casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphase_phasediff','"+msName1+".phaselow_int','"+msName1+".ampli_inf'],\n"
         if combineB2BLFspws:
-            casaCmd = casaCmd + "  spwmap = [[],[],"+str(LFspwB2B)+",[]],\n"
+            casaCmd = casaCmd + "  spwmap = [[],[],"+str(LFtoLF)+",[]],\n"
         casaCmd = casaCmd + "  gainfield = ['"+str(bpCalId)+"','', '"+str(fluxCalId)+"', '"+str(fluxCalId)+"'])\n"
 
     else:
@@ -5300,9 +5990,9 @@ def doApplyB2BBandpassAndGainCalTables(msName, msName1='', iHaveSplitMyScienceSp
             casaCmd = casaCmd + "  spw = '"+spwLowStr+"',\n"
             casaCmd = casaCmd + "  scan = '"+bpCalScanList+"',\n"
             casaCmd = casaCmd + "  interp=['linear','linear','linear','linear'],\n"
-            casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphaselow_phasediff','"+msName1+".phaselow_int','"+msName1+".ampli_inf'],\n"
+            casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphase_phasediff','"+msName1+".phaselow_int','"+msName1+".ampli_inf'],\n"
             if combineB2BLFspws:
-                casaCmd = casaCmd + "  spwmap = [[],[],"+str(LFspwB2B)+",[]],\n"
+                casaCmd = casaCmd + "  spwmap = [[],[],"+str(LFtoLF)+",[]],\n"
             casaCmd = casaCmd + "  gainfield = ['"+str(bpCalId)+"','', '"+str(bpCalId)+"', '"+str(fluxCalId)+"'])\n"
 
     
@@ -5312,9 +6002,9 @@ def doApplyB2BBandpassAndGainCalTables(msName, msName1='', iHaveSplitMyScienceSp
     casaCmd = casaCmd + "  spw = '"+spwLowStr+"',\n"
     casaCmd = casaCmd + "  scan = '"+diffGainCalScanListLow+"',\n"
     casaCmd = casaCmd + "  interp=['linear','linear','linear','linear'],\n"
-    casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphaselow_phasediff','"+msName1+".phaselow_inf','"+msName1+".ampli_inf'],\n"
+    casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphase_phasediff','"+msName1+".phaselow_inf','"+msName1+".ampli_inf'],\n"
     if combineB2BLFspws:
-        casaCmd = casaCmd + "  spwmap = [[],[],"+str(LFspwB2B)+",[]],\n"
+        casaCmd = casaCmd + "  spwmap = [[],[],"+str(LFtoLF)+",[]],\n"
     casaCmd = casaCmd + "  gainfield = ['"+str(bpCalId)+"','','"+str(diffGainCalId)+"','"+str(fluxCalLFId)+"'])\n"
 
     casaCmd = casaCmd + "\n# calibrating the phasecal LF\n"
@@ -5322,9 +6012,9 @@ def doApplyB2BBandpassAndGainCalTables(msName, msName1='', iHaveSplitMyScienceSp
     casaCmd = casaCmd + "  field = '"+str(phaseCalId)+"',\n"
     casaCmd = casaCmd + "  spw = '"+spwLowStr+"',\n"
     casaCmd = casaCmd + "  interp=['linear','linear','linear','linear'],\n"
-    casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphaselow_phasediff','"+msName1+".phaselow_inf','"+msName1+".ampli_inf'],\n"
+    casaCmd = casaCmd + "  gaintable = ['"+bandpass+"','"+msName1+".DGCphase_phasediff','"+msName1+".phaselow_inf','"+msName1+".ampli_inf'],\n"
     if combineB2BLFspws:
-        casaCmd = casaCmd + "  spwmap = [[],[],"+str(LFspwB2B)+",[]],\n"
+        casaCmd = casaCmd + "  spwmap = [[],[],"+str(LFtoLF)+",[]],\n"
     casaCmd = casaCmd + "  gainfield = ['"+str(bpCalId)+"','','"+str(phaseCalId)+"','"+str(fluxCalLFId)+"'])\n"
     
 
@@ -5335,6 +6025,7 @@ def doRenorm(msName, msName1='', isB2B=False, isBWSW=False, iHaveSplitMyScienceS
     """Generate code for the renorm step needed for FDM data"""
 
     print('\n*** doRenorm ***')
+    print('Gathering information ...')
 
     if msName1 == '': msName1 = msName
 
@@ -5444,6 +6135,111 @@ def doRenorm(msName, msName1='', isB2B=False, isBWSW=False, iHaveSplitMyScienceS
 
     return casaCmd
 
+#####################################
+def doRenormTable(msName, msName1='', isB2B=False, isBWSW=False, iHaveSplitMyScienceSpw=False, valueMaps={}):
+    """Generate code for the renorm step needed for FDM data"""
+
+    print('\n*** doRenormTable ***')
+    print('Gathering information ...')
+
+    if msName1 == '': msName1 = msName
+    renormTabName = msName1+'.renorm.tbl'
+
+    spwRenorm = [] # default: let renorm code determine this automatically
+    
+
+    if isB2B or isBWSW: # revise spwRenorm
+        print('Determining SPWs to renormalise ...')
+        sciSpwInfo = sfsdr.getSpwInfo(msName, intent='OBSERVE_TARGET', caching=True)
+        spwInfo = sciSpwInfo.copy()
+        #refSpwInfo = sfsdr.getSpwInfo(msName, intent='CALIBRATE_DIFFGAIN#REFERENCE', caching=True)
+        #spwInfo.update(refSpwInfo)
+
+        for myspw in sorted(spwInfo.keys()):
+            if spwInfo[myspw]['numChans'] != 128: # must be FDM
+                spwRenorm.append(myspw)
+
+        if iHaveSplitMyScienceSpw == True:
+            spwInfo = sfsdr.getSpwInfo(msName, intent='OBSERVE_TARGET|CALIBRATE_BANDPASS', caching=True)
+            spwIds = sorted(spwInfo.keys())
+            spwRenormSplit = []
+            for myspw in spwRenorm:
+                spwRenormSplit.append(spwIds.index(myspw))
+            spwRenorm = spwRenormSplit
+
+        print('spwRenorm: '+str(spwRenorm))
+
+    ###
+
+    print('Writing code ...')
+
+    casaCmd = ''
+
+    casaCmd = casaCmd + "# For background on this step see:\n"
+    casaCmd = casaCmd + "# https://help.almascience.org/kb/articles/what-are-the-amplitude-calibration-issues-caused-by-alma-s-normalization-strategy\n\n"
+
+    casaCmd = casaCmd + "os.system('rm -rf "+renormTabName+"')\n\n"
+
+    casaCmd = casaCmd + "from pipeline.extern.almarenorm import ACreNorm\n\n"
+
+    casaCmd = casaCmd + "# QA2 analyst: First run this step individually with the following variable *applyRenorm* set to False\n"
+    casaCmd = casaCmd + "#              in order to determine the max. renormalization scaling factor.\n"
+    casaCmd = casaCmd + "#              If the factor is <= 1.02, don't change anything and proceed with the remaining steps.\n"
+    casaCmd = casaCmd + "#              If the max. renormalization scaling factor is > 1.02, then edit the following line in this script\n"
+    casaCmd = casaCmd + "#              and set applyRenorm=True, and then re-run this step.\n"
+    casaCmd = casaCmd + "#              In any case, note here the max. renorm factor you determined:  <max. renorm factor determined in this step>\n"
+    casaCmd = casaCmd + "applyRenorm = False\n\n"
+
+    casaCmd = casaCmd + "if applyRenorm or applyonly!=True:\n\n"
+
+    casaCmd = casaCmd + "  if not applyRenorm: os.system('rm -rf RN_plots')\n\n" 
+    casaCmd = casaCmd + "  rn=ACreNorm('"+msName1+"')\n\n"
+
+    casaCmd = casaCmd + "  if applyRenorm or applyonly==True:\n"
+    casaCmd = casaCmd + "    diagSpectra=False\n"
+    casaCmd = casaCmd + "  else:\n"
+    casaCmd = casaCmd + "    diagSpectra=True\n\n"
+    
+    if isB2B or isBWSW:
+        casaCmd = casaCmd + "  rn.renormalize(createCalTable=applyRenorm, spws="+str(spwRenorm)+", diagSpectra=diagSpectra, antHeuristicsSpectra=False, atmAutoExclude=True, fillTable=True)\n\n"
+    else:
+        casaCmd = casaCmd + "  rn.renormalize(createCalTable=applyRenorm, diagSpectra=diagSpectra, antHeuristicsSpectra=False, atmAutoExclude=True, fillTable=True)\n\n"
+
+    casaCmd = casaCmd + "  if applyRenorm or applyonly==True:\n"
+    casaCmd = casaCmd + "    pass  # no plotting\n"
+    casaCmd = casaCmd + "  else:\n"
+    casaCmd = casaCmd + "    rn.plotSpectra()\n\n"
+
+    casaCmd = casaCmd + "  if os.path.exists('RN_plots') and applyRenorm:\n" 
+    casaCmd = casaCmd + "    os.system('rm -f RN_plots/*.pdf RN_plots/*_scan*_field*.png')\n" 
+    casaCmd = casaCmd + "    os.system('mv RN_plots "+msName1+".renorm.plots')\n\n" 
+
+    casaCmd = casaCmd + "  if not applyRenorm:\n" 
+
+    casaCmd = casaCmd + "    mystats = rn.rnpipestats\n"
+    casaCmd = casaCmd + "    casalog.post('Maximum Renormalization scaling factors:\\n'+str(mystats))\n\n"  
+    casaCmd = casaCmd + "    rnfactors = []\n" 
+    casaCmd = casaCmd + "    for field in mystats.keys():\n" 
+    casaCmd = casaCmd + "      print(' ************************')\n"
+    casaCmd = casaCmd + "      print(field, ': max. renorm. scaling for each SPW')\n" 
+    casaCmd = casaCmd + "      for spw in mystats[field].keys():\n" 
+    casaCmd = casaCmd + "        print(spw,': ', mystats[field][spw])\n"     
+    casaCmd = casaCmd + "        rnfactors.append(mystats[field][spw]['max_rn'])\n"     
+    casaCmd = casaCmd + "    maxScaling = max(rnfactors)\n"
+
+    casaCmd = casaCmd + "    print(' ************************')\n"
+    casaCmd = casaCmd + "    print(' The maximum Renormalization scaling is '+str(maxScaling))\n"
+    casaCmd = casaCmd + "    if maxScaling>1.02:\n"
+    casaCmd = casaCmd + "      casalog.post('Renormalization should be applied before proceeding.','WARN')\n"
+    casaCmd = casaCmd + "      rn.close()\n"
+    casaCmd = casaCmd + "      sys.exit('Please edit the renorm step to set applyRenorm=True and rerun the step!')\n"
+    casaCmd = casaCmd + "    else:\n"
+    casaCmd = casaCmd + "      print(' No Renormalization needed.')\n"
+    casaCmd = casaCmd + "    print(' ************************')\n\n"
+
+    casaCmd = casaCmd + "  rn.close()\n"
+
+    return casaCmd, renormTabName
 
 
 #####################################
@@ -5452,6 +6248,7 @@ def doFluxCalibration(msNames, fluxFile='allFluxes.txt', refant='', valueMaps={}
     """Generate code for the 'flux equalisation' of a set of calibrated MSs."""
 
     print('\n*** doFluxCalibration ***')
+    print('Gathering information ...')
 
     if type(msNames).__name__ == 'str': msNames = [msNames]
 
@@ -5677,18 +6474,41 @@ def SDdoCalibration(asapName, msName='', spwIds='', calmode='ps', tsysCalTableNa
             mymsmd = msmdtool()
             mymsmd.open(msName)
             targetFieldIds = mymsmd.fieldsforintent('OBSERVE_TARGET#ON_SOURCE')
+            offFieldIds = mymsmd.fieldsforintent('OBSERVE_TARGET#OFF_SOURCE')
+            fieldNames = mymsmd.fieldnames()
             mymsmd.close()
 
-            casaCmd = casaCmd + "for i in "+str([str(j) for j in targetFieldIds])+":\n"
+            mygainfield = 'str(i)' # use the targetfield itself by default
+            if len(offFieldIds)>0:
+                mygainfield = 'offfields[i]'
+
+                # determine array of OFF fields
+                mygainfields = list(range(0, max(targetFieldIds)+1))
+                for j in targetFieldIds:
+                    tfieldname = fieldNames[j]
+                    for k in offFieldIds:
+                        ofieldname = fieldNames[k]
+                        if ofieldname.find('_OFF_') >= 0:
+                            if ofieldname[:ofieldname.find('_OFF_')] == tfieldname:
+                                print('Using field '+ofieldname+' as OFF-SOURCE field for '+tfieldname+'.')
+                                mygainfields[j] = k
+                                break
+                    if mygainfields[j]==j:
+                        casalog.post('Target field '+tfieldname+' does not seem to have an OFF-SOURCE field. Will use the target field itself as gainfield.', 'WARN')
+                            
+                casaCmd = casaCmd + "offfields = "+str([str(mygainfields[j]) for j in range(0, max(targetFieldIds)+1)])+"\n\n"
+
+            casaCmd = casaCmd + "for i in "+str([j for j in targetFieldIds])+":\n"
             casaCmd = casaCmd + "  applycal(vis = '"+i+"',\n"
             casaCmd = casaCmd + "    applymode = 'calflagstrict',\n"
             casaCmd = casaCmd + "    spw = '"+','.join([str(j) for j in sorted(spwIds1)])+"',\n"
-            casaCmd = casaCmd + "    field = i,\n"
-            if myCasaVersion < '6.4.3':
-                casaCmd = casaCmd + "    gaintable = ['"+tsysCalTableName+"', '"+skyCalTableName+"'],\n"
-            else:
+            casaCmd = casaCmd + "    field = str(i),\n"
+            if len(jyCalTableName) > 0:
                 casaCmd = casaCmd + "    gaintable = ['"+tsysCalTableName+"', '"+skyCalTableName+"', '"+jyCalTableName+"'],\n"
-            casaCmd = casaCmd + "    gainfield = ['nearest', i],\n"
+            else:
+                casaCmd = casaCmd + "    gaintable = ['"+tsysCalTableName+"', '"+skyCalTableName+"'],\n"
+
+            casaCmd = casaCmd + "    gainfield = ['nearest', "+mygainfield+"],\n"
             casaCmd = casaCmd + "    spwmap = tsysmap)\n\n"
 
         if doplot == True:
@@ -5697,6 +6517,44 @@ def SDdoCalibration(asapName, msName='', spwIds='', calmode='ps', tsysCalTableNa
             else:
                 casaCmd = casaCmd + "if applyonly != True: es.SDcheckSpectra(msName='"+i+"', spwIds='"+spwIds+"', intent='OBSERVE_TARGET#ON_SOURCE', interactive=False)\n\n"
 
+    return casaCmd
+
+
+##################################################
+
+def SDdoAtmCor(msName, jyCalTableName):
+    """Generate code for the sdatmcor step of an SD calibration script.
+    """
+
+    myCasaVersion = aU.getCasaVersion()
+
+    if myCasaVersion < '6.4.4':
+        casalog.post('sdatmcor only available for CASA >= 6.4.4.', 'SEVERE')
+        return False
+
+    if msName == '': 
+        casalog.post('ERROR: you have not specified  msName','SEVERE')
+        return False
+
+    spwInfo = sfsdr.getSpwInfo(msName, caching=True)
+
+    mymsmd = msmdtool()
+    mymsmd.open(msName)
+    targetFieldIds = mymsmd.fieldsforintent('OBSERVE_TARGET#ON_SOURCE')
+    mymsmd.close()
+
+    casaCmd = ''
+
+    casaCmd = casaCmd + "sdatmcor(infile = '"+msName+"',\n"
+    casaCmd = casaCmd + "         datacolumn = 'corrected',\n"
+    casaCmd = casaCmd + "         outfile = '"+msName+".atmcor.atmtype1',\n"
+    casaCmd = casaCmd + "         overwrite = True,\n"
+    casaCmd = casaCmd + "         field = '"+','.join([str(i) for i in targetFieldIds])+"',\n"
+    casaCmd = casaCmd + "         intent = 'OBSERVE_TARGET#ON_SOURCE',\n"
+    casaCmd = casaCmd + "         outputspw = '"+','.join([str(i) for i in spwInfo.keys()])+"',\n"
+    casaCmd = casaCmd + "         gainfactor = '"+jyCalTableName+"',\n"
+    casaCmd = casaCmd + "         atmtype=1)\n"
+    
     return casaCmd
 
 
@@ -5731,8 +6589,16 @@ def SDdoBaselineSubtraction(asapName, msName='', spwIds='', iHaveSplitMyScienceS
 
         if aU.getCasaVersion() >= '5.0':
 
-            casaCmd = casaCmd + "sdbaseline(infile = '"+i+"',\n"
-            casaCmd = casaCmd + "  datacolumn = 'corrected',\n"
+            if aU.getCasaVersion() < '6.4.4':
+
+                casaCmd = casaCmd + "sdbaseline(infile = '"+i+"',\n"
+                casaCmd = casaCmd + "  datacolumn = 'corrected',\n"
+
+            else: # atmcor was applied beforehand
+
+                casaCmd = casaCmd + "sdbaseline(infile = '"+i+".atmcor.atmtype1',\n"
+                casaCmd = casaCmd + "  datacolumn = 'data',\n"
+
             casaCmd = casaCmd + "  spw = '"+','.join([str(j) for j in spwIds1])+"',\n"
             casaCmd = casaCmd + "  maskmode = 'auto',\n"
             casaCmd = casaCmd + "  thresh = 5.0,\n"
@@ -5910,4 +6776,86 @@ def listOfIntentsWithFields(msName):
     
 #######################################
 
+
+def doQa2ReportGeneration(msName, refant='', isB2B=False, isBWSW=False, iHaveSplitMyScienceSpw=False):
+    """
+    Generate code which calls the QA2 report generator
+    aU.stuffForScienceDataReduction.generateQA2Report()
+
+    """
+
+    print('\n*** doQa2ReportGeneration ***')
+
+    if iHaveSplitMyScienceSpw:
+        casalog.post('Reindexing (due to split) of the SPW IDs for the generation of the generateQA2Report call not yet implemented.','WARN')
+
+    print('Gathering information ...')
+
+    casaCmd = "if applyonly != True: es.generateQA2Report(\'"+msName+"\'"
+
+    pardict = {}
+
+    if refant != '':
+        pardict['refAnt'] = str(refant)
+
+    if isB2B:
+
+        intentSources = sfsdr.getIntentsAndSourceNames(msName)
+        myspwinfo = sfsdr.getSpwInfo(msName, intent='OBSERVE_TARGET', caching=True)
+
+        pardict['ant_amp_temporal_caltable'] = msName+'.split.ampli_inf'
+
+        pardict['ant_phase_temporal_caltable'] = msName+'.split.phasehigh_int'
+
+        pardict['ampcalspw'] = ','.join(str(i) for i in myspwinfo.keys())  # the HF SPWs
+
+        pardict['wvrspw'] = str(list(myspwinfo.keys())[0])  # the first of the HF SPWs
+        
+        pardict['phase_cal'] = intentSources['CALIBRATE_DIFFGAIN']['idstring'][0] # actually the DGC
+
+        pardict['phasecalspw'] = pardict['ampcalspw']
+
+        pardict['checksourceAnalysis'] = False
+
+
+    elif isBWSW:
+
+        intentSources = sfsdr.getIntentsAndSourceNames(msName)
+        myspwinfo = sfsdr.getSpwInfo(msName, intent='OBSERVE_TARGET', caching=True)
+        myspwinfoamp = sfsdr.getSpwInfo(msName, intent='CALIBRATE_DIFFGAIN#REFERENCE', caching=True)
+
+        pardict['phase_cal'] = intentSources['CALIBRATE_PHASE']['idstring'][0]
+
+        pardict['target'] = intentSources['OBSERVE_TARGET']['idstring'][0]
+ 
+        pardict['dospw'] = ','.join(str(i) for i in myspwinfo.keys())
+
+        pardict['ampcalspw'] =  ','.join(str(i) for i in myspwinfoamp.keys())
+
+        pardict['wvrspw'] = str(list(myspwinfoamp.keys())[0])  # the first of the SPWs
+        
+        pardict['phasecalspw'] = pardict['ampcalspw']
+
+    print('Writing code ...')
+
+    if pardict != {}:
+
+        for mypar in pardict.keys():
+            if type(mypar) != str:
+                casalog.post('Internal ERROR: alls keys of pardict must be strings.', 'SEVERE')
+                return casaCmd
+
+            casaCmd += ",\n"
+
+            myparval = pardict[mypar]
+            if type(myparval) == str:
+                myparval = "'"+myparval+"'"
+            else:
+                myparval = str(myparval)
+
+            casaCmd += "                                           "+mypar+" = "+myparval
+
+    casaCmd += ")\n"
+
+    return casaCmd
 

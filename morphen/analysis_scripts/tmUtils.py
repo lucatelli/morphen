@@ -23,7 +23,7 @@ Utilities for getting TMCDB data and plotting time-series data.
                     in some methods.
 2010-04-30 tsawada
 
-$Id: tmUtils.py,v 2.1 2022/12/14 16:38:42 jreveco Exp $
+$Id: tmUtils.py,v 2.4 2024/01/18 19:09:12 thunter Exp $
 """
 from __future__ import print_function  # prevents adding old-style print statements
 import os
@@ -44,7 +44,7 @@ def get_host_name():
     """
     Returns  the  hostname
     """
-    hostname = 'http://monitordata.osf.alma.cl'
+    hostname = 'https://monitordata.osf.alma.cl'
     return  hostname
 
 
@@ -112,7 +112,11 @@ def get_available_monitorpoints_in_device_on_date(date, antenna, device):
 
     The argument date should be an ISO-8601 date string (YYYY-MM-DD).
     This method searchs "CONTROL_XX99_" in TMCDB directory list via HTTP.
+
     If no antenna matched, returns an empty list.
+    date: YYYY-MM-DD
+    antenna: name of antenna
+    device: name of device
     """
     rooturl = get_root_url_for_date(date)
 
@@ -141,7 +145,6 @@ def get_available_monitorpoints_in_device_on_date(date, antenna, device):
 
     return result
 
-
 def retrieve_daily_tmc_data_file(antenna, device, monitorpoint, date,
                                  verbose = True, outpath='./'):
     """
@@ -152,6 +155,10 @@ def retrieve_daily_tmc_data_file(antenna, device, monitorpoint, date,
     device = 'LLC'
     monitorpoint = 'CNTR_0'
     date = '2010-04-24'  # ISO-8601 date or datetime string
+    They are assembled as:
+        targeturl = '%s_%s/%s.%s' % (antenna, device, monitorpoint, extension)
+        where targeturl is prepended with 'CONTROL_' for non Meteo devices
+        and extension = '.txt', and if not found then '.txt.bz2'
 
     outpath = set this if you don't want to write the result to the working directory
 
@@ -164,28 +171,48 @@ def retrieve_daily_tmc_data_file(antenna, device, monitorpoint, date,
     rooturl = get_root_url_for_curl(date)
 
     extension = 'txt'
-    targeturl = 'CONTROL_%s_%s/%s.%s' % (antenna, device, monitorpoint, extension)
+    if device.find('Meteo') >= 0:
+        targeturl = '%s_%s/%s.%s' % (antenna, device, monitorpoint, extension)
+    else:
+        targeturl = 'CONTROL_%s_%s/%s.%s' % (antenna, device, monitorpoint, extension)
     completeurl = '%s/%s' % (rooturl, targeturl)
     outfile = '%s%s_%s_%s_%s.%s' % (outpath,isodate, antenna, device, monitorpoint, extension)
-    if verbose == True: print(date, rooturl,targeturl,completeurl)
-    exitcode = os.system('curl -s -f %s -o %s' % (completeurl, outfile))
+    syscmd = 'curl -s -f %s -o %s' % (completeurl, outfile)
+    if verbose:
+        print(syscmd)
+#        print(date, rooturl,' + ',targeturl,' = ',completeurl)
+    exitcode = os.system(syscmd)
         
     if exitcode == 0:
         return outfile
     else:
         extension = 'txt.bz2'
-        targeturl = 'CONTROL_%s_%s/%s.%s' % (antenna, device, monitorpoint, extension)
+        if device.find('Meteo') >= 0:
+            targeturl = '%s_%s/%s.%s' % (antenna, device, monitorpoint, extension)
+        else:
+            targeturl = 'CONTROL_%s_%s/%s.%s' % (antenna, device, monitorpoint, extension)
         completeurl = '%s/%s' % (rooturl, targeturl)
         outfile = '%s%s_%s_%s_%s.%s' % (outpath,isodate, antenna, device, monitorpoint, extension)
-        if verbose == True: print(date, rooturl,targeturl,completeurl)
-        exitcode = os.system('curl -s -f %s -o %s' % (completeurl, outfile))
+        syscmd = 'curl -s -f %s -o %s' % (completeurl, outfile)
+        if verbose:
+            print(syscmd)
+#            print(date, rooturl,targeturl,completeurl)
+        exitcode = os.system(syscmd)
 
         if exitcode == 0:
+            rmfile = outfile[:-4]
+            if os.path.exists(rmfile):
+                print("Removing file prior to bunzip2: ", rmfile)
+                os.remove(rmfile)
             os.system('bunzip2 %s' %outfile)
-            outfile = outfile[0:-4]
+            outfile = outfile[:-4]
             return outfile
         else:
-            if verbose == True: print('Retrieval failed. Check permissions on directory and set outpath if necessary')
+            if verbose:
+                if device.find('Weather') >= 0:
+                    print('Retrieval failed. Weather station %s might not exist', device.split('_')[-1])
+                else:
+                    print('Retrieval failed. Check permissions on directory and set outpath if necessary')
             return '_CURL_FAILED_'
 
 
@@ -209,7 +236,10 @@ def retrieve_daily_tmc_data_file_name_only(antenna, device, monitorpoint,
     inputdate = datetime.datetime.strptime(date, '%Y-%m-%d')
     rooturl = get_root_url_for_curl(date)
     extension = 'txt'
-    targeturl = 'CONTROL_%s_%s/%s.%s' % (antenna, device, monitorpoint, extension)
+    if device.find('Weather') >= 0:
+        targeturl = '%s_%s/%s.%s' % (antenna, device, monitorpoint, extension)
+    else:
+        targeturl = 'CONTROL_%s_%s/%s.%s' % (antenna, device, monitorpoint, extension)
     completeurl = '%s/%s' % (rooturl, targeturl)
     outfile = '%s%s_%s_%s_%s.%s' % (outpath,isodate, antenna, device, monitorpoint, extension)
     return(outfile)
@@ -244,7 +274,6 @@ def get_datetime_from_isodatetime(isodatetime):
     else:
         print("Date '%s' is invalid." % isodatetime)
         return datetime.date(1, 1, 1)
-
 
 def retrieve_tmc_data_files(antenna, device, monitorpoint, startdate, enddate,
                             verbose = True, outpath='./'):
@@ -287,7 +316,6 @@ def retrieve_tmc_data_files(antenna, device, monitorpoint, startdate, enddate,
             files.append(filename)
 
     return files
-
 
 def read_tmc_data_file(filename, removefile=False):
     """
@@ -703,7 +731,7 @@ def retrieve_daily_weather_data_file(date, station):
     if exitcode == 0:
         return outfile
     else:
-        print('Retrieval failed.')
+        print('retrieve_daily_weather_data_file() failed.')
         return '_CURL_FAILED_'
 
 

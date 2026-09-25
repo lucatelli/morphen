@@ -3,7 +3,7 @@
 # D. Petry (ESO)
 # A. Borkar (EU ARC Node, Czech Republic)
 # G. Bendo (EU ARC Node, UK)
-# $Id: almaqa2isg.py,v 2.2 2022/12/19 16:37:37 dpetry Exp $
+# $Id: almaqa2isg.py,v 2.14 2025/04/11 08:28:38 dpetry Exp $
 #
 """
 The ALMA QA2 Imaging Script Generator
@@ -41,21 +41,23 @@ def version(short=False):
     """
     Returns the CVS revision number.
     """
-    myversion = "$Id: almaqa2isg.py,v 2.2 2022/12/19 16:37:37 dpetry Exp $"
+    myversion = "$Id: almaqa2isg.py,v 2.14 2025/04/11 08:28:38 dpetry Exp $"
     if (short):
         myversion = myversion.split()[2]
     return myversion
     
 
 def generateImagingScript(vis="", draft_threshold="", reqchanwidth=1, makecubes=True, docontsub=None, chanwidthtol=0.05,
-                          restfreqs={}, additionalimg=['CALIBRATE_POLARIZATION', 'OBSERVE_CHECK_SOURCE'], spwmap=[],
-                          perchanweightdensity=False):
+                          restfreqs={}, additionalimg=['CALIBRATE_BANDPASS','CALIBRATE_PHASE','CALIBRATE_POLARIZATION','OBSERVE_CHECK_SOURCE'], 
+                          spwmap=[], perchanweightdensity=False, persession=False, usepltasks=False):
 
     """
     The ALMA QA2 Imaging Script Generator
 
     vis - the MS(s) to image, can be a list. 
           If wildcards are used, a list is created automatically.
+          For calibrators, this list is individually shortened in case some of the MSs do
+          do not contain the particular calibrator.
 
     draft_threshold - the cleaning threshold to use as a initial value in the cleaning (as a string e.g. "5 mJy")
 
@@ -86,7 +88,8 @@ def generateImagingScript(vis="", draft_threshold="", reqchanwidth=1, makecubes=
                  code for making an aggregate bandwidth image is going to be added.
                  Possible values: 'CALIBRATE_PHASE', 'CALIBRATE_BANDPASS', 'CALIBRATE_FLUX',
                       'OBSERVE_CHECK_SOURCE', 'CALIBRATE_POLARIZATION'
-                 default: ['CALIBRATE_POLARIZATION', 'OBSERVE_CHECK_SOURCE'] (image check source(s) and/or polcal)
+                 default: ['CALIBRATE_BANDPASS', 'CALIBRATE_PHASE', 'CALIBRATE_POLARIZATION', 'OBSERVE_CHECK_SOURCE'] 
+                   (image bandpass(s), phasecal(s), check source(s) and/or polcal(s))
                  example: ['CALIBRATE_BANDPASS', 'CALIBRATE_PHASE']
 
     spwmap     - SPW IDs to be used in the final image names.
@@ -104,6 +107,26 @@ def generateImagingScript(vis="", draft_threshold="", reqchanwidth=1, makecubes=
                  will be used and perchanweightdensity will be forced to True.
                  default: False
 
+    persession - if True, identify sessions in the set of input MS by analysis of their time
+                 cadence, and produce the agg. bandwidth images for the intents given by
+                 parameter "additionalimg" per session rather than for all given input MSs.
+                 default: False
+
+    usepltasks - If True, create an imaging script using ALMA pipeline tasks wherever possible.
+                 The resulting script will need as input a list of one or more MSs which have
+                 _both_ the DATA and the CORRECTED_DATA column with the calibrated data to be
+                 imaged being in the latter!
+                 The imaging script generator does not check if the observation mode of the data 
+                 in question can actually be processed correctly by the ALMA pipeline tasks.
+                 Only general checks on the MS(s) are carried out.
+    
+                 If 'basic' (i.e. a string == 'basic', not a bool value), the same applies as
+                 for value True, however, a simpler version which can be executed more quickly
+                 is produced.
+
+                 If this parameter is not False, all other parameters except "vis" are ignored.
+                 default: False
+
     Example: 
       import almaqa2isg as isg
       isg.generateImagingScript('uid*.ms.split.cal', draft_threshold='0.1mJy', reqchanwidth='20km/s', spwmap=[17,19,21,23])
@@ -118,6 +141,9 @@ def generateImagingScript(vis="", draft_threshold="", reqchanwidth=1, makecubes=
       The vis parameter can be a single string or a list. If it is a list, each element must be the name of an 
       existing MS. If it is a single string, it can either be a single name of an existing MS or an expression 
       using wildcards "*" or "?" to specify a group of MSs. This will internally be converted to a list of MSs.
+      For calibrators, this list is individually shortened in case some of the MSs do not contain the particular 
+      calibrator.
+
 
       If makecubes is true (default), code for cleaning cubes for each science SPW is created.
 
@@ -139,13 +165,14 @@ def generateImagingScript(vis="", draft_threshold="", reqchanwidth=1, makecubes=
       complex for the moment.
 
       NOTE that if there is more than one input MS and docontsub is True, then a concat step will be inserted such 
-      that the uvcontsub commands can operate on the concatenated MS. If the SPWs are not yet reindexed to have 
-      IDs starting at 0, uvcontsub will do this reindexing. The ISG will take this into account and use reindexed 
-      SPW IDs when making the cubes but leave the old SPW ids in the image names (this is what archive needs).
-
+      that the uvcontsub commands can operate on the concatenated MS. 
       Furthermore, if constinuum subtraction is requested, the ISG will check if the corresponding SPWs of the MSs 
       are shifted w.r.t. each other and if so, find the largest common grid for each SPW and generate mstransform code 
       to transform all science SPWs of all the MSs into these grids before concatenation.
+      In the course of this transformation, if the SPWs are not yet reindexed to have IDs starting at 0, they
+      will be reindexed here.  
+      The ISG will take this into account and use reindexed SPW IDs when making the cubes but leave the old SPW 
+      ids in the image names (this is what archive needs).
 
       At the end of the isg run, you obtain a file "scriptForImaging.py". On the terminal (in CASA) you will also 
       get messages which explain what you need to do to complete this script before you can run it. These messages 
@@ -216,18 +243,30 @@ def generateImagingScript(vis="", draft_threshold="", reqchanwidth=1, makecubes=
     if(vis=="" or (type(vis)!=str and type(vis)!=list)):
         print("ERROR: Invalid vis parameter. Must be non-empty string or list of strings.")
         return False
-    
-    try:
-        mydraft_threshold = myqa.quantity(draft_threshold)
-        if mydraft_threshold['value'] <= 0.:
-            print("ERROR: Invalid draft_threshold parameter. Must have positive value.")
+
+    orig_usepltasks = usepltasks # the original value of the parameter
+    if type(usepltasks) == str:
+        usepltasks = True
+        valid_usepltasks = ['basic']
+        if orig_usepltasks in valid_usepltasks:
+            if orig_usepltasks == 'basic':
+                print("Will produce a script using PL tasks, however, only a basic one.")
+        else:
+            print("ERROR: Invalid usepltasks parameter. Must be bool or one of "+str(valid_usepltasks))
             return False
-        if not (mydraft_threshold['unit'] in ["Jy", "mJy", "uJy"]):
-            print("ERROR: Invalid draft_threshold parameter. Must have unit Jy, mJy, or uJy.")
+        
+    if not usepltasks:
+        try:
+            mydraft_threshold = myqa.quantity(draft_threshold)
+            if mydraft_threshold['value'] <= 0.:
+                print("ERROR: Invalid draft_threshold parameter. Must have positive value.")
+                return False
+            if not (mydraft_threshold['unit'] in ["Jy", "mJy", "uJy"]):
+                print("ERROR: Invalid draft_threshold parameter. Must have unit Jy, mJy, or uJy.")
+                return False
+        except:
+            print("ERROR: Invalid draft_threshold parameter. Must be string quantity, e.g. 25mJy")
             return False
-    except:
-        print("ERROR: Invalid draft_threshold parameter. Must be string quantity, e.g. 25mJy")
-        return False
 
     myreqchanwidth=None
     if type(reqchanwidth)==int:
@@ -263,6 +302,24 @@ def generateImagingScript(vis="", draft_threshold="", reqchanwidth=1, makecubes=
         print("ERROR: Invalid chanwidthtol parameter. Must be a float >= 0.")
         return False
 
+    possibleadtlimg = ['CALIBRATE_PHASE', 
+                       'CALIBRATE_BANDPASS', 
+                       'CALIBRATE_FLUX',
+                       'OBSERVE_CHECK_SOURCE',
+                       'CALIBRATE_POLARIZATION']
+
+    if not type(additionalimg) == list:
+        print("ERROR: Invalid parameter additionalimg. Must be a list, e.g. ['CALIBRATE_BANDPASS', 'OBSERVE_CHECK_SOURCE']")
+        print("Possible elements are: ")
+        print(possibleadtlimg)
+        return False
+    else:
+        for myintent in additionalimg:
+            if not myintent in possibleadtlimg:
+                print("ERROR: Invalid parameter additionalimg. Possible elements are: ")
+                print(possibleadtlimg)
+                return False
+
     myviss = vis
     if type(vis)==str:
         if ('*' in vis) or ('?' in vis):
@@ -278,9 +335,13 @@ def generateImagingScript(vis="", draft_threshold="", reqchanwidth=1, makecubes=
 
     visspwsandtimes = []
     addfullpolanalysis = False
-
+    additionalimg_fields = {} # contains the set of fields for each requested intent
+    for myintent in additionalimg:
+        additionalimg_fields[myintent] = set()
+    vissforfields = {} # contains the set of MSs for each field for the requested intents
+    
     if len(myviss)>1:
-        print("Sorting list of input MSs by observation time ...")
+        print("Evaluating list of input MSs ...")
     for myvis in myviss: # need to go over this even when len(myviss)==1 since we need the science SPWs
         if type(myvis) != str:
             print("ERROR: Invalid vis parameter. Must be non-empty string or list of strings.")
@@ -289,21 +350,24 @@ def generateImagingScript(vis="", draft_threshold="", reqchanwidth=1, makecubes=
             mymsmd.open(myvis)
         except:
             print("ERROR: Invalid vis parameter. Could not open MS "+str(myvis))
+            mymsmd.close()
             return False
         try:
             onsourcetimes = mymsmd.timesforintent("OBSERVE_TARGET#ON_SOURCE")
             thetargetintent = "OBSERVE_TARGET#ON_SOURCE"
 
+            myintents = mymsmd.intents()
+
             if len(onsourcetimes) == 0:
-                print("ERROR: There is no data with intent OBSERVE_TARGET#ON_SOURCE in MS "+str(myvis))
-                myintents = mymsmd.intents()
+                print("WARNING: There is no data with intent OBSERVE_TARGET#ON_SOURCE in MS "+str(myvis))
                 for myintent in myintents:
                     if 'OBSERVE_TARGET' in myintent:
                         thetargetintent = myintent
-                print("Will try to continue using the times and spws for intent "+thetargetintent+" ...")
+                        print("However, there is an intent "+thetargetintent+" ...")
 
             onsourcetimes = mymsmd.timesforintent(thetargetintent)
             firstonsourcetime = onsourcetimes[0]
+            lastonsourcetime = onsourcetimes[-1]
             otos_spwids = list(mymsmd.spwsforintent(thetargetintent))
 
             spwids = []
@@ -313,24 +377,65 @@ def generateImagingScript(vis="", draft_threshold="", reqchanwidth=1, makecubes=
 
             if 'CALIBRATE_POLARIZATION#ON_SOURCE' in mymsmd.intents():
                 addfullpolanalysis = True # we will need to add the full pol analysis step at the end before the fitsexport
+            
+            myfieldnames = mymsmd.namesforfields()
+            for myintent in additionalimg:
+                if myintent+'#ON_SOURCE' in myintents:
+                    for myfield in mymsmd.fieldsforintent(myintent+'#ON_SOURCE'):
+                        additionalimg_fields[myintent].add(myfieldnames[myfield])
+                        if myfieldnames[myfield] not in vissforfields.keys():
+                            vissforfields[myfieldnames[myfield]] = set()
+                        vissforfields[myfieldnames[myfield]].add(myvis)
+                elif not usepltasks:
+                    casalog.post('Note: MS '+myvis+' does not contain any fields for intent '+myintent, 'WARN')
 
             mymsmd.close()
             spwids.sort() # should not be necessary but let's stay on the safe side
-            visspwsandtimes.append((firstonsourcetime, myvis, spwids))
+            visspwsandtimes.append((firstonsourcetime, lastonsourcetime, myvis, spwids))
         except:
             print("ERROR trying to determine on-source times and SPWs for MS "+str(myvis)+": "+str(sys.exc_info()))
             return False
     # now sort myviss by the times in visspwsandtimes, i.e. chronologically
     sortedvisspwsandtimes = sorted(visspwsandtimes)
-    myviss = [myvis for i, myvis, myspws in sortedvisspwsandtimes]
+    myviss = [myvis for t1, t2, myvis, myspws in sortedvisspwsandtimes]
     # and make an accordingly sorted list of the spws
-    sciencespws = [myspws for i, myvis, myspws in sortedvisspwsandtimes]
+    sciencespws = [myspws for t1, t2, myvis, myspws in sortedvisspwsandtimes]
 
+    # identify sessions
+    vissforsessions = {'S1': [myviss[0]]} # contains the viss for each identified session
+    prevstart=0
+    prevend=0
+    prevduration=0
+    thesession=1
+    if len(myviss)>1:
+        for t1, t2, myvis,  myspws in sortedvisspwsandtimes:
+            if myvis == myviss[0]:
+                prevstart = t1
+                prevend = t2
+                prevduration = t2-t1
+                continue
+            if t1 > prevend+prevduration:
+                thesession += 1
+                vissforsessions['S'+str(thesession)] = []
+
+            prevstart = t1
+            prevend = t2
+            vissforsessions['S'+str(thesession)].append(myvis)
+
+        print("Identified the following sessions purely based on the timing of the observations:")
+        print(vissforsessions)
+
+        if len(additionalimg)>0 and len(vissforsessions.keys())>1:
+            if not persession:
+                print("Set parameter \"persession\" to True for performing additional imaging per-session rather than only once for entire set of MSs.")
+            else:
+                print("The additional imaging for the intents "+str(additionalimg)+" will be done per these sessions.")
+            
     hascorrected = []
     print("Science SPWs in the input MS(s):")
     for myvisspwsandtimes in sortedvisspwsandtimes:
-        myvis = myvisspwsandtimes[1]
-        print("  "+myvis+": "+str(myvisspwsandtimes[2]) )
+        myvis = myvisspwsandtimes[2]
+        print("  "+myvis+": "+str(myvisspwsandtimes[3]) )
         try:
             mytb.open(myvis)
             mycols = mytb.colnames()
@@ -351,28 +456,23 @@ def generateImagingScript(vis="", draft_threshold="", reqchanwidth=1, makecubes=
         if False in hascorrected:
             print("ERROR: inhomogenous data columns in input MS: some have CORRECTED_DATA, some don't.")
             return False
+    elif usepltasks:
+        print("ERROR: if usepltasks is True, then the CORRECTED_DATA column must be present in the input MSs.")
+        return False
+  
+    ## Finished processing the parameters relevant when usepltasks==True
+
+    if usepltasks:
+        print('Writing ALMA-Pipeline-task-based imaging script ...')
+        scriptfile = open(scriptname, 'w')
+        stext = printimgscriptwpltasks(myviss, aU.getCasaVersion(), orig_usepltasks);
+        scriptfile.write(stext+"\n")
+        scriptfile.close()
+        return True
 
     if not type(restfreqs) == dict:
         print("ERROR: Invalid parameter restfreqs. Must be a dictionary, e.g. {25: '230GHz', 27: '231GHz', ...}")
         return False
-
-    possibleadtlimg = ['CALIBRATE_PHASE', 
-                       'CALIBRATE_BANDPASS', 
-                       'CALIBRATE_FLUX',
-                       'OBSERVE_CHECK_SOURCE',
-                       'CALIBRATE_POLARIZATION']
-
-    if not type(additionalimg) == list:
-        print("ERROR: Invalid parameter additionalimg. Must be a list, e.g. ['CALIBRATE_BANDPASS', 'OBSERVE_CHECK_SOURCE']")
-        print("Possible elements are: ")
-        print(possibleadtlimg)
-        return False
-    else:
-        for myintent in additionalimg:
-            if not myintent in possibleadtlimg:
-                print("ERROR: Invalid parameter additionalimg. Possible elements are: ")
-                print(possibleadtlimg)
-                return False
                 
     if not type(spwmap) == list:
         print("ERROR: invalid spwmap, must be list: "+str(spwmap))
@@ -414,9 +514,11 @@ def generateImagingScript(vis="", draft_threshold="", reqchanwidth=1, makecubes=
     print("chanwidthtol = "+str(chanwidthtol))
     print("restfreqs = "+str(restfreqs))
     print("additionalimg = "+str(additionalimg))
+    print("additionalimg_fields = "+str(additionalimg_fields))
+    print("additionalimg_fields = "+str(additionalimg_fields))
+    print("vissforfields = "+str(vissforfields))
     print("spwmap = "+str(spwmap))
     print("perchanweightdensity = "+str(perchanweightdensity))
-    print
     
     # parameters verified
 
@@ -488,6 +590,11 @@ def generateImagingScript(vis="", draft_threshold="", reqchanwidth=1, makecubes=
     stext = printstrarray(myviss, "thevis")
     scriptfile.write("\n"+stext)
 
+    # sessions
+    if len(vissforsessions.keys())>1:
+        stext = str(vissforsessions)
+        scriptfile.write("thesessions = "+stext+"\n\n")
+    
     # therestfreqs
     if makecubes:
 
@@ -651,8 +758,13 @@ def generateImagingScript(vis="", draft_threshold="", reqchanwidth=1, makecubes=
             contsubinfile = myviss[0]
 
         if targetfielddicts[0]['spwids'][0] > 11: # looks like the calibrated MS uses the original SPW IDs
-            # uvcontsub will renumber these to consecutive IDs starting at 0
-            usereindexedspwids=True
+            if aU.getCasaVersion() < '6.5.4':
+                # uvcontsub will renumber these to consecutive IDs starting at 0
+                usereindexedspwids=True
+            elif usereindexedspwidsincontsub:
+                # we will apply mstransform with reindexing before uvcontsub and so the SPW IDs with be reindexed as well
+                usereindexedspwids=True
+                
         if targetfielddicts[0]['ismosaic']:
             # since uvcontsub reindexes the fields, need to pay attention to the phase center
             usereindexedfieldids=True
@@ -667,62 +779,111 @@ def generateImagingScript(vis="", draft_threshold="", reqchanwidth=1, makecubes=
     theintent_extension = thetargetintent[14:] # in the case of "OBSERVE_TARGET#ON_SOURCE" this will be "#ON_SOURCE"
 
     for myintent in additionalimg:
-         adtlfielddicts = findfields(myviss[representativems], myintent+theintent_extension, myspwmap)
 
-         if len(adtlfielddicts)==0:
-             print("\nNOTE: Could not find any fields with intent "+myintent+theintent_extension+" in the given MSs.\n")
-             continue
-   
-         for adtldict in adtlfielddicts:
+        for myfield in additionalimg_fields[myintent]:
 
-             print("\nWorking on field "+str(adtldict['fieldname'])+"\n")
+            if myviss[representativems] in vissforfields[myfield]:
+                adtlimg_repms = myviss[representativems] 
+            else:
+                adtlimg_repms = list(vissforfields[myfield])[0]
+                
+            adtlfielddicts = findfields(adtlimg_repms, myintent+theintent_extension, myspwmap)
 
-             print(adtldict)
+            if len(adtlfielddicts)==0:
+                print("\nNOTE: Could not find any fields with intent "+myintent+theintent_extension+" in the given MSs.\n")
+                continue
 
-             print("\nCreating aggregate bandwidth imaging command ...")
+            for adtldict in adtlfielddicts:
 
-             try:
-                 mypardict =  getimgpars(vis=myviss[representativems], 
-                                         fieldname=str(adtldict['fieldname']), 
-                                         intent=adtldict['intent'], 
-                                         mode='mfs',
-                                         isMosaic=adtldict['ismosaic'],
-                                         isFullPol=adtldict['isfullpol'],
-                                         field=adtldict['fieldids'], 
-                                         spw=adtldict['spwids'],
-                                         spwmap=adtldict['spwmap'])
-             except exceptions.KeyboardInterrupt:
-                 print("ERROR: "+str(sys.exc_info()))
-                 return False
-             except:
-                 print("ERROR: "+str(sys.exc_info()))
-                 casalog.post("ERROR: could not get imaging parameters. Will try to continue ...", 'WARN')
-                 continue
+                if myfield != adtldict['fieldname']: # skip the other fields with the same intent (they will be covered later)
+                    continue
 
-             mypardict['vis'] = 'VARthevis'
-             mypardict['threshold'] = '<your threshold here>'
-             yourthresholdhere = True
+                print("\nWorking on field "+str(adtldict['fieldname'])+"\n")
 
-             stext = "\nos.system('rm -rf "+mypardict['imagename']+"*')\n"
+                print(adtldict)
 
-             stext += printtask(mypardict, mypardict['taskname'])
+                print("\nCreating aggregate bandwidth imaging command(s) ...")
+
+                try:
+                    mypardict =  getimgpars(vis=adtlimg_repms, 
+                                            fieldname=str(adtldict['fieldname']), 
+                                            intent=adtldict['intent'], 
+                                            mode='mfs',
+                                            isMosaic=adtldict['ismosaic'],
+                                            isFullPol=adtldict['isfullpol'],
+                                            field=adtldict['fieldids'], 
+                                            spw=adtldict['spwids'],
+                                            spwmap=adtldict['spwmap'])
+                except exceptions.KeyboardInterrupt:
+                    print("ERROR: "+str(sys.exc_info()))
+                    return False
+                except:
+                    print("ERROR: "+str(sys.exc_info()))
+                    casalog.post("ERROR: could not get imaging parameters. Will try to continue ...", 'WARN')
+                    continue
+
+                # create imaging code per session if requested
+                myviss_per_session = [myviss]
+                sessionstrings = [""]
+                if persession and len(vissforsessions.keys())>1:
+                    myviss_per_session = []
+                    sessionstrings = []
+                    for x in vissforsessions.keys():
+                        myviss_per_session.append(vissforsessions[x])
+                        sessionstrings.append(x)
+
+                origimname = mypardict['imagename']
+                for mysessionnum in range(len(myviss_per_session)):
+                    myvissx = myviss_per_session[mysessionnum]
+                    mysession = sessionstrings[mysessionnum]
+                    if mysession == "": # there is only one session or persession==False
+                        mysessionprint = " "
+                    else:
+                        mysessionprint = " "+mysession+" "
+                    mypardict['imagename'] = origimname+mysession
+                    
+                    myvissforfield = []
+                    for mvis in myvissx:
+                        if mvis in vissforfields[myfield]:
+                            myvissforfield.append(mvis)
+
+                    if len(myvissforfield)>0: # some sessions might not contain observations of this field
+                            
+                        mypardict['vis'] = 'VAR'+str(myvissforfield)
+                        mypardict['threshold'] = '<your threshold here>'
+                        yourthresholdhere = True
+
+                        stext = "\nos.system('rm -rf "+mypardict['imagename']+"*')\n"
+
+                        stext += printtask(mypardict, mypardict['taskname'])
                  
-             stext += "\n"
+                        stext += "\n"
 
-             # move to the standard names so the fits export picks up the right images
-             if mypardict['nterms'] > 1:
+                        # move to the standard names so the fits export picks up the right images
+                        if mypardict['nterms'] > 1:
 
-                 stext += "\nos.system('mv "+mypardict['imagename']+".image.tt0.pbcor "+mypardict['imagename']+".image.pbcor')\n"
-                 stext += "os.system('ln -sf "+mypardict['imagename']+".image.pbcor "+mypardict['imagename']+".image.tt0.pbcor')\n"
-                 stext += "os.system('mv "+mypardict['imagename']+".pb.tt0 "+mypardict['imagename']+".pb')\n"
-                 stext += "os.system('ln -sf "+mypardict['imagename']+".pb "+mypardict['imagename']+".pb.tt0')\n"
+                            stext += "\nos.system('mv "+mypardict['imagename']+".image.tt0.pbcor "+mypardict['imagename']+".image.pbcor')\n"
+                            stext += "os.system('ln -sf "+mypardict['imagename']+".image.pbcor "+mypardict['imagename']+".image.tt0.pbcor')\n"
+                            stext += "os.system('mv "+mypardict['imagename']+".pb.tt0 "+mypardict['imagename']+".pb')\n"
+                            stext += "os.system('ln -sf "+mypardict['imagename']+".pb "+mypardict['imagename']+".pb.tt0')\n"
 
-             # write command
-             sfsdr.addReducScriptStep(scriptfile, mystepdict, 
-                                   "Agg. bandwidth image for non-science target "+adtldict['fieldname']+" (intent "+myintent+"), spws "+str(adtldict['spwids']), 
-                                   stext, mystepindent)
-             # memorize image name for later fits export
-             myimages.add(mypardict['imagename'])
+                        # write command
+                        sfsdr.addReducScriptStep(scriptfile, mystepdict, 
+                                                 "Agg. bandwidth image for"+mysessionprint+"non-science target "+adtldict['fieldname']+" (intent "+myintent+"), spws "+str(adtldict['spwids']), 
+                                                 stext, mystepindent)
+                        # memorize image name for later fits export
+                        myimages.add(mypardict['imagename'])
+
+                    #end if len(myvissforfield)>0
+                        
+                    # restore original name
+                    mypardict['imagename'] = origimname
+                    
+                # end for mysessionnum in range(len(myviss_per_session))
+            # end for adtldict in adtlfielddicts:
+        #end for myfield in additionalimg_fields[myintent]:
+    #end for myintent in additionalimg:
+
 
     # call getimpars to obtain tclean parameters and write tclean commands for science target(s)
 
@@ -811,10 +972,13 @@ def generateImagingScript(vis="", draft_threshold="", reqchanwidth=1, makecubes=
                 mypardict['vis'] = contsubinfile
                 mypardict['field'] = str(tfdict['fieldname'])
                 contsuboutfile = contsubinfile+'_'+mypardict['field']+'.contsub'
-                    
-                stext = printtask(mypardict, mypardict['taskname'])                
-                stext += "\nos.system('rm -rf "+contsuboutfile+"')\n"
-                stext += "os.system('mv "+contsubinfile+".contsub "+contsuboutfile+"')\n"
+                if aU.getCasaVersion() >= '6.5.4':
+                    mypardict['outputvis'] = contsuboutfile
+                
+                stext = printtask(mypardict, mypardict['taskname'])
+                if aU.getCasaVersion() < '6.5.4':
+                    stext += "\nos.system('rm -rf "+contsuboutfile+"')\n"
+                    stext += "os.system('mv "+contsubinfile+".contsub "+contsuboutfile+"')\n"
                 stext += "\n"
 
                 # write command
@@ -859,7 +1023,12 @@ def generateImagingScript(vis="", draft_threshold="", reqchanwidth=1, makecubes=
                     if usereindexedfieldids:
                         if tfdict['ismosaic'] and not tfdict['isephem']:
                             oldphasecenter = mypardict['phasecenter']
-                            mypardict['phasecenter'] = tfdict['fieldids'].index(oldphasecenter)
+                            if oldphasecenter in tfdict['fieldids']:
+                                mypardict['phasecenter'] = tfdict['fieldids'].index(oldphasecenter)
+                            else:
+                                casalog.post('The automatically picked phasecenter '+str(oldphasecenter)+' is not among the fields for the target: '+str(sorted(tfdict['fieldids'])), 'WARN')
+                                casalog.post('Will set the phasecenter to dummy value X. Please correct the script manually.','WARN')
+                                mypardict['phasecenter'] = 'X'
                         # also: remove the comment from the field parameter
                         mypardict['field'] = str(tfdict['fieldname'])
                 else:
@@ -960,7 +1129,7 @@ def generateImagingScript(vis="", draft_threshold="", reqchanwidth=1, makecubes=
         print("  This may mean that the mosaic coverage was incomplete in some of the MSs. Please check.")
         print
     if makecubes:
-        print("NOTE that you need still need to edit the script:")
+        print("NOTE that you still need to edit the script:")
         if len(discrepantfields)>0:
             print("  - for mosaic fields "+str(discrepantfields)+" you may need to adjust the phasecenter")
             print("    since the discrepant field setup of the individual input MSs may have led to an")
@@ -1136,6 +1305,7 @@ def getimgpars(vis='', fieldname='', intent='', mode='', isMosaic=False, isEphem
     and generate a dictionary of all tclean parameters for each targetfield
     
     Input parameters and values:
+      vis           = Input visibilities (.ms files)
       fieldname     = name of the field source. e.g. 'NGC253'.
       intent        = Observation intent (same as intent in listobs). e.g. 'OBSERVE_TARGET#ON_SOURCE'.
       mode          = imaging mode. 'mfs' or 'cube'.
@@ -1159,7 +1329,7 @@ def getimgpars(vis='', fieldname='', intent='', mode='', isMosaic=False, isEphem
                       fractional bandwidth >= 10%; 'clarkstokes' for full polarisation
       imsize        = Obtained from au.pickCellSize
       cell          = Obtained from au.pickCellSize
-      phasecenter   = Obtained from au.pickCellSize
+      phasecenter   = Obtained from au.pickCellSize or au.plotmosaic
       niter         = default to 100
       nchan         = default: -1
       weighting     = 'briggsbwtaper' # for cubes, 'briggs' otherwise
@@ -1291,18 +1461,20 @@ def getimgpars(vis='', fieldname='', intent='', mode='', isMosaic=False, isEphem
     if thespecmode == 'cube' and aU.getCasaVersion() >= '6.2.0':
         theweighting = 'briggsbwtaper'
 
+    mymsmd.open(thevis)
+    myspwbws = mymsmd.bandwidths(thespw)
+    myfreqs = []
+    for mysp in thespw:
+        mycf = mymsmd.chanfreqs(mysp)
+        myfreqs.append(min(mycf))
+        myfreqs.append(max(mycf))
+        
+    mymsmd.close()
+
+        
     # for mode mfs, determine fractional bandwidth
     thefracbw = 0.
     if (thespecmode=='mfs' or thespecmode=='cont'):
-        mymsmd.open(thevis)
-        myspwbws = mymsmd.bandwidths(thespw)
-        myfreqs = []
-        for mysp in thespw:
-            mycf = mymsmd.chanfreqs(mysp)
-            myfreqs.append(min(mycf))
-            myfreqs.append(max(mycf))
-
-        mymsmd.close()
 
         mytotalbwhz = max(myfreqs) - min(myfreqs)
         thefracbw = mytotalbwhz * 2./(min(myfreqs)+max(myfreqs))
@@ -1409,14 +1581,32 @@ def getimgpars(vis='', fieldname='', intent='', mode='', isMosaic=False, isEphem
         mypblevel=0.1 # to make sure the mosaic size is large enough
 
     try:
-        thecellsize, theimsize, thephasecenter = aU.pickCellSize(vis=thevis, 
-                                                                 #spw=int(thespw[0]), # not giving spw will use mean freq of all 
-                                                                 intent=theintent, 
-                                                                 imsize=True, 
-                                                                 cellstring=True,
-                                                                 pblevel=mypblevel,
-                                                                 sourcename=thefieldname,
-                                                                 verbose=False)
+        if isMosaic:
+            baselineStats = aU.getBaselineStats(msFile=thevis,verbose=False,percentile=95)[0] # length of L95
+            npix = 5. # desired number of pixels across beam
+            meanfreqhz =  (max(myfreqs) + min(myfreqs))/2.
+            cellsize = aU.printBaselineAngularScale(baselineStats,meanfreqhz*1e-9,verbose=False) / npix
+            thecellsize = aU.roundFiguresToString(cellsize,2)+'arcsec'
+            cellsize = aU.roundFigures(cellsize,2)
+            thephasecenter, raMax, raMin, decMax, decMin = aU.plotmosaic(vis=thevis, figfile=thevis+'_'+thefieldname+'_mosaic-layout.png',
+                                                                         sourceid=thefieldname, field=thefieldids,
+                                                                         sciencespws=True, # avoids Tsys only fields
+                                                                         pblevel=mypblevel)
+            fullsize = [int(np.ceil(abs(raMax-raMin)/cellsize)), 
+                        int(np.ceil(abs(decMax-decMin)/cellsize))]
+            theimsize = [int(aU.getOptimumSize(fullsize[0])),
+                         int(aU.getOptimumSize(fullsize[1]))]
+        else:
+            
+            thecellsize, theimsize, thephasecenter = aU.pickCellSize(vis=thevis, 
+                                                                     #spw=int(thespw[0]), # not giving spw will use mean freq of all 
+                                                                     intent=theintent, 
+                                                                     imsize=True, 
+                                                                     cellstring=True,
+                                                                     pblevel=mypblevel,
+                                                                     sourcename=thefieldname,
+                                                                     verbose=False)
+
     except:
         casalog.post("ERROR: in call to aU.pickCellSize - "+str(sys.exc_info()), 'WARN')
         casalog.post("       Your version of the analysisUtils may be broken.", 'WARN')
@@ -1497,15 +1687,23 @@ def getcontsubpars(spws='', fitspw=''):
         sp += str(mysp)+',' 
     sp = sp[:len(sp)-1] 
 
-    out_dict = { 'taskname': 'uvcontsub',
-                 'vis': 'calibrated.ms',
-                 'spw': sp,
-                 'fitspw': fitspw,
-                 'excludechans': False,
-                 'combine': '',
-                 'solint': 'int',
-                 'fitorder': 1,
-                 'want_cont': False}
+    if aU.getCasaVersion() < '6.5.4':
+        out_dict = { 'taskname': 'uvcontsub',
+                     'vis': 'calibrated.ms',
+                     'spw': sp,
+                     'fitspw': fitspw,
+                     'excludechans': False,
+                     'combine': '',
+                     'solint': 'int',
+                     'fitorder': 1,
+                     'want_cont': False}
+    else:
+        out_dict = { 'taskname': 'uvcontsub',
+                     'vis': 'calibrated.ms',
+                     'outputvis': '',
+                     'spw': sp,
+                     'fitspec': fitspw,
+                     'fitorder': 1}
 
     return out_dict
 
@@ -1613,7 +1811,7 @@ def printtask(pardict=None, taskstr="", addidnt=""):
     rval += firstkey + " = "
     thevalue = pardict[firstkey]
     if type(thevalue) == str:
-        if thevalue[:3] == "VAR": # this is meant as a variable name 
+        if thevalue[:3] == "VAR": # this is meant as a variable name or other verbatim string 
             rval += thevalue[3:] + ",\n"
         elif ", " in thevalue: # this is a string with comma already contained
             rval += thevalue + "\n"
@@ -1853,7 +2051,7 @@ def printfullpolanalysis():
     rval += "  results[inimageIQUV]['errorPI'] = math.sqrt( (fluxQ*errorQ)**2 + (fluxU*errorU)**2 ) / fluxPI\n"
     rval += "  errorPI = results[inimageIQUV]['errorPI']\n"
     rval += "  results[inimageIQUV]['polAngle'] = 0.5 * math.degrees( math.atan2(fluxU,fluxQ) )\n"
-    rval += "  results[inimageIQUV]['errPA'] = 0.5 * math.degrees( errorPI / fluxPI )\n"
+    rval += "  results[inimageIQUV]['errPA'] = 0.5 * math.degrees( math.sqrt( (fluxU*errorQ)**2 + (fluxQ*errorU)**2 ) / fluxPI**2 )\n" # equ. 2 of 2024ApJ...963..104L
     rval += "\n"        
     rval += "print('  Computing image RMS ...')\n"
     rval += "imagecontresidual = glob.glob('*_sci*.cont.IQUV.manual.residual')\n"
@@ -1875,7 +2073,7 @@ def printfullpolanalysis():
     rval += "  poliimage = inimage.replace('.IQUV.', '.P.')\n"
     rval += "  os.system('rm -rf '+poliimage)\n"
     rval += "  immath(outfile=poliimage,\n"
-    rval += "     mode='poli',\n"
+    rval += "     mode='lpoli',\n" # linear polarization, SCIREQ-2986
     rval += "     imagename = inimage,\n"
     rval += "     sigma='0.0Jy/beam')\n"
     rval += "\n"        
@@ -1897,5 +2095,115 @@ def printfullpolanalysis():
     rval += "    print(results[x])\n" 
     rval += "\n  sys.stdout = stdout_orig\n"
     rval += "\n"        
+
+    return rval
+
+
+def printimgscriptwpltasks(viss, casaversion, options=''):
+    
+    """
+    Print the PL-task-based imaging script 
+    (using ALMA Cycle 10 pipeline tasks)
+    viss = list of input MSs
+    casaversion = casa version string as obtained from aU.getCasaVersion()
+    options = True or string
+    """
+
+    verifiedversions = ['6.5.4-9', '6.6.1-17']
+    verifiedversion = verifiedversions[-1] # by default use latest version
+    if casaversion.count('.') == 3:
+        mycasaversion = casaversion[:casaversion.rfind('.')] + '-' + casaversion[casaversion.rfind('.') + 1:]
+    else:
+        mycasaversion = casaversion
+
+    if mycasaversion in verifiedversions:
+        verifiedversion = mycasaversion
+    else:
+        casalog.post('WARNING: you are running CASA '+mycasaversion
+                     +', but the versions for which the pipeline task calls were verified are '
+                     +str(verifiedversions), 'WARN')
+        verifiedversions.append(mycasaversion)
+        verifiedversions.sort()
+        myvindex = verifiedversions.index(mycasaversion)
+        if myvindex==0: # present version predates first verified
+            verifiedversion = verifiedversions[1]
+        else: # take the previous verified
+            verifiedversion = verifiedversions[myvindex-1]
+            
+    print('Producing imaging script for use with ALMA PL CASA version '+str(verifiedversion)+' .')
+
+    if verifiedversion in ['6.5.4-9', '6.6.1-17']:
+
+        rval = "# Imaging script for use with ALMA PL CASA version "+verifiedversion+"\n\n"
+        rval += "import os\n"
+        rval += "import sys\n\n"
+        rval += "mymss = ['"+viss[0]+"'"
+        for myvis in viss[1:]:
+            rval += ", '"+myvis+"'"
+        rval += "]\n\n"
+        rval += "for myms in mymss:\n"
+        rval += "    if not os.path.exists(myms+'.flagversions'):\n"
+        rval += "        print('Not found: '+myms+'.flagversions')\n"
+        rval += "        sys.exit('ERROR: you must provide the flagversions files for all input MSs.')\n\n"
+        rval += "context = h_init()\n\n"
+
+        if options == 'basic':
+
+            rval += "hifa_importdata(mymss)\n"
+            rval += "hif_makeimlist(intent='CHECK')\n"
+            rval += "hif_makeimages()\n"
+            rval += "hif_mstransform()\n"
+            rval += "hifa_flagtargets()\n"
+            rval += "hifa_imageprecheck()\n"
+            rval += "hif_checkproductsize(maxcubesize=40.0, maxcubelimit=100.0, maxproductsize=500.0)\n"
+            rval += "hif_makeimlist(specmode='mfs')\n"
+            rval += "hif_findcont()\n"
+            rval += "hif_uvcontsub()\n"
+            rval += "hif_makeimages()\n"
+            rval += "hif_makeimlist(specmode='cont')\n"
+            rval += "hif_makeimages()\n"
+            rval += "hif_makeimlist(specmode='cube')\n"
+            rval += "hif_makeimages()\n"
+            rval += "hifa_exportdata()\n"
+            rval += "h_save()\n"
+        
+        else:
+            
+            rval += "try:\n"
+            rval += "    hifa_importdata(vis=mymss)\n"
+            rval += "    hif_makeimlist(intent='PHASE,BANDPASS,AMPLITUDE')\n"
+            rval += "    hif_makeimages()\n"
+            rval += "    hif_makeimlist(intent='CHECK', per_eb=True)\n"
+            rval += "    hif_makeimages()\n"
+            rval += "    hif_mstransform()\n"
+            rval += "    hifa_flagtargets()\n"
+            rval += "    hifa_imageprecheck()\n"
+            rval += "    hif_checkproductsize(maxcubesize=40.0, maxcubelimit=100.0, maxproductsize=500.0)\n"
+            rval += "    hif_makeimlist(specmode='mfs')\n"
+            rval += "    hif_findcont()\n"
+            rval += "    hif_uvcontsub()\n"
+            rval += "    hif_makeimages()\n"
+            rval += "    hif_makeimlist(specmode='cont')\n"
+            rval += "    hif_makeimages()\n"
+            rval += "    hif_makeimlist(specmode='cube')\n"
+            rval += "    hif_makeimages()\n"
+            rval += "    hif_makeimlist(specmode='repBW')\n"
+            rval += "    hif_makeimages()\n\n"
+            rval += "    ## After regular images are made, we try selfcal.\n"
+            rval += "    ## If selfcal is successful, we make all selfcal products.\n"
+            rval += "    ## If not, new images will *not* be made and subsequent imaging calls are no-ops.\n\n" 
+            rval += "    hif_selfcal()\n"
+            rval += "    hif_makeimlist(specmode='mfs', datatype='selfcal')\n"
+            rval += "    hif_makeimages()\n"
+            rval += "    hif_makeimlist(specmode='cont', datatype='selfcal')\n"
+            rval += "    hif_makeimages()\n"
+            rval += "    hif_makeimlist(specmode='cube', datatype='selfcal')\n"
+            rval += "    hif_makeimages()\n"
+            rval += "    hif_makeimlist(specmode='repBW', datatype='selfcal')\n"
+            rval += "    hif_makeimages()\n"
+            rval += "    hifa_exportdata()\n"
+            rval += "finally:\n"
+            rval += "    h_save()\n"
+
 
     return rval
