@@ -1226,7 +1226,7 @@ class radio_image_analysis():
                  sigma_level=3, sigma_mask=6,vmin_factor=3,last_level=3,
                  results=None,mask_component=None,
                  npixels=128,kernel_size=21,fwhm=81,
-                 SAVE=True, show_figure=True):
+                 SAVE=True, show_figure=True, verbose=0):
         self.input_data = input_data
         # self.logger = logger
         self.crop = crop
@@ -1247,6 +1247,7 @@ class radio_image_analysis():
         self.results = results
         self.SAVE = SAVE
         self.show_figure = show_figure
+        self.verbose = verbose
 
         self.image_properties()
 
@@ -1292,7 +1293,8 @@ class radio_image_analysis():
                                            vmin_factor=self.vmin_factor,
                                            results=self.results,
                                            show_figure=self.show_figure,
-                                           logger=_logging_.logger)
+                                           logger=_logging_.logger,
+                                           verbose=self.verbose)
         
         # self.img_stats = \
         #     mlibs.get_image_statistics(imagename=self.input_data.filename,
@@ -3939,6 +3941,11 @@ if __name__ == '__main__':
     #                     const=True,
     #                     help='Perform Sersoc Image Fitting for optical data.')
 
+    parser.add_argument('-verbose',  '--verbose', type=int, default=0,
+                        help='Verbosity of the image analysis printouts: 0 (quiet), '
+                             '1 (flux density summary) or 2 (also centres, moments '
+                             'and convex hull geometry).')
+
     parser.add_argument('-noshow',  '--noshow', required=False,  nargs='?',
                         default=False,  const=True,
                         help='Do not show plots.')
@@ -4105,7 +4112,8 @@ if __name__ == '__main__':
             input_data = read_data(filename=args.filename,
                                 residualname=args.residualname,)
             if "--image_stats" in sys.argv:
-                radio_image_analysis(input_data, z=args.redshift)
+                radio_image_analysis(input_data, z=args.redshift,
+                                     verbose=args.verbose)
             if "--find_sources" in sys.argv:
                 SE = source_extraction(input_data,sigma=args.sigma,
                                 ell_size_factor=args.ell_size_factor,obs_type=args.obs_type)
