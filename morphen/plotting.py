@@ -4517,6 +4517,37 @@ def eimshow_v2(imagename, crop=False, box_size=128, center=None, with_wcs=True,
     else:
         return ax
 
+def _in_notebook():
+    """True when running inside a Jupyter kernel (where IPython rich display renders)."""
+    try:
+        from IPython import get_ipython
+        return get_ipython().__class__.__name__ == 'ZMQInteractiveShell'
+    except Exception:
+        return False
+
+
+def show_or_display(fig, dpi=100):
+    """
+    Show a figure that was built outside pyplot (`matplotlib.figure.Figure`).
+
+    In a notebook, the figure is rasterised to a PNG and shown with IPython
+    `display`, so it can be released right after (see `clear_figure`).
+    Outside a notebook (e.g. `python morphen.py ... --show`), `display` only
+    prints the object repr, so the figure is instead registered with pyplot's
+    figure manager, and a later `plt.show()` opens it in a window.
+    """
+    if _in_notebook():
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', dpi=dpi, bbox_inches='tight')
+        buf.seek(0)
+        display(Image(data=buf.read()))
+        buf.close()
+    else:
+        manager = plt.figure(figsize=fig.get_size_inches()).canvas.manager
+        manager.canvas.figure = fig
+        fig.set_canvas(manager.canvas)
+
+
 def clear_figure(fig_or_ax=None, show=False, dpi=100, close_all=False):
     """
     Free the memory held by a figure, optionally displaying it first.

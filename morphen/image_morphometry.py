@@ -6363,11 +6363,7 @@ def compute_image_properties(img, residual,
                 _save = (plot_savemane if plot_savemane is not None
                          else img.replace('.fits', '_Lgrow_levels') + add_save_name + ext)
                 fig.savefig(_save, dpi=300, bbox_inches='tight')
-            buf = io.BytesIO()
-            fig.savefig(buf, format='png', dpi=100, bbox_inches='tight')
-            buf.seek(0)
-            display(Image(data=buf.read()))
-            buf.close()
+            show_or_display(fig, dpi=100)
             del fig
             gc.collect()
         except Exception as e:

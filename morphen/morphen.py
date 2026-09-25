@@ -1276,7 +1276,7 @@ class radio_image_analysis():
         #                            show_figure=config.show_plots)
         #
         _logging_.logger.info("Computing image properties.")
-        self.levels, self.fluxes, self.Lgrow, self.radii, \
+        self.levels, self.fluxes, self.Lgrow, self.Lgrow_err, self.Lgrow_norm, self.Lgrow_err_norm, self.radii, \
             self.agrow, self.omask, self.mask, self.results_im_props = \
             mlibs.compute_image_properties(img=self.input_data.filename,
                                            cell_size=self.cell_size,
