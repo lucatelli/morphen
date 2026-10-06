@@ -1,10 +1,10 @@
-name: morphen310
+name: morphen312_v1_0
 channels:
   - conda-forge
   - pkgw-forge
   - defaults
 dependencies:
-  - python=3.10
+  - python=3.12
   - casacore
   # - aoflagger
   # - boost
@@ -12,7 +12,11 @@ dependencies:
   - pyzmq
   - pip
   - pip:
-    - casatools
+    # casatools 6.7.6.x bundles libssl/libldap built against an OpenSSL whose
+    # symbols (EVP_md2, OPENSSL_3.0.1) the conda-forge libcrypto 3.6 doesn't
+    # provide, so `import casatools` fails. 6.7.3.21 is tested and works.
+    - casatools==6.7.3.21
+    - casatasks==6.7.3.21
     - casaplotms
     - casadata
     - casaviewer
@@ -45,7 +49,12 @@ dependencies:
     - datashader
     - scikit-image
     - scikit-learn
-    - petrofit
+    # petrofit 0.5.x (the last release for python < 3.12) ships an
+    # astropy-template _astropy_init.py that imports update_default_config,
+    # removed in astropy 5+, so `import petrofit` fails. 0.6.0 dropped that
+    # file but needs python >= 3.12. The pin makes pip fail loudly instead of
+    # silently resolving to 0.5.0 if python is ever lowered again.
+    - petrofit>=0.6.0
     - photutils
     - sep
     - fitsio
@@ -59,4 +68,4 @@ dependencies:
     # - h5py
 #    - "jax[cuda12_pip] >= 0.4.13"  # Ensure compatibility with CUDA 12
 #    - -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-    # - "jax[cpu]"
+    - "jax[cpu]"
