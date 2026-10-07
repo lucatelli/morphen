@@ -1,0 +1,68 @@
+# Legacy python 3.10 environment, kept as a fallback for environment.yml.
+# On python < 3.12 pip resolves petrofit to 0.5.0, whose petrofit/_astropy_init.py
+# imports astropy.config.configuration.update_default_config (removed in
+# astropy 5+), so `import petrofit` fails. After creating this env, run once:
+#   conda activate morphen310_v1_0
+#   python patch_petrofit.py
+name: morphen310_v1_0
+channels:
+  - conda-forge
+  - pkgw-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - casacore
+  # - aoflagger
+  # - boost
+  - pillow
+  - pyzmq
+  - pip
+  - pip:
+    - casatools
+    - casaplotms
+    - casadata
+    - casaviewer
+    - casaplotserver
+    - casalogger
+    - protobuf==3.20.3
+    - ipython
+    - notebook
+    - jupyter
+    # visualise_alignment's slider mode; arrives via jupyter
+    # anyway, but the dependency is real, so declare it.
+    - ipywidgets
+    - tqdm
+    - matplotlib
+    - corner
+    - sympy
+    - cmasher
+    - coloredlogs
+    - scipy
+    - numpy
+    - astropy
+    - pandas==2.2.3
+    - astroquery
+    - tableprint
+    # optional: enables shift_correction_mode='chi2_shift' / 'ensemble'
+    # in image_alignment.py. Everything else works without it.
+    - image_registration
+    - prettytable
+    - dynesty
+    - datashader
+    - scikit-image
+    - scikit-learn
+    - petrofit
+    - photutils
+    - sep
+    - fitsio
+    # - astrodendro
+    # - bdsf
+    - lmfit==1.1.0
+    - emcee
+    - corner
+    # - bilby
+    # - arviz
+    # - h5py
+#    - "jax[cuda12_pip] >= 0.4.13"  # Ensure compatibility with CUDA 12
+#    - -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+    - "jax[cpu]"

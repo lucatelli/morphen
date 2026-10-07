@@ -1,26 +1,44 @@
-name: morphen
+# macOS (Apple Silicon, native arm64 - no Rosetta) environment.
+# Mirrors environment.yml; differences are marked "mac:" below.
+#   conda env create -f environment_mac.yml
+# CASA 6.7 ships macOS wheels only for arm64 (the pinned casatools 6.7.3.21,
+# casaplotms, casalogger, casaplotserver: macOS 15+), and no Intel-mac wheels at
+# all for python 3.12, so the old `arch -x86_64` (Rosetta) route no longer works.
+# The previous python 3.8 / Rosetta file is kept as environment_mac_py38.yml.
+name: morphen312_v1_0
 channels:
   - conda-forge
   - pkgw-forge
   - defaults
 dependencies:
-  - python=3.8
+  - python=3.12
   - casacore
-#  - aoflagger=2.15.0
-#  - boost==1.70.0
+  # - aoflagger
+  # - boost
+  - pillow
+  - pyzmq
   - pip
   - pip:
-    - casatools==6.5.1.23
-    - casatasks==6.5.1.23
+    # casatools 6.7.6.x bundles libssl/libldap built against an OpenSSL whose
+    # symbols (EVP_md2, OPENSSL_3.0.1) the conda-forge libcrypto 3.6 doesn't
+    # provide, so `import casatools` fails. 6.7.3.21 is tested and works.
+    - casatools==6.7.3.21
+    - casatasks==6.7.3.21
     - casaplotms
     - casadata
-    - casaviewer
+    # mac: casaviewer has no macOS wheel on PyPI (linux only), so imview is
+    # unavailable; view images with e.g. visage/ or CARTA instead.
+    # - casaviewer
     - casaplotserver
     - casalogger
+    # pinned for casaviewer on linux; kept for parity with environment.yml
     - protobuf==3.20.3
     - ipython
     - notebook
     - jupyter
+    # visualise_alignment's slider mode; arrives via jupyter
+    # anyway, but the dependency is real, so declare it.
+    - ipywidgets
     - tqdm
     - matplotlib
     - corner
@@ -30,25 +48,34 @@ dependencies:
     - scipy
     - numpy
     - astropy
-    - pandas
+    - pandas==2.2.3
     - astroquery
     - tableprint
+    # optional: enables shift_correction_mode='chi2_shift' / 'ensemble'
+    # in image_alignment.py. Everything else works without it.
+    - image_registration
     - prettytable
     - dynesty
     - datashader
     - scikit-image
     - scikit-learn
-    - petrofit
+    # petrofit 0.5.x (the last release for python < 3.12) ships an
+    # astropy-template _astropy_init.py that imports update_default_config,
+    # removed in astropy 5+, so `import petrofit` fails. 0.6.0 dropped that
+    # file but needs python >= 3.12. The pin makes pip fail loudly instead of
+    # silently resolving to 0.5.0 if python is ever lowered again.
+    - petrofit>=0.6.0
     - photutils
     - sep
     - fitsio
-    - astrodendro
-    - bdsf
+    # - astrodendro
+    # - bdsf
     - lmfit==1.1.0
     - emcee
     - corner
-    - arviz
-    - h5py
+    # - bilby
+    # - arviz
+    # - h5py
 #    - "jax[cuda12_pip] >= 0.4.13"  # Ensure compatibility with CUDA 12
 #    - -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
     - "jax[cpu]"
