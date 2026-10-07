@@ -1,4 +1,4 @@
-"""
+r"""
  __  __       _   _
 |  \/  | __ _| |_| |__
 | |\/| |/ _` | __| '_ \
@@ -223,7 +223,7 @@ def deconvolve_fft(image, psf):
     deconvolved_scaled = (image/np.mean(image)) * deconvolved_norm
     return deconvolved_scaled, deconvolved_norm
 
-"""
+r"""
  __  __       _   _
 |  \/  | __ _| |_| |__
 | |\/| |/ _` | __| '_ \
@@ -533,7 +533,7 @@ def read_imfit_params(fileParams,return_names=False):
 
 
 
-"""
+r"""
 
                         ___
                        |_ _|_ __ ___   __ _  __ _  ___

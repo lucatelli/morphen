@@ -1682,12 +1682,12 @@ def mask_dilation_from_mask(image, mask_init, cell_size=None, sigma=3,rms=None,
         fig = plt.figure(figsize=(15, 4))
         ax0 = fig.add_subplot(1, 4, 1)
         ax0.imshow((mask3), origin='lower')
-        ax0.set_title(r'Mask above' + str(3) + '$\sigma$')
+        ax0.set_title(r'Mask above' + str(3) + r'$\sigma$')
         ax0.axis('off')
         ax1 = fig.add_subplot(1, 4, 2)
         #         ax1.legend(loc='lower left')
         ax1.imshow((mask), origin='lower')
-        ax1.set_title(r'Mask above' + str(sigma) + '$\sigma$')
+        ax1.set_title(r'Mask above' + str(sigma) + r'$\sigma$')
         ax1.axis('off')
         ax2 = fig.add_subplot(1, 4, 3)
         ax2.imshow(data_mask_d, origin='lower')
@@ -3314,7 +3314,7 @@ def find_fractional_radius(cumulative_flux, radii,
                  markersize=10, label=f'R{fraction*100:.0f}%')
         plt.axvline(radius_at_fraction, color='r', linestyle='--')
         plt.axvline(radius_at_fraction - fraction_radius_error_mean,
-                    color='gray', linestyle=':', label='$\pm 1\sigma$')
+                    color='gray', linestyle=':', label=r'$\pm 1\sigma$')
         plt.axvline(radius_at_fraction + fraction_radius_error_mean,
                     color='gray', linestyle=':')
         plt.ylabel('Cumulative Flux')
@@ -4903,7 +4903,7 @@ def compute_image_properties_old(img, residual,
                     )
 
         ax1.axvline(C50radii*cell_size,
-                    label=r"$R_{50}\sim~$"f"{C50radii*cell_size:0.3f}$\pm"f"{C50radii_err*cell_size:0.3f}''$",
+                    label=r"$R_{50}\sim~$"rf"{C50radii*cell_size:0.3f}$\pm"f"{C50radii_err*cell_size:0.3f}''$",
                     ls='-.', color='lime',lw=4)
 
         ax1.axhline(L50_norm, ls='-.', color='lime',lw=4)
@@ -4916,12 +4916,12 @@ def compute_image_properties_old(img, residual,
                     # label=f'$R_{{50}}$ uncertainty'
                     )
         ax1.axvline(C95radii*cell_size,
-                    label=r"$R_{95}\sim~$"f"{C95radii*cell_size:0.3f}$\pm"f"{C95radii_err*cell_size:0.3f}''$",
+                    label=r"$R_{95}\sim~$"rf"{C95radii*cell_size:0.3f}$\pm"f"{C95radii_err*cell_size:0.3f}''$",
                     color='#4daf4a',lw=3)
         # ax1.plot(C95radii*cell_size,L95_norm,'rx',markersize=10)
         ax1.set_title("Integrated Flux Density \n "
                     r"$S_{\nu} =$ "
-                    f"{flux_conversion*total_flux:.3f} $\pm ~ {flux_conversion*total_flux_density_error:.3f}$ [mJy]")
+                    rf"{flux_conversion*total_flux:.3f} $\pm ~ {flux_conversion*total_flux_density_error:.3f}$ [mJy]")
 
         ax1.set_xlabel(fr'Projected Circular Radius $R$ [{scale_units}]')
         ax1.set_ylabel(r"Normalised  ~  FGC   $~S_{\nu}(\leq R)$")
@@ -7150,7 +7150,7 @@ make_flux_vs_std = deprecated("make_flux_vs_std",
 
 
 
-"""
+r"""
  __  __                  _                          _              
 |  \/  | ___  _ __ _ __ | |__   ___  _ __ ___   ___| |_ _ __ _   _ 
 | |\/| |/ _ \| '__| '_ \| '_ \ / _ \| '_ ` _ \ / _ \ __| '__| | | |

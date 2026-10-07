@@ -2338,7 +2338,7 @@ def expand_limits(factor=2.0):
 
 
 def spectral_correction(data, data_frequency, target_frequency, spectral_index):
-    """
+    r"""
     Apply spectral correction to a radio image or a flux measurement using a power-law model.
 
     Parameters:

@@ -439,7 +439,7 @@ def plot_ellipse_profiles(profiles,
     # Plot surface brightness profile
     axs[0, 0].plot(profiles['r_min'], np.asarray(profiles['intensity'])*1000, 'k.', ms=3)
     axs[0, 0].set_xlabel('Semi-minor axis (pixels)')
-    axs[0, 0].set_ylabel('$\log I$ (mJy/beam)')
+    axs[0, 0].set_ylabel(r'$\log I$ (mJy/beam)')
     # axs[0, 0].invert_yaxis()
     axs[0, 0].set_yscale('log')
     axs[0, 0].grid(True, alpha=0.3)
@@ -462,7 +462,7 @@ def plot_ellipse_profiles(profiles,
     # Plot intensity profile
     axs[1, 1].plot(profiles['r_maj'], np.asarray(profiles['intensity'])*1000, 'g.', ms=3)
     axs[1, 1].set_xlabel('Semi-major axis (pixels)')
-    axs[1, 1].set_ylabel('$\log I$ (mJy/beam)')
+    axs[1, 1].set_ylabel(r'$\log I$ (mJy/beam)')
     axs[1, 1].set_yscale('log')
     axs[1, 1].grid(True, alpha=0.3)
     

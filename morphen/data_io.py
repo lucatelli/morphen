@@ -2834,7 +2834,7 @@ def get_pixel_from_radec(image_input, ra_deg, dec_deg):
 
 
 
-"""
+r"""
  ____              _
 / ___|  __ ___   _(_)_ __   __ _
 \___ \ / _` \ \ / / | '_ \ / _` |

@@ -1036,7 +1036,7 @@ def convolve_2D_smooth(imagename, imagename2=None,
 
 
 
-"""
+r"""
  ____  _               _          
 |  _ \| |__  _   _ ___(_) ___ ___ 
 | |_) | '_ \| | | / __| |/ __/ __|
@@ -1153,7 +1153,7 @@ def deconv_R50(R50conv,theta12):
     return(np.sqrt(4*R50conv**2.0 - theta12**2.0 )/2)
 
 def phi_source(OH,SpH,OL,SpL):
-    """
+    r"""
     ## Source Sizes
     If the circular Gaussian source is imaged with two different resolutions
     $\theta_H$ and $\theta_L$, the ratio of the image peak brightnesses is
@@ -3227,8 +3227,8 @@ def plot_uwave_vwave(vis,color=None,fig=None,ax=None,alpha=1.0,
                  np.nanmax([np.nanmax(v_points_max), np.nanmax(u_points_max)])]
     
     if plot_axes == True:
-        ax.set_xlabel('$u$ [k$\lambda$]')
-        ax.set_ylabel('$v$ [k$\lambda$]')
+        ax.set_xlabel(r'$u$ [k$\lambda$]')
+        ax.set_ylabel(r'$v$ [k$\lambda$]')
         # ax.grid()
         if title_text is not None:
             ax.set_title(title_text)
@@ -3378,8 +3378,8 @@ def plot_uwave_vwave_v3(vis,color=None,fig=None,ax=None,alpha=1.0,
                  np.nanmax([np.nanmax(v_points_max), np.nanmax(u_points_max)])]
     
     if plot_axes == True:
-        ax.set_xlabel('$u$ [k$\lambda$]')
-        ax.set_ylabel('$v$ [k$\lambda$]')
+        ax.set_xlabel(r'$u$ [k$\lambda$]')
+        ax.set_ylabel(r'$v$ [k$\lambda$]')
         # ax.grid()
         if title_text is not None:
             ax.set_title(title_text)

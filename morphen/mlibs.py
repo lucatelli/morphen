@@ -1,4 +1,4 @@
-"""
+r"""
                                                           ..___|**_
                                                   .|||||||||*+@+*__*++.
                                               _||||.           .*+;].,#_
@@ -250,9 +250,8 @@ except:
 
 
 # sys.path.append('../../scripts/analysis_scripts/')
-sys.path.append('./analysis_scripts/')
-
 morphen_path = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.join(morphen_path, 'analysis_scripts'))
 print(f' > {__package_name__} path: {morphen_path}')
 # libs_path = os.path.join(current_dir, "config.py")
 
