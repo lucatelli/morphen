@@ -1,4 +1,4 @@
-"""
+r"""
                                                           ..___|**_
                                                   .|||||||||*+@+*__*++.
                                               _||||.           .*+;].,#_
@@ -40,8 +40,11 @@ import matplotlib as mpl
 import logging
 from matplotlib import use as mpluse
 # sys.path.append("/mirror/scratch/lucatelli/app/miniconda3/envs/casa6/lib/python3.8/site-packages/")
-sys.path.append('./')
-sys.path.append('./analysis_scripts/')
+# Resolve sibling modules (mlibs, analysis_scripts/) relative to this file,
+# not the current working directory, so the CLI works from any folder.
+_morphen_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(_morphen_dir)
+sys.path.append(os.path.join(_morphen_dir, 'analysis_scripts'))
 # import sys
 import mlibs as mlibs
 import analysisUtils as au
@@ -1190,7 +1193,8 @@ class read_data():
         print(f"\nOriginal units (BUNIT): {self.bunit if self.bunit else 'Not specified'}")
 
         if getattr(self, 'zero_point', None) is not None:
-            print(f"AB zero-point: {self.zero_point:.4f} mag")
+            pass
+            # print(f"AB zero-point: {self.zero_point:.4f} mag")
 
         if self.jy_conversion is not None:
             print(f"Conversion factor to Jy: {self.jy_conversion:.6e}")
@@ -1221,9 +1225,9 @@ class read_data():
 class radio_image_analysis():
     def __init__(self, input_data,z = None,do_petro=False,
                  # logger=None,
-                 crop=False,box_size=256,
+                 crop=True,box_size=256,
                  apply_mask=True,mask=None,dilation_size = None,
-                 sigma_level=3, sigma_mask=6,vmin_factor=3,last_level=3,
+                 sigma_level=6, sigma_mask=6,vmin_factor=3,last_level=6,
                  results=None,mask_component=None,
                  npixels=128,kernel_size=21,fwhm=81,
                  SAVE=True, show_figure=True, verbose=0):

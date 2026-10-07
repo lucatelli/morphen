@@ -1,4 +1,4 @@
-"""
+r"""
  ____  _       _   _   _
 |  _ \| | ___ | |_| |_(_)_ __   __ _
 | |_) | |/ _ \| __| __| | '_ \ / _` |
@@ -5309,7 +5309,7 @@ def eimshow(imagename, crop=False, box_size=128, center=None, with_wcs=True,
 
     if plot_rms:
         if rms is not None:
-            sigma_range = f"{levels_g.min()/std:.0f}$\sigma$ - {levels_g.max()/std:.0f}$\sigma$"
+            sigma_range = rf"{levels_g.min()/std:.0f}$\sigma$ - {levels_g.max()/std:.0f}$\sigma$"
             line1, line2 = flux_peak_rms_labels(np.nanmax(g), rms, flux_units, flux_conversion_factor)
             # line3 = f"Geometric"
             # line4 = r"$0.9 \times S_{\mathrm{p}} ~ \to ~ 6\sigma$"
@@ -5709,7 +5709,7 @@ def plot_alpha_map(alphaimage,radio_map,frequencies,
     
     if projection == 'offset':
         ax,extent = eimshow(radio_map,return_extent = True,figsize=figsize,
-                        add_contours=False,CM='magma',no_show=True,
+                        add_contours=True,CM='magma',no_show=True,
                             crop=crop,center=centre,box_size=box_size)
         if cell_size is None:
             if isinstance(radio_map, str):
@@ -5743,7 +5743,7 @@ def plot_alpha_map(alphaimage,radio_map,frequencies,
 
     
     if levels_g is None:
-        levels_g = np.geomspace(0.9 * np.nanmax(_g), 6 * std, n_contours)
+        levels_g = np.geomspace(0.9 * np.nanmax(_g), 12 * std, n_contours)
     else:
         levels_g = levels_g
     
@@ -5756,13 +5756,13 @@ def plot_alpha_map(alphaimage,radio_map,frequencies,
 
 
 
-    # contour = ax.contour(_g, levels=levels_g[::-1],
-    #                      colors=contour_palette,
-    #                       origin='lower', 
-    #                     #   cmap='Greys',
-    #                      # aspect=aspect,
-    #                      linewidths=1.2, extent=extent,
-    #                      alpha=1.0)
+    contour = ax.contour(_g, levels=levels_g[::-1],
+                         colors=contour_palette,
+                          origin='lower', 
+                        #   cmap='Greys',
+                         # aspect=aspect,
+                         linewidths=1.2, extent=extent,
+                         alpha=1.0)
     # low_contours = ax.contour(_g, levels=levels_low[::-1],
     #                     colors='brown',
     #                     linewidths=1.0, extent=extent,
