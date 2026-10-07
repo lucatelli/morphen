@@ -210,7 +210,7 @@ def run_wsclean(g_name, imsize='2048', imsizey='2048',cell='0.06asec',
                 uvtaper=[],nc = 4,
                 image_list={},image_statistics={},
                 calculate_subband_fluxes=True,
-                channel_division='auto'):
+                channel_division='default'):
 
 
     g_vis = g_name + '.ms'
