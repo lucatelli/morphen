@@ -1,0 +1,48 @@
+# Top-level pip requirements, mirroring the pip: section of ../environment.yml.
+# Container-only additions (commented out in environment.yml) are at the bottom.
+casatools==6.7.3.21
+casatasks==6.7.3.21
+casaplotms
+casadata
+casaviewer
+casaplotserver
+casalogger
+protobuf==3.20.3
+ipython
+notebook
+jupyter
+ipywidgets
+tqdm
+matplotlib
+corner
+sympy
+cmasher
+coloredlogs
+scipy
+numpy
+astropy
+pandas==2.2.3
+astroquery
+tableprint
+image_registration
+prettytable
+dynesty
+datashader
+scikit-image
+scikit-learn
+petrofit>=0.6.0
+photutils
+sep
+fitsio
+lmfit==1.1.0
+emcee
+jax[cpu]
+
+# conda-provided in environment.yml (needed explicitly for the uv recipe)
+pillow
+pyzmq
+
+# container-only (commented out in environment.yml)
+bilby
+arviz
+h5py

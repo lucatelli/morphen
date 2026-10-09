@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Inspect or refresh the CASA data used inside the morphen image.
+#
+#   morphen-casadata status          which data CASA will use, and how old it is
+#   morphen-casadata init DIR        seed a writable DIR (measures overlay, ~30 MB)
+#   morphen-casadata update [DIR]    update the measures in DIR (default $MORPHEN_CASADATA) now
+#
+# The image ships casarundata + measures in /opt/casa/data (read-only). For
+# auto-updating data, bind a writable host dir and point MORPHEN_CASADATA at
+# it, e.g.
+#   SINGULARITYENV_MORPHEN_CASADATA=/casadata singularity exec \
+#       -B /scratch/$USER/casadata:/casadata morphen.sif python script.py
+# /opt/casa/casasiteconfig.py then uses it as measurespath with measures
+# auto-updates on (at most one check a day). Note that a ~/.casa/config.py
+# setting measures_auto_update = False still wins, so with your real $HOME
+# bound, run `morphen-casadata update` to refresh instead.
+set -euo pipefail
+
+BAKED=/opt/casa/data
+cmd=${1:-status}
+
+case $cmd in
+    status)
+        python - <<'EOF'
+import casaconfig.config as c
+from casaconfig import get_data_info
+print('site/user config :', ', '.join(c.load_success()[1:]) or '(none)')
+print('measurespath     :', c.measurespath)
+print('datapath         :', c.datapath)
+print('auto updates     : measures=%s data=%s' % (c.measures_auto_update, c.data_auto_update))
+for k, v in (get_data_info(c.measurespath) or {}).items():
+    if v:
+        print('%-17s: %s (%s)' % (k, v.get('version'), v.get('date')))
+EOF
+        ;;
+    init)
+        # Seeds DIR with the ~30 MB measures overlay (see casasiteconfig.py);
+        # importing casaconfig.config with MORPHEN_CASADATA set does it.
+        dir=${2:?usage: morphen-casadata init DIR}
+        mkdir -p "$dir"
+        MORPHEN_CASADATA=$(cd "$dir" && pwd) python -c 'import casaconfig.config as c; print("measurespath:", c.measurespath)'
+        ;;
+    update)
+        # Forces a measures check now; the casarundata stays at the image's
+        # version (it is pinned to the CASA release).
+        dir=${2:-${MORPHEN_CASADATA:?give DIR or set MORPHEN_CASADATA}}
+        "$0" init "$dir"
+        python -m casaconfig --measurespath "$(cd "$dir" && pwd)" --measures-update
+        ;;
+    *)
+        sed -n '2,16p' "$0"
+        exit 2
+        ;;
+esac

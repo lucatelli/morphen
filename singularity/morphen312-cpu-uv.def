@@ -1,0 +1,155 @@
+Bootstrap: debootstrap
+MirrorURL: http://archive.ubuntu.com/ubuntu/
+OSVersion: jammy
+
+# morphen, python 3.12, JAX (CPU), CASA 6.7 modular, uv (python-build-standalone + venv) flavour.
+#
+# Build with the wrapper, which stages a clean build context (morphen/ holds
+# GBs of unrelated .sif files) and puts the build tmp/cache on starbyte:
+#     singularity/build.sh uv
+# Bootstrap is debootstrap because Singularity 3.5.3 cannot pull current
+# Docker Hub images ("unsupported schema version 2").
+
+%labels
+    APPLICATION_NAME  Ubuntu LTS + morphen (py3.12, JAX CPU, CASA 6.7) - uv
+    OS_VERSION        22.04
+
+    SYSTEM_NAME                stardust
+    SYSTEM_SINGULARITY_VERSION 3.5.3
+
+    AUTHOR_NAME   Geferson Lucatelli
+    AUTHOR_EMAIL  gefersonlucatelli@gmail.com
+
+%setup
+    mkdir -p ${SINGULARITY_ROOTFS}/opt/morphen/singularity ${SINGULARITY_ROOTFS}/opt/morphen/tests \
+             ${SINGULARITY_ROOTFS}/opt/morphen/bin ${SINGULARITY_ROOTFS}/opt/casa
+
+%files
+    morphen /opt/morphen/morphen
+    environment.yml /opt/morphen/singularity/environment.yml
+    singularity/requirements-morphen312.txt /opt/morphen/singularity/requirements-morphen312.txt
+    singularity/constraints-morphen312.txt /opt/morphen/singularity/constraints-morphen312.txt
+    singularity/casasiteconfig_morphen.py /opt/casa/casasiteconfig.py
+    singularity/morphen-casadata /opt/morphen/bin/morphen-casadata
+    singularity/morphen-env.sh /opt/morphen/bin/morphen-env.sh
+    singularity/casa-post.sh /opt/morphen/bin/casa-post.sh
+    singularity/tests/container_smoke.py /opt/morphen/tests/container_smoke.py
+
+%environment
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+    # No LD_LIBRARY_PATH on purpose: casatools resolves its bundled
+    # OpenMPI/pmix via RUNPATH, and putting /usr/lib/x86_64-linux-gnu first
+    # loads the system libpmix instead ("undefined symbol: pmix_framework_names").
+    export PATH="/opt/morphen-venv/bin:/opt/morphen/bin:$PATH"
+    export VIRTUAL_ENV=/opt/morphen-venv
+    export PYTHONPATH="/opt/morphen/morphen:/opt/morphen/morphen/analysis_scripts"
+    export PYTHONNOUSERSITE=1
+    export JAX_PLATFORMS=cpu
+    # redirect caches/configs if $HOME is not writable (--containall, HPC)
+    . /opt/morphen/bin/morphen-env.sh
+
+%post
+    set -e
+    export LC_ALL=C
+    export DEBIAN_FRONTEND=noninteractive
+    export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    unset PYTHONPATH LD_LIBRARY_PATH
+    # Build scratch inside the image rootfs (never the host /tmp, which may be
+    # bind-mounted and is small on stardust); removed at the end.
+    export TMPDIR=/var/tmp/morphen-build
+    mkdir -p "$TMPDIR"
+
+    printf 'export PS1="\u@$SINGULARITY_NAME:\w$ "' > /.singularity.d/env/999-psvars.sh
+
+    ##########################################################################
+    # System packages: build basics + runtime libs for the CASA Qt GUIs
+    # (casaplotms / casaviewer / casalogger) and xvfb for running them headless.
+    apt-get update -y
+    apt-get install -y software-properties-common
+    apt-add-repository universe -y
+    apt-get update -y
+    apt-get install -y --no-install-recommends \
+        ca-certificates curl wget git vim less bzip2 xz-utils file procps \
+        build-essential gfortran locales \
+        libgl1 libglu1-mesa libegl1 libopengl0 libglib2.0-0 libdbus-1-3 \
+        libfontconfig1 libfreetype6 fonts-dejavu-core \
+        libx11-6 libx11-xcb1 libxext6 libxrender1 libxi6 libxrandr2 libxcursor1 \
+        libxinerama1 libxcomposite1 libxdamage1 libxfixes3 libxtst6 libxss1 libsm6 libice6 \
+        libxkbcommon0 libxkbcommon-x11-0 libxcb1 libxcb-icccm4 libxcb-image0 \
+        libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-render0 libxcb-shape0 \
+        libxcb-shm0 libxcb-sync1 libxcb-xfixes0 libxcb-xinerama0 libxcb-xinput0 \
+        libxcb-xkb1 libxcb-util1 libxcb-glx0 libxcb-cursor0 libnss3 libasound2 \
+        libgomp1 libsqlite3-0 libxml2 \
+        xvfb xauth x11-utils
+
+    ##########################################################################
+    # uv + managed CPython 3.12 (python-build-standalone) + venv
+    UV_VERSION=0.12.24
+    curl -fsSL https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz \
+        | tar -xz -C /usr/local/bin --strip-components=1
+    uv --version
+
+    export UV_PYTHON_INSTALL_DIR=/opt/uv/python UV_PYTHON_PREFERENCE=only-managed
+    # copy: the cache is deleted afterwards; compile: the image is read-only
+    # at runtime, so .pyc files could never be written lazily.
+    export UV_LINK_MODE=copy UV_COMPILE_BYTECODE=1 UV_NO_PROGRESS=1 UV_CACHE_DIR=$TMPDIR/uv-cache
+    # --no-bin: otherwise uv drops a python3.12 link into /root/.local/bin
+    uv python install 3.12 --no-bin
+    uv venv /opt/morphen-venv --python 3.12
+
+    # Same top-level list as environment.yml's pip section (+ pillow/pyzmq,
+    # which conda provides there, + bilby/arviz/h5py), same frozen pins.
+    uv pip install --python /opt/morphen-venv/bin/python \
+        -r /opt/morphen/singularity/requirements-morphen312.txt \
+        -c /opt/morphen/singularity/constraints-morphen312.txt
+    uv pip check --python /opt/morphen-venv/bin/python
+    rm -rf "$TMPDIR/uv-cache"
+    PY=/opt/morphen-venv/bin/python
+
+    # environment.yml's conda `casacore` (C++ libs + taql etc.) comes from apt
+    # here. casatools never uses it (it bundles its own casacore).
+    apt-get install -y --no-install-recommends casacore-tools
+
+    ##########################################################################
+    # CASA: data, GUI AppImages, site config
+    bash /opt/morphen/bin/casa-post.sh "$PY"
+
+    ##########################################################################
+    # Precompile morphen itself (site-packages was compiled by uv)
+    $PY -m compileall -q -j 0 /opt/morphen/morphen || true
+
+    apt-get clean
+    rm -rf /var/lib/apt/lists/* /root/.cache /.cache "$TMPDIR"
+    chmod -R a+rX /opt/morphen /opt/casa /opt/uv /opt/morphen-venv
+
+%runscript
+    exec python "$@"
+
+%apprun jupyter
+    exec jupyter lab --no-browser --ip="${JUPYTER_IP:-127.0.0.1}" "$@"
+
+%apprun casadata
+    exec morphen-casadata "$@"
+
+%test
+    export PATH="/opt/morphen-venv/bin:/opt/morphen/bin:$PATH"
+    export PYTHONPATH="/opt/morphen/morphen:/opt/morphen/morphen/analysis_scripts"
+    cd /tmp && python /opt/morphen/tests/container_smoke.py --quick
+
+%help
+    morphen (python 3.12, JAX CPU, CASA 6.7.3 modular), uv flavour.
+
+      singularity run   morphen.sif script.py          # python
+      singularity exec  morphen.sif ipython
+      singularity run --app jupyter morphen.sif        # jupyter lab
+      singularity run --app casadata morphen.sif status
+
+    morphen is on PYTHONPATH (/opt/morphen/morphen): `import mlibs; import morphen as mp`.
+    Use your live checkout instead with -B /path/to/repo/morphen:/opt/morphen/morphen
+
+    CASA data is baked into /opt/casa/data (read-only, no auto-update). For
+    auto-updating data bind a writable dir and set MORPHEN_CASADATA, e.g.
+      SINGULARITYENV_MORPHEN_CASADATA=/casadata \
+        singularity exec -B /scratch/$USER/casadata:/casadata morphen.sif ...
+    See singularity/README_containers.md in the morphen repo.
