@@ -22,6 +22,30 @@ resource.setrlimit(resource.RLIMIT_NPROC, (new_soft_limit, hard))
 soft, hard = resource.getrlimit(resource.RLIMIT_NPROC)
 
 
+def resolve_ms_path(path):
+    """
+    Full path to the measurement set named by --f.
+
+    Pipeline callers usually pass --f *without* the .ms extension (the script
+    appends '.ms' itself when it builds the WSClean command), while a manual
+    run usually includes it. Anything that has to open the MS directly -- the
+    channel division, for one -- needs the real directory, so accept both
+    spellings.
+
+    Args:
+        path: The value of --f, with or without the .ms extension.
+
+    Returns:
+        str: The first candidate that exists on disk; otherwise `path` with
+        '.ms' appended, which keeps the error message informative.
+    """
+    candidates = [path] if path.endswith('.ms') else [path + '.ms', path]
+    for candidate in candidates:
+        if os.path.isdir(candidate):
+            return candidate
+    return candidates[0]
+
+
 def imaging(g_name, field, uvtaper, robust, base_name='clean_image',
             continue_clean='False',nc=4):
     g_vis = g_name + '.ms'
@@ -128,6 +152,7 @@ def imaging(g_name, field, uvtaper, robust, base_name='clean_image',
         else:
             # scratch_dir = str(Path.home() / f'wsclean_temp/{uuid.uuid4().hex}/')
             scratch_dir = str(f'./wsclean_temp/{uuid.uuid4().hex}/')
+        scratch_dir = f'/dev/shm/wsclean_temp/{uuid.uuid4().hex}/'
         os.makedirs(scratch_dir, exist_ok=True)
         print(' >> Using scratch directory for WSClean temporary files: ', scratch_dir)
 
@@ -232,7 +257,7 @@ if __name__ == "__main__":
                         help="Image Size y-axis")
     parser.add_argument("--cellsize", type=str, nargs='?', default='0.05asec',
                         help="Cell size")
-    parser.add_argument("--niter", type=str, nargs='?', default='50000',
+    parser.add_argument("--niter", type=str, nargs='?', default='200000',
                         help="Number of iterations during cleaning.")
 
     parser.add_argument("--maxuv_l", type=str, nargs='?', default=None,
@@ -254,7 +279,7 @@ if __name__ == "__main__":
                         help="Number of channels division to be used in "
                              "the MFS deconvolution.")
 
-    parser.add_argument("--channel_division", type=str, nargs='?', default='auto',
+    parser.add_argument("--channel_division", type=str, nargs='?', default='default',
                         help="How the bandwidth is divided into --nc sub-bands. "
                              "'auto': split frequencies computed from the MS "
                              "(gaps + region where all instruments overlap; "
@@ -311,6 +336,7 @@ if __name__ == "__main__":
     field = os.path.basename(args.f).replace('.ms', '')
     g_name = field
     root_dir_sys = os.path.dirname(args.f) + '/'
+    vis_path = resolve_ms_path(args.f)   # --f may omit the .ms extension
     robusts = args.r
     tapers = args.t
 
@@ -380,14 +406,14 @@ if __name__ == "__main__":
                             # Setting some important arguments to custom values
                             '-deconvolution-threads ' + str(threads_proc) + ' -j ' + str(threads_proc) + ' '
                             '-parallel-reordering ' + str(threads_proc) + ' '
-                            '-parallel-deconvolution 1024 '
+                            '-parallel-deconvolution 3072 '
                             # '-parallel-deconvolution 1024 '
                             '-channels-out '+str(nc)+' -join-channels ' + negative_arg + ' '
                             '-no-mf-weighting ' # this must be set to generate science images 
                             '-fit-spectral-pol  ' +str(3)+' '+' -deconvolution-channels ' +str(dec_chan)+' '
                             # '-fit-spectral-log-pol ' +str(2)+' '+' -deconvolution-channels ' +str(dec_chan)+' '
                             '-gridder wgridder -wgridder-accuracy 1e-5 -parallel-gridding 8 '
-                            '-apply-primary-beam '
+                            '-apply-primary-beam -circular-beam '
                             #updates 2026
                             '-weighting-rank-filter 3 -weighting-rank-filter-size 128 '
                             # '-gridder idg -idg-mode hybrid -grid-with-beam -circular-beam -save-psf-pb -save-uv '
@@ -443,7 +469,7 @@ if __name__ == "__main__":
     if args.minuv_l is not None:
         uvselection = uvselection + ' -minuv-l ' + args.minuv_l + ' '
     # general arguments
-    gain_args = ' -mgain 0.5 -gain 0.05 -nmiter 20 ' # -super-weight 9.0
+    gain_args = ' -mgain 0.5 -gain 0.05 -nmiter 40 ' # -super-weight 9.0
 
     if args.shift == 'None' or args.shift == None:
         # if args.shift != ' ':
@@ -454,11 +480,10 @@ if __name__ == "__main__":
     # +62.07.11.886 '
     if args.quiet == 'True':
         quiet = ' -quiet '
-        # quiet = ' ' #debug
     else:
         quiet = ' -v '
 
-    # quiet = ' '
+    quiet = ' -v ' #debug override
 
     if args.continue_clean == 'True':
         """
@@ -481,7 +506,7 @@ if __name__ == "__main__":
         if args.channel_division == 'auto':
             try:
                 division_args = channel_division.auto_division_args(
-                    args.f, nc, mode=args.channel_division_mode,
+                    vis_path, nc, mode=args.channel_division_mode,
                     spws=channel_division.parse_spws(opt_args),
                     field=channel_division.parse_field(opt_args),
                     csv_file=(root_dir_sys + base_name + '_' + g_name +
