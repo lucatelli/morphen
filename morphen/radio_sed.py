@@ -15,9 +15,23 @@ def RC_function_S2(nu, A1l, A2, alpha_nt, nu0):
     return A1l * ((nu / nu0) ** (-0.1)) + A2 * (nu0 ** (alpha_nt)) * ((nu / nu0) ** (alpha_nt))
 
 
-def RC_function_SY_FF(nu, A_sy, A_ff, alpha_nt, nu0):
-    # return A_ff * (nu0 ** (-0.1)) * ((nu / nu0) ** (-0.1)) + A_sy * (nu0 ** (alpha_nt)) * ((nu / nu0) ** (alpha_nt))
-    return A_ff * ((nu / nu0) ** (-0.1)) + A_sy * ((nu / nu0) ** (alpha_nt))
+# RC_function_SY_FF, linear_function, do_fit_spec_map and do_fit_spec_SY_FF_map
+# live in the standalone spectral_fit.py, so that joblib workers import only
+# that small module (not mlibs) when fitting pixels in parallel.
+import importlib
+from joblib import effective_n_jobs
+import spectral_fit
+importlib.reload(spectral_fit)  # keep reload_libs() picking up edits
+from spectral_fit import (RC_function_SY_FF, linear_function, do_fit_spec_map,
+                          do_fit_spec_SY_FF_map, fit_spectra_chunk,
+                          fit_spectra_SY_FF_chunk, fit_spectra_SY_FF_cov_chunk,
+                          SY_FF_KEYS, RC_function_SY_FF_FFA, ffa_tau,
+                          ffa_factors, fit_SY_FF_FFA_spectrum,
+                          fit_spectra_SY_FF_FFA_chunk, FFA_KEYS,
+                          FFA_FIT_DEFAULTS, FF_TAU_COEFF)
+# spatial binning (e.g. contour binning) before spectral fitting
+import spatial_binning
+importlib.reload(spatial_binning)
 
 
 def RC_function_SY_ffa(nu,Snu0,fth_nu0,alpha_nt,nu_tau_t,nu0=10,f_cov=1.0):
@@ -895,7 +909,7 @@ def power_law_phys_fit(freqs,
     # plt.ylabel('Integrated Flux Density [mJy]')
     ax1.set_ylabel(r'$S_{\nu}$ [mJy]')
     text_x, text_y = 0.65, 0.37
-    text = (r"$\alpha_{\rm nth}"+f"= {(result.params['alpha'].value):.2f}\pm "
+    text = (r"$\alpha_{\rm nth}"+rf"= {(result.params['alpha'].value):.2f}\pm "
             rf"{(result.params['alpha'].stderr):.2f}$")
     
     text_bbox_props = dict(boxstyle='round,pad=0.5', facecolor='lightgray', alpha=0.5)
@@ -1248,7 +1262,7 @@ def do_fit_spec_RC_linear(freqs,
     # plt.ylabel('Integrated Flux Density [mJy]')
     ax1.set_ylabel(r'$S_{\nu}(\nu_{\mathrm{obs}})$ [mJy]')
     text_x, text_y = 0.60, 0.37
-    text = (r"$\overline{\alpha}"+f"= {(result.params['alpha'].value):.2f}\pm "
+    text = (r"$\overline{\alpha}"+rf"= {(result.params['alpha'].value):.2f}\pm "
             rf"{(result.params['alpha'].stderr):.2f}$")
     
     text_bbox_props = dict(boxstyle='round,pad=0.5', facecolor='lightgray', alpha=0.5)
@@ -2240,7 +2254,7 @@ def fit_spec_SY_FF(freqs,
         if fix_alpha_nt == True:
             text = (r"$\alpha_{\rm sy}"+f"= {(result.params['alpha_nt'].value):.2f}$")
         else:
-            text = (r"$\alpha_{\rm sy}"+f"= {(result.params['alpha_nt'].value):.2f}\pm "
+            text = (r"$\alpha_{\rm sy}"+rf"= {(result.params['alpha_nt'].value):.2f}\pm "
                     rf"{(result.params['alpha_nt'].stderr):.2f}$")
         text_bbox_props = dict(boxstyle='round,pad=0.5', facecolor='lightgray', alpha=0.5)
         text_bbox = plt.text(text_x, text_y, text,
@@ -2250,7 +2264,7 @@ def fit_spec_SY_FF(freqs,
                             bbox=text_bbox_props, transform=fig.transFigure)
         
         text_x, text_y = 0.40, 0.84
-        text =r"$f_{\rm th}$"f"$({nu_th}) = {(thermal_fraction_nu_th):.2f}\pm{(thermal_fraction_nu_th_err):.2f}$"
+        text =r"$f_{\rm th}$"rf"$({nu_th}) = {(thermal_fraction_nu_th):.2f}\pm{(thermal_fraction_nu_th_err):.2f}$"
         text_bbox_props = dict(boxstyle='round,pad=0.5', facecolor='lightgray', alpha=0.5)
         text_bbox = plt.text(text_x, text_y, text,
                             # ha='center', va='center',
@@ -2357,10 +2371,13 @@ def fit_spec_SY_FF(freqs,
                 pass
     print('++==>> Parameter Results (from least-squares fit).')
     print(lmfit.fit_report(result.params))
-    if do_mcmc_fit:
-        return(mini,result,thermal_fraction,samples_emcee, param_dict)
-    else:
-        return(mini,result,thermal_fraction)
+    if not do_mcmc_fit:
+        # return(mini,result,thermal_fraction,samples_emcee, param_dict)
+    # else:
+        samples_emcee = None
+        param_dict = None
+    # return(mini,result,thermal_fraction)
+    return(mini,result,thermal_fraction,samples_emcee, param_dict)
 
 
 
@@ -2703,7 +2720,7 @@ def fit_spec_SY_FF_FFA(freqs,
         ax1.set_ylabel(r'$S_{\nu}$ [mJy]')
         
         text_x, text_y = 0.62, 0.72
-        text = (r"$\alpha_{\rm nt}"+f"= {(result.params['alpha_nt'].value):.2f}\pm "
+        text = (r"$\alpha_{\rm nt}"+rf"= {(result.params['alpha_nt'].value):.2f}\pm "
                 rf"{(result.params['alpha_nt'].stderr):.2f}$")
         text_bbox_props = dict(boxstyle='round,pad=0.5', facecolor='lightgray', alpha=0.5)
         text_bbox = plt.text(text_x, text_y, text,
@@ -3137,7 +3154,7 @@ def fit_spec_SY_FF_FFA_v2(freqs,
         ax1.set_ylabel(r'$S_{\nu}$ [mJy]')
         
         text_x, text_y = 0.62, 0.72
-        text = (r"$\alpha_{\rm nt}"+f"= {(result.params['alpha_nt'].value):.2f}\pm "
+        text = (r"$\alpha_{\rm nt}"+rf"= {(result.params['alpha_nt'].value):.2f}\pm "
                 rf"{(result.params['alpha_nt'].stderr):.2f}$")
         text_bbox_props = dict(boxstyle='round,pad=0.5', facecolor='lightgray', alpha=0.5)
         text_bbox = plt.text(text_x, text_y, text,
@@ -3844,8 +3861,6 @@ def do_fit_spec_RC_sy_ff_dust(freqs,fluxes,fluxes_err,nu0=None,
 #Spectral Index Maps
 """
 
-def linear_function(x, alpha, b,x0=1.0):
-    return b*((x/x0)**alpha) #+ c*x*x
 
 
 def makecube(imagelist):
@@ -3916,260 +3931,682 @@ def calculate_weights(yerr, epsilon=0.1, w_min=0.01, w_max=100):
 
     return weights
 
-def do_fit_spec_map(freqs,fluxes,fluxes_err,nu0=1.0,verbose=0):
-
-    x = freqs
-    y = fluxes
-    yerr = fluxes_err
-    
-    epsilon = 1e-10
-    delta = 1.0
-    # def min_func(params):
-    #     alpha = params['alpha']
-    #     b = params['b']
-    #     model = linear_function(x, alpha, b,nu0)
-    #     relative_error = yerr / (np.abs(y) + epsilon)
-    #     weights = np.sqrt(1 / (relative_error + epsilon))
-    #     # weightned_residual = (y - model) / yerr
-    #     weightned_residual = (y - model) * (weights)
-    #     # weightned_residual = (y - model) / (weights * yerr)
-    #     # weightned_residual = (y - model) * np.sqrt(relative_error) #bias towards single point with large error
-    #     # weightned_residual = (y - model) / ((weights)*yerr)
-    #     # weightned_residual = (y - model) * ((weights)*yerr)
-    #     # weightned_residual = (y - model)
-    #     # weightned_residual = (y - model) / (weights)
-    #     # weightned_residual = (y - model) * (weights + yerr)
-    #     # weightned_residual = (y - model) * np.sqrt(weights)
-    #     # weightned_residual = (y - model) / np.sqrt(weights)
-    #     # weightned_residual = (y - model) / (np.sqrt(weights) + yerr)
-    #     # weightned_residual = (y - model) * (np.sqrt(weights) + yerr)
-    #     # weightned_residual = (y - model) / (np.sqrt(weights + yerr))
-    #     # weightned_residual = (y - model) * (np.sqrt(weights + yerr))
-    #     # weightned_residual = (y - model) * np.sqrt(weights * yerr)
-    #     # weightned_residual = (y - model) / np.sqrt(weights * yerr)
-    #     # weightned_residual = (y - model) / (np.sqrt(weights) * yerr)
-    #     # weightned_residual = (y - model) * (np.sqrt(weights) * yerr)
-    #     # weightned_residual = (y - model) / np.log(abs(y+yerr))
-    #     # weightned_residual = (y - model) / np.log(abs(yerr))
-    #     # weightned_residual = (y - model) /yerr
-    #     # weightned_residual = (y - model)
-    #     return weightned_residual.copy()
-    
-    # def min_func(params):
-    #     alpha = params['alpha']
-    #     b = params['b']
-    #     model = linear_function(x, alpha, b, nu0)
-        
-    #     # Huber-like weighting
-    #     relative_error = yerr / (np.abs(y) + epsilon)
-    #     c = np.median(relative_error)  # adaptive threshold
-    #     weights = np.where(relative_error <= c,
-    #                     1.0,
-    #                     np.sqrt(c / relative_error))
-        
-    #     return (y - model) * weights
-    
-    def min_func(params):
-        """
-        More robust implementation for uncertainties of y (yerr).
-        """
-        alpha = params['alpha']
-        b = params['b']
-        model = linear_function(x, alpha, b, nu0)
-        
-        # # Log-based weighting
-        # log_weights = y / (1.0 + np.log1p(yerr / np.median(yerr)))
-        # return (y - model) * np.sqrt(log_weights)
-        
-        # Log-based weighting
-        # log_weights = 1 / yerr
-        # return (y - model) * np.sqrt(log_weights)
-        # Log-based weighting
-        # l_penalty = 0.1
-        # pen_weights = yerr * (alpha**2.0 + b**2.0 - 1.0) / len(x)
-        # return (y - model) / pen_weights
-        log_weights = 1.0 / (1.0 + np.log1p(yerr / np.median(yerr)))
-        return (y - model) * log_weights
-        # return ((y - model)/y) * (yerr / model)
-
-    
-    # def min_func(params):
-    #     """
-    #     More robust implementation for uncertainties of y (yerr).
-    #     """
-    #     alpha = params['alpha']
-    #     b = params['b']
-    #     model = linear_function(x, alpha, b, nu0)
-        
-    #     # Log-based weighting
-    #     log_weights = 1.0 / (1.0 + np.log1p(yerr / np.median(yerr)))
-    #     # Frequency correction factor
-    #     freq_weights = (x / np.max(x))**0.5  # Adjust exponent as needed
-    #     # Combine weights
-    #     final_weights = log_weights * freq_weights
-    #     return (y - model) * final_weights
-    
-    
-    # def min_func(params):
-    #     alpha = params['alpha']
-    #     b = params['b']
-    #     model = linear_function(x, alpha, b, nu0)
-        
-    #     # Add scaling factors to control relative importance
-    #     y_scale = 0.5  # Adjust these values based on your needs
-    #     err_scale = 1.0
-        
-    #     normalized_y = y / np.median(np.abs(y))
-    #     normalized_yerr = yerr / np.median(yerr)
-        
-    #     combined_weights = 1.0 / (1.0 + np.log1p(
-    #         err_scale * normalized_yerr * (1 + y_scale * np.abs(normalized_y))
-    #     ))
-        
-    #     return (y - model) * combined_weights
-    
-    
-    fit_params = lmfit.Parameters()
-    fit_params.add("alpha", value=-0.5, min=-3, max=5)
-    fit_params.add("b", value=5.0, min=-1, max=500)
-    
-    mini = lmfit.Minimizer(min_func, fit_params, max_nfev=15000,
-                        nan_policy='omit', reduce_fcn='neglogcauchy')
-    
-    result_1 = mini.minimize(method='least_squares',
-                           max_nfev=15000, #f_scale = 1.0,
-                        #    loss="huber", 
-                           loss="cauchy",
-                           tr_solver="exact",
-                           ftol=1e-12, xtol=1e-12, gtol=1e-12, 
-                           verbose=verbose
-                           )
-    
-    # mini = lmfit.Minimizer(min_func, fit_params, max_nfev=15000,
-    #                     nan_policy='omit')
-
-    # result_1 = mini.minimize(method='least_squares',
-    #                     loss='soft_l1',  # Alternative to Cauchy
-    #                     f_scale=0.1,     # Tune this parameter
-    #                     tr_solver='exact',
-    #                     ftol=1e-12, xtol=1e-12, gtol=1e-12)
-    
-    second_run_params = result_1.params
-    
-    result = mini.minimize(method='least_squares',
-                           params=second_run_params,
-                           max_nfev=15000, #f_scale = 1.0,
-                        #    loss="huber", 
-                           loss="cauchy", 
-                           tr_solver="exact",
-                           ftol=1e-12, xtol=1e-12, gtol=1e-12, 
-                           verbose=0
-                        )
-    
-    # result = mini.minimize(method='least_squares',
-    #                        params=second_run_params,
-    #                        max_nfev=15000, f_scale = 0.1,
-    #                     #    loss="huber", 
-    #                        loss="soft_l1", 
-    #                        tr_solver="exact",
-    #                        ftol=1e-12, xtol=1e-12, gtol=1e-12, 
-    #                        verbose=0
-    #                     )
-    
-    return result
+# do_fit_spec_map now lives in spectral_fit.py (imported above).
 
 
-def do_fit_spec_SY_FF_map(freqs,fluxes,fluxes_err,nu0=None,
-                          fix_alpha_nt=False,
-                          verbose=0):
-    x = freqs
-    y = fluxes
-    yerr = fluxes_err
-    if nu0 is None:
-        nu0 = np.mean(x)
+# do_fit_spec_SY_FF_map now lives in spectral_fit.py (imported at the top).
 
-    epsilon = 1e-8
-    # def min_func(params):
-    #     A_sy = params['A_sy']
-    #     A_ff = params['A_ff']
-    #     alpha_nt = params['alpha_nt']
-    #     model = RC_function_SY_FF(x, A_sy, A_ff, alpha_nt,nu0)
-        
-    #     relative_error = yerr / (np.abs(y) + epsilon)
-    #     weights = 1 / (relative_error + epsilon)
-    #     # weightned_residual = (y - model) * np.sqrt(weights)
-    #     weightned_residual = (y - model) / (np.sqrt(weights)*yerr)
-    #     # weightned_residual = (y - model) / (np.sqrt(weights) + yerr)
-    #     # res = (y - RC_function_S2(x, A1, A2, alpha_nt,nu0))/(yerr+1)
-    #     # res = (y - model) / (y+np.sqrt((yerr)**2.0+0.1))#okay 
-    #     # res = (y - model) / (y+yerr)
-    #     # res = (y - model) / (np.log(y+yerr))
-    #     # res = data - RC_function_S2(nu, A1l, alpha_nt)
-    #     return weightned_residual.copy()
-    
-    def min_func(params):
-        A_sy = params['A_sy']
-        A_ff = params['A_ff']
-        alpha_nt = params['alpha_nt']
-        model = RC_function_SY_FF(x, A_sy, A_ff, alpha_nt,nu0)
-        # Huber-like weighting
-        # relative_error = yerr / (np.abs(y) + epsilon)
-        # c = np.median(relative_error)  # adaptive threshold
-        # weights = np.where(relative_error <= c,
-        #                 1.0,
-        #                 np.sqrt(c / relative_error))
-        
-        # return (y - model) * weights
-        # Log-based weighting
-        # log_weights = 1 / (1.0 + np.log1p(yerr / np.median(yerr)))
-        # return (y - model) * log_weights
-        # weights = 1 / yerr
-        # return (y - model) * np.sqrt(weights)
-        # Log-based weighting
-        # return ((y - model)/y) * (yerr / model)
-        # weights = 1 / yerr
-        # return (y - model) * weights
-        # res = (y - model) / (np.log(y+yerr))
-        log_weights = 1.0 / (1.0 + np.log1p(yerr / np.median(yerr)))
-        return (y - model) * log_weights
-    
-    a_sy_init = abs(np.nanmax(y) - np.nanmin(y))/ (2.0 * 1000)
-    a_ff_init = a_sy_init * 0.5
-    fit_params = lmfit.Parameters()
-    fit_params.add("A_sy", value=a_sy_init, min=1.0e-6, max=1000)
-    fit_params.add("A_ff", value=a_ff_init, min=1.0e-6, max=100)
-    # fit_params.add("A1", value=0.5, min=-10, max=500)
-    # fit_params.add("A2", value=0.5, min=-10, max=5000)
-    if fix_alpha_nt:
-        fit_params.add("alpha_nt", value=-0.85, min=-0.855, max=-0.845, vary=False)
+def _fit_pixels_in_chunks(fit_chunk, idx, x, masked_cube, masked_cube_res,
+                          fit_args, n_jobs=1, chunk_size=None, verbose=0,
+                          label='pixel fitting', unit='pixels'):
+    """
+    Fit the spectra of the pixels `idx` in chunks, optionally in parallel.
+
+    Each task receives only the spectra of its own pixels and returns plain
+    values (no lmfit objects). `fit_chunk` must be a worker from
+    spectral_fit.py, so joblib workers import that small module instead of
+    the whole mlibs.
+
+    Parameters
+    ----------
+    fit_chunk : callable
+        fit_chunk(x, spectra, spectra_res, *fit_args), e.g.
+        spectral_fit.fit_spectra_chunk.
+    idx : array (npix, 2)
+        (i, j) pixel indices to fit.
+    x : array
+        Frequencies in GHz.
+    masked_cube, masked_cube_res : arrays (ny, nx, nfreq)
+        Image and residual cubes.
+    fit_args : tuple
+        Extra arguments passed to fit_chunk after the spectra.
+    n_jobs : int
+        Number of parallel jobs (1 runs in this process, no joblib).
+    chunk_size : int or None
+        Pixels per task. None splits the pixels into ~16 chunks per job.
+    verbose : int
+        If > 0, print the number of pixels, jobs and chunks.
+    label : str
+        Name shown in the log message.
+    unit : str
+        What is being fitted, for the log message ('pixels', 'bins').
+
+    Returns
+    -------
+    list
+        Outputs of fit_chunk, one per chunk, in the order of `idx`.
+    """
+    nspec = len(idx)
+    n_workers = effective_n_jobs(n_jobs)
+    if chunk_size is None:
+        chunk_size = int(np.clip(np.ceil(nspec / (n_workers * 16)), 1, 5000))
+    chunks = [idx[k:k + chunk_size] for k in range(0, nspec, chunk_size)]
+
+    if verbose > 0:
+        print(f" > {label}: fitting {nspec} {unit} with n_jobs={n_jobs} "
+              f"({n_workers} workers), in {len(chunks)} chunks of up to "
+              f"{chunk_size} {unit}.")
+
+    def _chunk_args(chunk):
+        ii, jj = chunk[:, 0], chunk[:, 1]
+        return (x, masked_cube[ii, jj, :], masked_cube_res[ii, jj, :],
+                *fit_args)
+
+    if n_jobs == 1:
+        results = (fit_chunk(*_chunk_args(chunk)) for chunk in chunks)
     else:
-        fit_params.add("alpha_nt", value=-0.7, min=-2.0, max=0.5)
-    # fit_params.add("alpha_nt", value=-0.85, min=-0.9, max=-0.8)
+        results = Parallel(n_jobs=n_jobs, return_as='generator')(
+            delayed(fit_chunk)(*_chunk_args(chunk)) for chunk in chunks)
 
-    mini = lmfit.Minimizer(min_func, fit_params, max_nfev=15000,
-                           nan_policy='omit', reduce_fcn='neglogcauchy')
+    return list(tqdm(results, total=len(chunks)))
 
-    result_1 = mini.minimize(method='least_squares',
-                             max_nfev=200000,  # f_scale = 1.0,
-                            #  loss="huber", 
-                             loss="cauchy",
-                             tr_solver="exact",
-                             ftol=1e-12, xtol=1e-12, gtol=1e-12,
-                             verbose=verbose
-                             )
-    second_run_params = result_1.params
 
-    result = mini.minimize(method='least_squares',
-                           params=second_run_params,
-                           max_nfev=200000,  # f_scale = 1.0,
-                        #    loss="huber", 
-                           loss="cauchy",
-                           tr_solver="exact",
-                           ftol=1e-12, xtol=1e-12, gtol=1e-12,
-                           verbose=verbose
-                           )
-    
-    return result
+def _noise_rms_cube(conv_cube_res, mask, noise_rms=None,
+                    do_average_cube=False, bin_size=2, verbose=0):
+    """
+    Noise rms per pixel and band, used as sigma by weighting='chi2'.
+
+    Parameters
+    ----------
+    conv_cube_res : array (ny, nx, nfreq)
+        Residual cube (before masking and frequency averaging).
+    mask : bool array (ny, nx)
+        Source mask; by default the noise is measured outside it.
+    noise_rms : None, array (nfreq,) or array (ny, nx, nfreq)
+        None: per-band mad_std of the residuals outside `mask`.
+        (nfreq,): one rms per band.
+        (ny, nx, nfreq): rms maps (e.g. primary-beam corrected images, where
+        the noise grows away from the pointing centre).
+    do_average_cube, bin_size :
+        Same frequency averaging as specidx_map; the rms is combined like the
+        residuals there: sqrt(sum(rms**2)) / bin_size.
+
+    Returns
+    -------
+    array (ny, nx, nfreq_out), read-only view when the rms is per band.
+    """
+    ny, nx, nf = conv_cube_res.shape
+    if noise_rms is None:
+        outside = ~np.asarray(mask, dtype=bool)
+        rms = []
+        for k in range(nf):
+            band = conv_cube_res[:, :, k]
+            sel = outside & np.isfinite(band)
+            if sel.sum() < 100:   # mask covers (almost) all: use every pixel
+                sel = np.isfinite(band)
+            rms.append(mad_std(band[sel]))
+        rms = np.array(rms, dtype=float)
+        if verbose > 0:
+            print(" > noise rms per band (outside mask): "
+                  + ", ".join(f"{r:.3e}" for r in rms))
+    else:
+        rms = np.asarray(noise_rms, dtype=float)
+
+    if rms.ndim == 1:
+        if do_average_cube and rms.size == nf:
+            rms = np.sqrt(np.sum(rms.reshape(-1, bin_size)**2, axis=1)) / bin_size
+        return np.broadcast_to(rms, (ny, nx, rms.size))
+    if rms.ndim == 3:
+        if do_average_cube and rms.shape[2] == nf:
+            rms = np.sqrt(np.sum(rms.reshape(ny, nx, -1, bin_size)**2,
+                                 axis=3)) / bin_size
+        return rms
+    raise ValueError("noise_rms must be None, an array (nfreq,) or (ny, nx, nfreq)")
+
+
+def _prepare_binned_spectra(binning, masked_cube, masked_cube_res, mask,
+                            beam_area_px=1.0, binning_kwargs=None,
+                            res_is_rms=False, verbose=0):
+    """
+    Bin the masked cube spatially and build one mean spectrum per bin.
+
+    Parameters
+    ----------
+    binning : str
+        Method name in spatial_binning.BINNING_METHODS (e.g. 'contour').
+    masked_cube, masked_cube_res : arrays (ny, nx, nfreq)
+        Image and residual cubes (NaN outside the mask).
+    mask : bool array (ny, nx)
+        Pixels to bin.
+    beam_area_px : float
+        Beam area in pixels.
+    binning_kwargs : dict or None
+        Options of the method. 'ref_map' (map whose contours the bins follow)
+        and 'rms' (per-band noise) are optional; by default the band-mean of
+        the cube and the per-band mad_std of the residuals are used.
+    res_is_rms : bool
+        False: masked_cube_res holds residual pixel values; the bin's
+        residual is their mean (the noise of the mean spectrum).
+        True: it holds the noise rms (weighting='chi2'); the bin's noise is
+        the mean rms / sqrt(N_eff), N_eff = max(1, n_pix/beam_area_px).
+    verbose : int
+        Verbosity level.
+
+    Returns
+    -------
+    labels : int array (ny, nx)
+        Bin index per pixel, -1 outside the bins.
+    fit_idx : int array (nbins, 2)
+        (bin, 0) index of each bin in fit_cube.
+    fit_cube, fit_cube_res : arrays (nbins, 1, nfreq)
+        Mean image and residual spectrum of each bin.
+    """
+    kw = dict(binning_kwargs or {})
+    ref_map = kw.pop('ref_map', None)
+    rms = kw.pop('rms', None)
+    if ref_map is None:
+        import warnings
+        with np.errstate(invalid='ignore'), warnings.catch_warnings():
+            # pixels outside the mask are NaN in every band
+            warnings.simplefilter('ignore', category=RuntimeWarning)
+            ref_map = np.nanmean(masked_cube, axis=2)
+    if rms is None:
+        if res_is_rms:
+            rms = np.array([np.nanmedian(band[mask])
+                            for band in np.moveaxis(masked_cube_res, 2, 0)])
+        else:
+            rms = np.array([mad_std(band[np.isfinite(band)])
+                            for band in np.moveaxis(masked_cube_res, 2, 0)])
+    labels = spatial_binning.make_bins(binning, ref_map, masked_cube, mask,
+                                       rms, beam_area_px=beam_area_px,
+                                       verbose=verbose, **kw)
+    spectra, spectra_res = spatial_binning.bin_spectra(labels, masked_cube,
+                                                       masked_cube_res)
+    nbins = spectra.shape[0]
+    if res_is_rms:
+        n_pix = np.bincount(labels[labels >= 0], minlength=nbins)
+        n_eff = np.maximum(1.0, n_pix / beam_area_px)
+        spectra_res = spectra_res / np.sqrt(n_eff)[:, None]
+    fit_idx = np.column_stack([np.arange(nbins), np.zeros(nbins, dtype=int)])
+    return labels, fit_idx, spectra[:, None, :], spectra_res[:, None, :]
+
+
+def _fits_beam_cell(image):
+    """
+    (bmaj_arcsec, bmin_arcsec, bpa_deg), cell_arcsec and sign(CDELT1) read
+    straight from a FITS header (no CASA). The cell is |CDELT2| (or |CD2_2|).
+    """
+    hdr = pf.getheader(image)
+    beam = (hdr['BMAJ'] * 3600.0, hdr['BMIN'] * 3600.0, float(hdr.get('BPA', 0.0)))
+    cdelt1 = hdr.get('CDELT1', hdr.get('CD1_1'))
+    cdelt2 = hdr.get('CDELT2', hdr.get('CD2_2'))
+    return beam, abs(cdelt2) * 3600.0, float(np.sign(cdelt1))
+
+
+def _write_with_beam(header_source, out_name, data, beam, bunit=None):
+    """
+    Write `data` to `out_name` with the header of `header_source` and the
+    beam `beam` = (bmaj_arcsec, bmin_arcsec, bpa_deg) in BMAJ/BMIN/BPA.
+    """
+    pf.writeto(out_name, np.asarray(data, dtype=np.float32), overwrite=True)
+    copy_header(header_source, out_name, out_name)
+    with pf.open(out_name, mode='update') as hdul:
+        hdr = hdul[0].header
+        hdr['BMAJ'] = beam[0] / 3600.0
+        hdr['BMIN'] = beam[1] / 3600.0
+        hdr['BPA'] = beam[2]
+        if bunit is not None:
+            hdr['BUNIT'] = bunit
+        elif 'BUNIT' in hdr:
+            hdr['BUNIT'] = 'JY/BEAM'
+
+
+def gaussian_beam_kernel(bmaj_px, bmin_px, bpa_deg, cdelt1_sign=-1.0,
+                         nsigma=20.0, max_half_size=None, normalise='peak'):
+    """
+    Elliptical Gaussian restoring-beam kernel on the pixel grid of a FITS
+    image (north up, square pixels).
+
+    BPA follows the FITS/WSClean convention: angle of the major axis measured
+    from north towards east. East is towards -x when CDELT1 < 0 (the usual RA
+    axis), so the major axis points along (dx, dy) = (cdelt1_sign*sin(BPA),
+    cos(BPA)) in pixel units. This was checked against `wsclean -restore`
+    (WSClean 3.6, schaapcommon RestoreImage): same peak, centroid and BPA.
+
+    Parameters
+    ----------
+    bmaj_px, bmin_px : float
+        FWHM of the major/minor axes in pixels.
+    bpa_deg : float
+        Position angle in degrees, east of north.
+    cdelt1_sign : float
+        Sign of CDELT1 of the image the kernel is used on (-1 for RA axes).
+    nsigma : float
+        Half-size of the kernel box in units of sigma_major (WSClean uses a
+        40-sigma full box, i.e. 20 per side).
+    max_half_size : int or None
+        Clip the half-size (e.g. to the image half-size).
+    normalise : 'peak' or 'sum'
+        'peak': unit peak, so a model in Jy/pixel becomes Jy/beam (what
+        WSClean does when restoring). 'sum': unit integral.
+    """
+    fwhm2sig = 1.0 / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+    smaj = bmaj_px * fwhm2sig
+    smin = bmin_px * fwhm2sig
+    half = max(int(np.ceil(nsigma * smaj)), 1)
+    if max_half_size is not None:
+        half = min(half, int(max_half_size))
+    y, x = np.mgrid[-half:half + 1, -half:half + 1].astype(float)
+    th = np.deg2rad(bpa_deg)
+    ux, uy = cdelt1_sign * np.sin(th), np.cos(th)  # major-axis unit vector
+    u = x * ux + y * uy                             # along the major axis
+    v = -x * uy + y * ux                            # along the minor axis
+    kernel = np.exp(-0.5 * ((u / smaj) ** 2 + (v / smin) ** 2))
+    if normalise == 'sum':
+        kernel /= kernel.sum()
+    return kernel
+
+
+def restore_model_with_beam(model, bmaj_px, bmin_px, bpa_deg, residual=None,
+                            cdelt1_sign=-1.0):
+    """
+    Restore a clean-component model (Jy/pixel) with an elliptical Gaussian
+    beam: model (*) G_peak1 [+ residual], output in Jy/beam.
+
+    This is the image-plane equivalent of WSClean's restore step
+    (image = residual + model (*) G, G with unit peak). A point source of
+    S Jy in the model gives a peak of S Jy/beam, and the integrated flux
+    sum(output)/beam_area_px equals sum(model). The residual is added at its
+    native resolution, as WSClean does.
+    """
+    model = np.nan_to_num(np.asarray(model, dtype=float))
+    ny, nx = model.shape
+    kernel = gaussian_beam_kernel(bmaj_px, bmin_px, bpa_deg,
+                                  cdelt1_sign=cdelt1_sign,
+                                  max_half_size=min(ny, nx) // 2)
+    restored = scipy.signal.fftconvolve(model, kernel, mode='same')
+    if residual is not None:
+        restored = restored + np.asarray(residual, dtype=float)
+    return restored
+
+
+def smooth_image_to_beam(image, native_beam, target_beam, cell_arcsec,
+                         cdelt1_sign=-1.0):
+    """
+    Smooth an image in Jy/beam from `native_beam` to `target_beam` (both
+    (bmaj_arcsec, bmin_arcsec, bpa_deg)): convolve with the unit-area
+    differential Gaussian and rescale by A_target/A_native so the output is
+    in Jy/target_beam. Raises if the target is not broader than the native
+    beam in every direction.
+    """
+    diff = _deconvolve_beams(target_beam, native_beam)
+    if diff is None:
+        raise ValueError(f"target beam {target_beam} is not broader than the "
+                         f"native beam {native_beam} in every direction")
+    image = np.nan_to_num(np.asarray(image, dtype=float))
+    ny, nx = image.shape
+    kernel = gaussian_beam_kernel(diff[0] / cell_arcsec, diff[1] / cell_arcsec,
+                                  diff[2], cdelt1_sign=cdelt1_sign,
+                                  max_half_size=min(ny, nx) // 2,
+                                  normalise='sum')
+    area_ratio = (target_beam[0] * target_beam[1]) / (native_beam[0] * native_beam[1])
+    return scipy.signal.fftconvolve(image, kernel, mode='same') * area_ratio
+
+
+def _prepare_spec_cube(imagelist, residuallist,
+                       ref_image_conv=None,
+                       freqs=None,
+                       ref_image_mask=None,
+                       mask=None, sigma_global_mask=6,
+                       iterations=1,
+                       dilation_size=2,
+                       needs_convolution=False, conv_task='fft',
+                       do_average_cube=False, bin_size=int(2),
+                       beam_area_px=None,
+                       verbose=0,
+                       use_model_images=False,
+                       modellist=None,
+                       target_beam=None,
+                       add_residual=True,
+                       smooth_residual_to_target=False,
+                       residual_beams=None,
+                       model_out_dir=None):
+    """
+    Build the cubes that `specidx_map` and `t_specidx_map_SY_FF` fit: load
+    the images and residuals, optionally restore the clean-component models
+    (use_model_images) or convolve (needs_convolution), make or take the
+    mask, mask the cubes and optionally average them in frequency.
+
+    The arguments have the meaning documented in `specidx_map`.
+
+    Returns
+    -------
+    dict with
+        conv_cube, conv_cube_res : (ny, nx, nfreq) image and residual cubes
+            before masking and frequency averaging;
+        masked_cube, masked_cube_res : float32 cubes, NaN outside the mask,
+            frequency-averaged if do_average_cube;
+        mask : bool (ny, nx);
+        freqs : frequencies in Hz matching masked_cube (None only for array
+            inputs given without freqs);
+        ref_image_conv, target_beam, beam_area_px : as resolved here (they
+            can still be None).
+    """
+    if isinstance(imagelist[0], str):
+        cube_image = makecube(imagelist)
+        cube_residuals = makecube(residuallist)
+    else:
+        cube_image = imagelist
+        cube_residuals = residuallist
+
+    if freqs is None and isinstance(imagelist[0], str):
+        freqs = getfreqs(imagelist)
+    if freqs is not None:
+        freqs = np.asarray(freqs, dtype=float)
+        if freqs.size != cube_image.shape[2]:
+            raise ValueError(f"{freqs.size} frequencies were given for "
+                             f"{cube_image.shape[2]} images")
+
+    if use_model_images:
+        if needs_convolution:
+            raise ValueError("use_model_images and needs_convolution are "
+                             "mutually exclusive")
+        if modellist is None:
+            raise ValueError("use_model_images needs a modellist")
+        model_files = isinstance(modellist[0], str)
+        cube_model = (makecube(modellist) if model_files
+                      else np.asarray(modellist, dtype=float))
+        if cube_model.shape != cube_residuals.shape:
+            raise ValueError("modellist must hold one model per residual, on "
+                             "the same pixel grid")
+        header_ref = next((lst[0] for lst in (modellist, residuallist, imagelist)
+                           if isinstance(lst[0], str)), None)
+        if header_ref is None:
+            raise ValueError("use_model_images needs at least one list of "
+                             "FITS files to read the pixel scale from")
+        _, cell_model, cdelt1_sign = _fits_beam_cell(header_ref)
+        if target_beam is None:
+            if ref_image_conv is None:
+                ref_image_conv = sort_list_by_beam_size(imagelist=imagelist,
+                                                        return_df=False)[0][::-1][0]
+            target_beam, _, _ = _fits_beam_cell(ref_image_conv)
+        target_beam = tuple(float(b) for b in target_beam)
+        if smooth_residual_to_target:
+            if residual_beams is None or len(residual_beams) != cube_residuals.shape[2]:
+                raise ValueError("smooth_residual_to_target needs one native "
+                                 "beam per residual in residual_beams")
+            cube_residuals = np.dstack([
+                smooth_image_to_beam(cube_residuals[:, :, i], residual_beams[i],
+                                     target_beam, cell_model,
+                                     cdelt1_sign=cdelt1_sign)
+                for i in range(cube_residuals.shape[2])])
+        if verbose > 0:
+            print(f" > use_model_images: restoring {cube_model.shape[2]} models "
+                  f"with beam {target_beam[0]:.3f}\" x {target_beam[1]:.3f}\" "
+                  f"PA {target_beam[2]:.1f} deg (cell {cell_model:.4f}\"), "
+                  f"residual {'added' if add_residual else 'NOT added'}"
+                  f"{' (smoothed to target)' if smooth_residual_to_target else ''}")
+        cube_image = np.dstack([
+            restore_model_with_beam(cube_model[:, :, i],
+                                    target_beam[0] / cell_model,
+                                    target_beam[1] / cell_model,
+                                    target_beam[2],
+                                    residual=(cube_residuals[:, :, i]
+                                              if add_residual else None),
+                                    cdelt1_sign=cdelt1_sign)
+            for i in range(cube_model.shape[2])])
+        if beam_area_px is None:
+            beam_area_px = (np.pi * target_beam[0] * target_beam[1]
+                            / (4.0 * np.log(2.0)) / cell_model ** 2)
+        if model_out_dir is not None:
+            os.makedirs(model_out_dir, exist_ok=True)
+            for i in range(cube_image.shape[2]):
+                src = modellist[i] if isinstance(modellist[0], str) else header_ref
+                out_name = os.path.join(model_out_dir, os.path.basename(src).replace(
+                    '-model', '-modelrestored' + ('' if add_residual else '-nores')))
+                _write_with_beam(src, out_name, cube_image[:, :, i], target_beam)
+
+    if mask is None:
+        if not isinstance(imagelist[0], str):
+            raise ValueError("a mask is required when the inputs are arrays "
+                             "(it can only be built from FITS files)")
+        if ref_image_mask is not None:
+            ref_image_mask = ref_image_mask
+        else:
+            ref_image_mask = imagelist[-1]
+        _,mask = mask_dilation(ref_image_mask,
+                               rms=mad_std(load_fits_data(residuallist[-1])),
+                                     show_figure=True,
+                                     PLOT=True,
+                                     iterations=iterations,
+                                     dilation_size=dilation_size,
+                                     sigma=sigma_global_mask)
+    mask = np.asarray(mask, dtype=bool)
+    if mask.shape != cube_image.shape[:2]:
+        raise ValueError(f"mask shape {mask.shape} does not match the images "
+                         f"{cube_image.shape[:2]}")
+    inv_mask = ~mask
+    inv_mask_3d = inv_mask[:, :, np.newaxis]
+
+    num_images = cube_image.shape[2]
+    if needs_convolution:
+        if conv_task != 'fft':
+            raise ValueError(f"conv_task={conv_task!r} is not implemented "
+                             "(only 'fft')")
+        if ref_image_conv is None:
+            ref_image_conv = sort_list_by_beam_size(imagelist=imagelist,
+                                                return_df = False)[0][::-1][0]
+        psf_zise = int(get_beam_size_px(ref_image_conv)[0])
+        psf_image_size = int(load_fits_data(ref_image_conv).shape[0])
+        print(f"PSF BEAM SIZE is --> {psf_zise} px")
+        print(f"PSF IMAGE SIZE is --> {psf_image_size} px")
+
+        psf_name = tcreate_beam_psf(ref_image_conv,
+                                        size=(psf_image_size, psf_image_size),
+                                        aspect = 'elliptical')
+        PSF_DATA = load_fits_data(psf_name)
+
+        conv_cube = np.empty_like(cube_image)
+        conv_cube_res = np.empty_like(cube_residuals)
+        larger_beam_area = beam_area2(ref_image_conv)
+        for i in tqdm(range(num_images)):
+            conv_image_i_uncor = scipy.signal.fftconvolve(cube_image[:, :, i],
+                                                        PSF_DATA, 'same')
+            conv_residual_i_uncor = scipy.signal.fftconvolve(cube_residuals[:, :, i],
+                                                        PSF_DATA, 'same')
+
+            beam_area_i = beam_area2(imagelist[i])
+
+            # factor_conv = np.max(larger_beam_image_data)/np.max(conv_image_i_uncor)
+            factor_conv_i = larger_beam_area/beam_area_i
+
+            print(f"Factor Convolution is --> {factor_conv_i}")
+            # factor_conv = 1.0
+
+            conv_cube[:, :, i] = conv_image_i_uncor * factor_conv_i
+            conv_image_i = conv_cube[:, :, i]
+
+            conv_cube_res[:, :, i] = conv_residual_i_uncor * factor_conv_i
+            conv_res_i = conv_cube_res[:, :, i]
+
+            conv_name = imagelist[i].replace('-image.','-image-conv.').replace('-image.cutout','-image-conv.cutout')
+            pf.writeto(conv_name,
+                            conv_image_i,
+                            overwrite=True)
+            copy_header(ref_image_conv,conv_name,conv_name)
+
+            conv_res_name = residuallist[i].replace('-residual.','-residual-conv.').replace('-residual.cutout','-residual-conv.cutout')
+            pf.writeto(conv_res_name,
+                            conv_res_i,
+                            overwrite=True)
+            copy_header(ref_image_conv,conv_res_name,conv_res_name)
+    else:
+        conv_cube = cube_image.copy()
+        conv_cube_res = cube_residuals.copy()
+
+    masked_cube = np.where(inv_mask_3d, np.nan, conv_cube)
+    masked_cube_res = np.where(inv_mask_3d, np.nan, conv_cube_res)
+
+    if do_average_cube:
+        if freqs is None:
+            raise ValueError("do_average_cube needs freqs for array inputs")
+        if masked_cube.shape[2] % bin_size != 0:
+            raise ValueError(f"do_average_cube: the number of images "
+                             f"({masked_cube.shape[2]}) is not a multiple of "
+                             f"bin_size ({bin_size})")
+        reshaped_cube = masked_cube.reshape(masked_cube.shape[0],
+                                            masked_cube.shape[1], -1,
+                                            bin_size)
+        averaged_cube = reshaped_cube.mean(axis=3)
+
+        reshaped_residual = masked_cube_res.reshape(masked_cube_res.shape[0],
+                                                    masked_cube_res.shape[1], -1,
+                                                    bin_size)
+        averaged_cube_res = np.sqrt(np.sum(reshaped_residual**2, axis=3)) / bin_size
+
+        print("Original cube shape:", masked_cube.shape)
+        print("Averaged cube shape:", averaged_cube.shape)
+        reshaped_frequencies = freqs.reshape(-1, bin_size)
+        averaged_frequencies = reshaped_frequencies.mean(axis=1)
+        freqs = averaged_frequencies
+        masked_cube = averaged_cube.astype(np.float32)
+        masked_cube_res = averaged_cube_res.astype(np.float32)
+    else:
+        masked_cube = masked_cube.astype(np.float32)
+        masked_cube_res = masked_cube_res.astype(np.float32)
+
+    return dict(conv_cube=conv_cube, conv_cube_res=conv_cube_res,
+                masked_cube=masked_cube, masked_cube_res=masked_cube_res,
+                mask=mask, freqs=freqs, ref_image_conv=ref_image_conv,
+                target_beam=target_beam, beam_area_px=beam_area_px)
+
+
+def _prepare_fit_spectra(imagelist, conv_cube_res, masked_cube, masked_cube_res,
+                         mask, weighting='log', noise_rms=None,
+                         do_average_cube=False, bin_size=int(2),
+                         binning=None, binning_kwargs=None, beam_area_px=None,
+                         verbose=0):
+    """
+    Decide what is fitted: one spectrum per pixel (binning=None), or one
+    mean spectrum per spatial bin. In the binned case the bins are laid out
+    as a (nbins, 1, nfreq) "cube" so the same machinery fits them.
+
+    The noise term that goes with each spectrum is the residual pixel value
+    for weighting='log' and the noise rms (`_noise_rms_cube`) for 'chi2'.
+
+    Returns
+    -------
+    bin_labels : int (ny, nx) bin index per pixel (-1 outside), or None.
+    fit_idx : (nspec, 2) indices of the spectra in fit_cube.
+    fit_cube, fit_cube_res : spectra and their noise term.
+    beam_area_px : the beam area used by the binning (as given otherwise).
+    noise_term : (ny, nx, nfreq) per-pixel noise term before binning.
+    """
+    idx = np.column_stack(np.where(mask==True))
+    if weighting == 'chi2':
+        # sigma per pixel and band from the noise rms, not from the
+        # residual pixel values
+        noise_term = _noise_rms_cube(conv_cube_res, mask,
+                                     noise_rms=noise_rms,
+                                     do_average_cube=do_average_cube,
+                                     bin_size=bin_size, verbose=verbose)
+        if noise_term.shape != masked_cube.shape:
+            raise ValueError(f"noise_rms gives a noise cube of shape "
+                             f"{noise_term.shape}, but the cube to fit is "
+                             f"{masked_cube.shape}")
+    elif weighting == 'log':
+        noise_term = masked_cube_res
+    else:
+        raise ValueError(f"weighting must be 'log' or 'chi2', not {weighting!r}")
+
+    bin_labels = None
+    if binning is None:
+        fit_idx, fit_cube, fit_cube_res = idx, masked_cube, noise_term
+    else:
+        if beam_area_px is None:
+            if isinstance(imagelist[0], str):
+                # conservative: the largest beam among the inputs
+                beam_area_px = max(beam_area2(im) for im in imagelist)
+            else:
+                beam_area_px = 1.0
+                print(" > WARNING: beam_area_px not given for array "
+                      "inputs; assuming 1 pixel per beam (bins will be "
+                      "too small if pixels are correlated).")
+        bin_labels, fit_idx, fit_cube, fit_cube_res = _prepare_binned_spectra(
+            binning, masked_cube, noise_term, mask,
+            beam_area_px=beam_area_px,
+            binning_kwargs=binning_kwargs,
+            res_is_rms=(weighting == 'chi2'), verbose=verbose)
+    return bin_labels, fit_idx, fit_cube, fit_cube_res, beam_area_px, noise_term
+
+
+def _spec_output_tag(binning=None, weighting='log', use_model_images=False,
+                     add_residual=True, smooth_residual_to_target=False):
+    """
+    Tag added to the output FITS names, so binned, chi2 and model-restored
+    maps never overwrite the default (per-pixel, 'log') ones.
+    """
+    tag = (('' if binning is None else f'-{binning}bin')
+           + ('' if weighting == 'log' else f'-{weighting}'))
+    if use_model_images:
+        tag += ('-modelrestored' + ('' if add_residual else '-nores')
+                + ('-ressmooth' if smooth_residual_to_target else ''))
+    return tag
+
+
+def _spec_output_name(ref_image_conv, product, tag='', out_dir=None):
+    """
+    Output FITS name of a map derived from `ref_image_conv`:
+    '<...>-image<...>' becomes '<...>-<product><tag><...>', written one
+    directory above the image, or in `out_dir` if given.
+    """
+    name = (ref_image_conv.replace('-image.', f'-{product}{tag}.').
+            replace('-image.cutout', f'-{product}{tag}.cutout').
+            replace('-image-pb', f'-{product}{tag}-pb'))
+    if name == ref_image_conv:
+        # the file name does not follow the '-image' convention: never
+        # overwrite the input image
+        root, ext = os.path.splitext(ref_image_conv)
+        name = f'{root}-{product}{tag}{ext}'
+    if out_dir is not None:
+        os.makedirs(out_dir, exist_ok=True)
+        return os.path.join(out_dir, os.path.basename(name))
+    return os.path.dirname(os.path.dirname(name)) + '/' + os.path.basename(name)
+
+
+def _report_files_written(files_written, save_fits=True, file_inputs=True):
+    """Say where the FITS maps went, or why none were written."""
+    if files_written:
+        folder = os.path.abspath(os.path.dirname(files_written[0]))
+        print(f" > {len(files_written)} FITS maps written to {folder}")
+    elif not save_fits:
+        print(" > no FITS maps written (save_fits=False).")
+    elif not file_inputs:
+        print(" > no FITS maps written: the inputs are arrays, not FITS files.")
+    else:
+        print(" > no FITS maps written.")
+
+
+def _save_spec_maps(to_write, ref_image_conv, tag='', target_beam=None,
+                    out_dir=None):
+    """
+    Write maps as FITS with the header of `ref_image_conv`.
+
+    to_write : list of (product, data, bunit); the file name is
+        `_spec_output_name(ref_image_conv, product, tag, out_dir)`.
+    target_beam : (bmaj_arcsec, bmin_arcsec, bpa_deg) to stamp in the
+        headers when the maps are not at the beam of ref_image_conv.
+
+    Returns the list of file names written.
+    """
+    written = []
+    for product, data, bunit in to_write:
+        output_path = _spec_output_name(ref_image_conv, product, tag, out_dir)
+        data = np.asarray(data)
+        if np.issubdtype(data.dtype, np.floating):
+            # FITS has no +-inf convention readers agree on
+            data = np.where(np.isfinite(data), data, np.nan).astype(np.float32)
+        pf.writeto(output_path, data, overwrite=True)
+        copy_header(ref_image_conv, output_path, output_path)
+        with pf.open(output_path, mode='update') as hdul:
+            hdul[0].header['BUNIT'] = bunit
+            if target_beam is not None:
+                hdul[0].header['BMAJ'] = target_beam[0] / 3600.0
+                hdul[0].header['BMIN'] = target_beam[1] / 3600.0
+                hdul[0].header['BPA'] = target_beam[2]
+        written.append(output_path)
+    return written
+
 
 def specidx_map(imagelist,residuallist,
                 ref_image_conv=None,
@@ -4184,8 +4621,25 @@ def specidx_map(imagelist,residuallist,
                 return_only_cube=False,
                 do_average_cube=False,bin_size=int(2),
                 n_jobs=1,
-                verbose=0):
-    
+                chunk_size=None,
+                binning=None,
+                binning_kwargs=None,
+                beam_area_px=None,
+                return_bin_map=False,
+                weighting='log',
+                robust_scale=3.0,
+                noise_rms=None,
+                verbose=0,
+                use_model_images=False,
+                modellist=None,
+                target_beam=None,
+                add_residual=True,
+                smooth_residual_to_target=False,
+                residual_beams=None,
+                model_out_dir=None,
+                out_dir=None,
+                save_fits=True):
+
     """
     Calculates the spectral index map from a list of images.
     
@@ -4208,190 +4662,173 @@ def specidx_map(imagelist,residuallist,
     do_average_cube (bool): Whether to average the cube.
     bin_size (int): Bin size to use for averaging.
     n_jobs (int): Number of jobs to use for parallel processing.
+    chunk_size (int): Pixels fitted per parallel task. Default (None)
+        splits the pixels into ~16 chunks per job.
+    binning (str or None): Spatial binning before fitting. None (default):
+        fit every pixel. 'contour': contour binning (Sanders 2006), bins
+        follow the brightness contours and reach a target SNR in every band;
+        one mean spectrum per bin is fitted and its alpha is given to all
+        pixels of the bin. Methods available: spatial_binning.BINNING_METHODS.
+    binning_kwargs (dict): Options of the binning method. For 'contour':
+        target_snr (10), smooth_sigma_px (1.0), constraint (3.0), plus
+        optional ref_map (2D map to follow; default: band-mean of the cube)
+        and rms (per-band noise; default: mad_std of the residuals).
+    beam_area_px (float): Beam area in pixels, used by the binning SNR.
+        Default: largest beam of the input images (1.0 for array inputs).
+    return_bin_map (bool): If True, also return the bin label map
+        (-1 outside bins; None without binning) as a 6th output.
+    weighting (str): How uncertainties enter the fit.
+        'log' (default, previous behaviour): yerr = sqrt(residual_pixel**2 +
+            (flux_sys_error_frac*S)**2), turned into mild log-weights; alpha
+            errors are rescaled by the scatter of the points about the fit.
+        'chi2': yerr = sqrt(noise_rms**2 + (flux_sys_error_frac*S)**2) is the
+            1-sigma error of each point; residuals (S - model)/yerr; robust
+            (Cauchy) threshold of robust_scale sigma; absolute alpha errors
+            (they include flux_sys_error_frac; set it to 0 for noise only).
+    robust_scale (float): 'chi2' only. Points beyond ~robust_scale sigma
+        from the model are progressively down-weighted.
+    noise_rms: 'chi2' only. None (default): per-band mad_std of the
+        residual images outside the mask. Or an array (nfreq,) of per-band
+        rms, or rms maps (ny, nx, nfreq), e.g. for primary-beam corrected
+        images.
     verbose (int): Verbosity level to use.
-    
+    use_model_images (bool): Build the restored cube from the clean-component
+        models instead of using imagelist: each plane is
+        model (*) G_target [+ residual], with G_target a unit-peak elliptical
+        Gaussian (models in Jy/pixel -> Jy/beam; a point source of S Jy gives
+        a peak of S Jy/beam and the integrated flux is conserved). This is
+        WSClean's own restore step, so with the same beam it reproduces
+        WSClean's restored images. The residual is added at its native
+        resolution (as WSClean does) and residuallist is used unchanged for
+        the uncertainties, so both routes share the same error model.
+        Mutually exclusive with needs_convolution. imagelist is then only
+        used for headers (frequencies if freqs is None, output names).
+        Output FITS names get a '-modelrestored' tag ('-nores' without the
+        residual, '-ressmooth' with smooth_residual_to_target) and the
+        target beam in BMAJ/BMIN/BPA; beam_area_px defaults to the target
+        beam area.
+    modellist (list): Model images (Jy/pixel), same order and pixel grid as
+        imagelist/residuallist. Required when use_model_images=True.
+    target_beam (tuple): (bmaj_arcsec, bmin_arcsec, bpa_deg) of the restoring
+        beam, BPA east of north. Default: the beam in the header of
+        ref_image_conv, or of the largest-beam image of imagelist.
+    add_residual (bool): False leaves the residual out (convolved model
+        only, a diagnostic); residuallist is still used for the errors.
+    smooth_residual_to_target (bool): Also bring each residual from its
+        native beam (residual_beams[i]) to target_beam, with the differential
+        Gaussian and the A_target/A_native rescaling, before adding it and
+        before using it for the errors. Needed when the target beam is larger
+        than the native resolution of the residuals.
+    residual_beams (list): (bmaj_arcsec, bmin_arcsec, bpa_deg) native beam of
+        each residual, for smooth_residual_to_target.
+    model_out_dir (str): If given, the restored planes are written there as
+        FITS, with the target beam in BMAJ/BMIN/BPA. Nothing is written
+        otherwise.
+    out_dir (str): Directory for the alpha maps. Default (None): one
+        directory above the input images.
+    save_fits (bool): False writes no alpha maps (file inputs only write
+        them when True, the default).
+
+    Note on needs_convolution: it convolves every image with the *full*
+    reference beam (not the differential kernel), so the resulting beam is
+    beam_i (*) beam_ref rather than beam_ref, and the stamped header beam is
+    not the real one. Kept as is for backwards compatibility.
+
     """
-    if isinstance(imagelist[0], str):
-        cube_image = makecube(imagelist)
-        cube_residuals = makecube(residuallist)
-    else:
-        cube_image = imagelist
-        cube_residuals = residuallist
-    
-    if mask is None:
-        if ref_image_mask is not None:
-            ref_image_mask = ref_image_mask
-        else:
-            ref_image_mask = imagelist[-1]
-        _,mask = mask_dilation(ref_image_mask,
-                               rms=mad_std(load_fits_data(residuallist[-1])),
-                                     show_figure=True,
-                                     PLOT=True,
-                                     iterations=iterations,
-                                     dilation_size=dilation_size,
-                                     sigma=sigma_global_mask)
-    mask_3d = mask[:, :, np.newaxis]
-    inv_mask = ~mask
-    inv_mask_3d = inv_mask[:, :, np.newaxis]
-    
-    if needs_convolution:
-        if ref_image_conv is None:
-            ref_image_conv = sort_list_by_beam_size(imagelist=imagelist,
-                                                return_df = False)[0][::-1][0]
-        else:
-            ref_image_conv = ref_image_conv
-    
-    
-    if isinstance(ref_image_conv, str):
-        psf_zise = int(get_beam_size_px(ref_image_conv)[0])
-        psf_image_size = int(load_fits_data(ref_image_conv).shape[0])
-        print(f"PSF BEAM SIZE is --> {psf_zise} px")
-        print(f"PSF IMAGE SIZE is --> {psf_image_size} px")
-        larger_beam_image_data = load_fits_data(ref_image_conv)
-        
+    prep = _prepare_spec_cube(
+        imagelist, residuallist, ref_image_conv=ref_image_conv, freqs=freqs,
+        ref_image_mask=ref_image_mask, mask=mask,
+        sigma_global_mask=sigma_global_mask, iterations=iterations,
+        dilation_size=dilation_size, needs_convolution=needs_convolution,
+        conv_task=conv_task, do_average_cube=do_average_cube,
+        bin_size=bin_size, beam_area_px=beam_area_px, verbose=verbose,
+        use_model_images=use_model_images, modellist=modellist,
+        target_beam=target_beam, add_residual=add_residual,
+        smooth_residual_to_target=smooth_residual_to_target,
+        residual_beams=residual_beams, model_out_dir=model_out_dir)
+    conv_cube = prep['conv_cube']
+    conv_cube_res = prep['conv_cube_res']
+    masked_cube = prep['masked_cube']
+    masked_cube_res = prep['masked_cube_res']
+    mask = prep['mask']
+    freqs = prep['freqs']
+    ref_image_conv = prep['ref_image_conv']
+    target_beam = prep['target_beam']
+    beam_area_px = prep['beam_area_px']
 
-        psf_name = tcreate_beam_psf(ref_image_conv,
-                                        size=(psf_image_size, psf_image_size),
-                                        aspect = 'elliptical')
-        PSF_DATA = load_fits_data(psf_name)
-        
-    num_images = cube_image.shape[2]
-    if needs_convolution:
-        conv_cube = np.empty_like(cube_image)
-        conv_cube_res = np.empty_like(cube_residuals)
-        if conv_task == 'fft':
-            for i in tqdm(range(num_images)):
-                conv_image_i_uncor = scipy.signal.fftconvolve(cube_image[:, :, i], 
-                                                            PSF_DATA, 'same')
-                conv_residual_i_uncor = scipy.signal.fftconvolve(cube_residuals[:, :, i], 
-                                                            PSF_DATA, 'same')
-                
-                larger_beam_area = beam_area2(ref_image_conv)
-                beam_area_i = beam_area2(imagelist[i])
-                
-                # factor_conv = np.max(larger_beam_image_data)/np.max(conv_image_i_uncor)
-                factor_conv_i = larger_beam_area/beam_area_i
-                
-                print(f"Factor Convolution is --> {factor_conv_i}")
-                # factor_conv = 1.0
-
-                conv_cube[:, :, i] = conv_image_i_uncor * factor_conv_i
-                conv_image_i = conv_cube[:, :, i]
-                
-                conv_cube_res[:, :, i] = conv_residual_i_uncor * factor_conv_i
-                conv_res_i = conv_cube_res[:, :, i]
-                
-                conv_name = imagelist[i].replace('-image.','-image-conv.').replace('-image.cutout','-image-conv.cutout')
-                pf.writeto(conv_name,
-                                conv_image_i,
-                                overwrite=True)
-                copy_header(ref_image_conv,conv_name,conv_name)
-                
-                conv_res_name = residuallist[i].replace('-residual.','-residual-conv.').replace('-residual.cutout','-residual-conv.cutout')
-                pf.writeto(conv_res_name,
-                                conv_res_i,
-                                overwrite=True)
-                copy_header(ref_image_conv,conv_res_name,conv_res_name)
-                
-        # if conv_task == 'imsmooth':
-        #     if isinstance(imagelist[0], str):
-        #         for i in tqdm(range(num_images)):
-        #             conv_name = imagelist[i].replace('-image.','-image-conv.').replace('-image.cutout','-image-conv.cutout')
-        #             pf.writeto(conv_name,
-        #                             cube_image[:, :, i],
-        #                             overwrite=True)
-        #             copy_header(imagelist[0],conv_name,conv_name)
-                    
-        #             convolve_2D_smooth(imagelist[0],conv_name,mode='transfer',add_prefix='')
-        #             conv_cube[:,:,i] = load_fits_data(conv_name)
-            
-    else:
-        conv_cube = cube_image.copy()
-        conv_cube_res = cube_residuals.copy()
-    
-    # conv_cube_res = cube_residuals.copy()
-    masked_cube = np.where(inv_mask_3d, np.nan, conv_cube)
-    masked_cube_res = np.where(inv_mask_3d, np.nan, conv_cube_res)
-    
-    if do_average_cube:
-        # bin_size = 2
-        # assert masked_cube.shape[2] % bin_size == 0, "Frequency axis size must be divisible by bin size."
-        reshaped_cube = masked_cube.reshape(masked_cube.shape[0], 
-                                            masked_cube.shape[1], -1, 
-                                            bin_size)
-        averaged_cube = reshaped_cube.mean(axis=3)
-
-        reshaped_residual = masked_cube_res.reshape(masked_cube_res.shape[0], 
-                                                    masked_cube_res.shape[1], -1, 
-                                                    bin_size)
-        averaged_cube_res = np.sqrt(np.sum(reshaped_residual**2, axis=3)) / bin_size
-
-
-        print("Original cube shape:", masked_cube.shape)
-        print("Averaged cube shape:", averaged_cube.shape)
-        reshaped_frequencies = freqs.reshape(-1, bin_size)
-        averaged_frequencies = reshaped_frequencies.mean(axis=1)
-        freqs = averaged_frequencies
-        masked_cube = averaged_cube.astype(np.float32)
-        masked_cube_res = averaged_cube_res.astype(np.float32)
-    else:        
-        masked_cube = masked_cube.astype(np.float32)
-        masked_cube_res = masked_cube_res.astype(np.float32)
-    
     if return_only_cube:
         return(None,None,conv_cube,masked_cube_res,masked_cube)
     else:
-        # cube_image * mask_3d
-        idx = np.column_stack(np.where(mask==True))
         if freqs is None:
-            freqs = getfreqs(imagelist)
+            raise ValueError("freqs must be given when the inputs are arrays")
         alphaimage = np.empty_like(conv_cube[:,:,0])
         alphaimage_error = np.empty_like(conv_cube[:,:,0])
-        
+
         alphaimage[:] = np.nan
         alphaimage_error[:] = np.nan
-        
+
         # x = np.log10(freqs/1e9)
         x = freqs/1e9
-        
-        nspec = len(idx)
-        tenpc = int(nspec / 10.0)
+
         count = 0
         pcount = 0
-        
-        
-        def compute_pixel_spectral_index(i, j, x, masked_cube, masked_cube_res, nu0):
-            y = masked_cube[i, j, :] * 1000
-            yerr = np.sqrt((1*masked_cube_res[i, j, :])**2.0 + (flux_sys_error_frac * masked_cube[i, j, :])**2.0) * 1000
-            results_fit = do_fit_spec_map(x, y, yerr, nu0)
-            return (i, j, 
-                    results_fit.params['alpha'].value, 
-                    results_fit.params['alpha'].stderr,
-                    results_fit.params['b'].value,
-                    y,yerr,results_fit)
-        
-        
-        pixel_indices = [(i, j) for i, j in idx]
-        results = Parallel(n_jobs=n_jobs)(
-        delayed(compute_pixel_spectral_index)(i, j, x, masked_cube, masked_cube_res, nu0) 
-        for i, j in tqdm(pixel_indices, total=len(pixel_indices))
-        )
-        
 
-        for (i, j, 
-            alpha_value, alpha_err,
-            b_value,y,yerr,results_fit) in results:
-            alphaimage[i, j] = alpha_value
-            alphaimage_error[i, j] = alpha_err
-            
-            # alphaimage[i, j] = results_fit.params['alpha'].value
-            # alphaimage_error[i, j] = results_fit.params['alpha'].stderr
+        # What is fitted: one spectrum per pixel (default), or one mean
+        # spectrum per spatial bin (see _prepare_fit_spectra).
+        (bin_labels, fit_idx, fit_cube, fit_cube_res,
+         beam_area_px, _) = _prepare_fit_spectra(
+            imagelist, conv_cube_res, masked_cube, masked_cube_res, mask,
+            weighting=weighting, noise_rms=noise_rms,
+            do_average_cube=do_average_cube, bin_size=bin_size,
+            binning=binning, binning_kwargs=binning_kwargs,
+            beam_area_px=beam_area_px, verbose=verbose)
+        nspec = len(fit_idx)
+        tenpc = int(nspec / 10.0)
+
+        chunk_results = _fit_pixels_in_chunks(
+            fit_spectra_chunk, fit_idx, x, fit_cube, fit_cube_res,
+            (nu0, flux_sys_error_frac, weighting, robust_scale),
+            n_jobs=n_jobs, chunk_size=chunk_size, verbose=verbose,
+            label='specidx_map' if binning is None else f'specidx_map [{binning} binning]',
+            unit='pixels' if binning is None else 'bins')
+
+        alpha_values = np.empty(nspec)
+        alpha_errs = np.empty(nspec)
+        b_values = np.empty(nspec)
+        k = 0
+        for chunk_alpha, chunk_alpha_err, chunk_b in chunk_results:
+            n = len(chunk_alpha)
+            alpha_values[k:k + n] = chunk_alpha
+            alpha_errs[k:k + n] = chunk_alpha_err
+            b_values[k:k + n] = chunk_b
+            k += n
+
+        if bin_labels is not None:
+            # every pixel of a bin gets the bin's fit
+            in_bin = bin_labels >= 0
+            alphaimage[in_bin] = alpha_values[bin_labels[in_bin]]
+            alphaimage_error[in_bin] = alpha_errs[bin_labels[in_bin]]
+
+        for p, (i, j) in enumerate(fit_idx):
+            alpha_value = alpha_values[p]
+            if bin_labels is None:
+                alphaimage[i, j] = alpha_value
+                alphaimage_error[i, j] = alpha_errs[p]
+
             count += 1
             if count == tenpc:
                 count = 0
                 pcount += 10
                 if verbose>0:
-                    model_best = linear_function(x, 
+                    # re-fit this pixel/bin in the parent (deterministic,
+                    # same result) to get y, yerr and the report for the plot
+                    b_value = b_values[p]
+                    y = fit_cube[i, j, :] * 1000
+                    yerr = np.sqrt((1*fit_cube_res[i, j, :])**2.0 + (flux_sys_error_frac * fit_cube[i, j, :])**2.0) * 1000
+                    results_fit = do_fit_spec_map(x, y, yerr, nu0,
+                                                  weighting=weighting,
+                                                  robust_scale=robust_scale)
+                    model_best = linear_function(x,
                                                 alpha_value, 
                                                 b_value,
                                                 nu0)
@@ -4411,39 +4848,51 @@ def specidx_map(imagelist,residuallist,
                     plt.semilogy()
                     plt.semilogx()
                     plt.xlabel('Frequency [GHz]')
-                    plt.ylabel('Pixel Flux Density [mJy/Beam]')
+                    plt.ylabel('Pixel Flux Density [mJy/Beam]' if bin_labels is None
+                               else f'Bin {i} mean Flux Density [mJy/Beam]')
                     plt.legend()
                     plt.show()
                     print(lmfit.fit_report(results_fit.params))
 
         
-        if isinstance(imagelist[0], str):
+        if isinstance(imagelist[0], str) and save_fits:
             """
             Only save the alpha image if the input is a list of strings.
             """
-            # alphaimage_name = imagelist[0].replace('-0000-image.fits','-alpha.fits')
-            # alphaimage_error_name = imagelist[0].replace('-0000-image.fits','-alphaerror.fits')
+            # binned and chi2 maps get their own names, never overwriting the
+            # default (per-pixel, 'log') ones
+            tag = _spec_output_tag(binning, weighting, use_model_images,
+                                   add_residual, smooth_residual_to_target)
             if ref_image_conv is None:
                 ref_image_conv = sort_list_by_beam_size(imagelist=imagelist,
                                                     return_df = False)[0][::-1][0]
-                
-            _alphaimage_name = (ref_image_conv.replace('-image.','-alpha.').
-                            replace('-image.cutout','-alpha.cutout').
-                            replace('-image-pb','-alpha-pb'))
-            
-            _alphaimage_error_name = (ref_image_conv.replace('-image.','-alphaerror.').
-                                    replace('-image.cutout','-alphaerror.cutout').
-                                    replace('-image-pb','-alphaerror-pb'))
-            
-            alphaimage_name = os.path.dirname(os.path.dirname(_alphaimage_name))+'/'+os.path.basename(_alphaimage_name)
-            alphaimage_error_name = os.path.dirname(os.path.dirname(_alphaimage_error_name))+'/'+os.path.basename(_alphaimage_error_name)
-            
-            
+
+            alphaimage_name = _spec_output_name(ref_image_conv, 'alpha', tag, out_dir)
+            alphaimage_error_name = _spec_output_name(ref_image_conv, 'alphaerror', tag, out_dir)
+
             pf.writeto(alphaimage_name,alphaimage,overwrite=True)
             pf.writeto(alphaimage_error_name,alphaimage_error,overwrite=True)
             copy_header(ref_image_conv,alphaimage_name,alphaimage_name)
             copy_header(ref_image_conv,alphaimage_error_name,alphaimage_error_name)
-        
+            
+            if bin_labels is not None:
+                bins_name = _spec_output_name(ref_image_conv, 'alphabins', tag, out_dir)
+                pf.writeto(bins_name,bin_labels.astype(np.int32),overwrite=True)
+                copy_header(ref_image_conv,bins_name,bins_name)
+
+            if use_model_images:
+                # the maps are at the target beam, not at the header beam of
+                # ref_image_conv
+                for _name in [alphaimage_name, alphaimage_error_name] + (
+                        [bins_name] if bin_labels is not None else []):
+                    with pf.open(_name, mode='update') as hdul:
+                        hdul[0].header['BMAJ'] = target_beam[0] / 3600.0
+                        hdul[0].header['BMIN'] = target_beam[1] / 3600.0
+                        hdul[0].header['BPA'] = target_beam[2]
+
+        if return_bin_map:
+            return(alphaimage, alphaimage_error,conv_cube,masked_cube_res,masked_cube,
+                   bin_labels)
         return(alphaimage, alphaimage_error,conv_cube,masked_cube_res,masked_cube)
         
         
@@ -4463,8 +4912,22 @@ def specidx_map_SY_FF(imagelist,residuallist,
                       needs_convolution=False,conv_task='fft',
                       do_average_cube = False,bin_size=int(2),
                       n_jobs=1,
+                      chunk_size=None,
                       verbose=0):
-    
+    """
+    Earlier per-pixel synchrotron + free-free decomposition, kept for
+    existing notebooks. `t_specidx_map_SY_FF` is the maintained version
+    (spatial binning, 'chi2' weighting, errors with the parameter
+    covariance, model-restored cubes).
+
+    Known limitations of the errors returned here: they are missing (NaN)
+    where an amplitude sits on its bound, and S_tot_33_err, Snu0_err and
+    f_th_33_err ignore the anti-correlation between A_sy and A_ff.
+    """
+    if sed_model != 'S2':
+        raise NotImplementedError(f"sed_model={sed_model!r}: only 'S2' "
+                                  "(synchrotron + free-free) is implemented")
+
     if isinstance(imagelist[0], str):
         cube_image = makecube(imagelist)
         cube_residuals = makecube(residuallist)
@@ -4488,15 +4951,17 @@ def specidx_map_SY_FF(imagelist,residuallist,
     inv_mask = ~mask
     inv_mask_3d = inv_mask[:, :, np.newaxis]
     
-    if needs_convolution == False:
-        if ref_image_conv is None:
-            ref_image_conv = sort_list_by_beam_size(imagelist=imagelist,
-                                                return_df = False)[0][::-1][0]
-        else:
-            ref_image_conv = imagelist[0]
+    # Reference image (largest beam by default): used for the convolution and
+    # for the output names. It used to be resolved only when
+    # needs_convolution=False (and a given ref_image_conv was then replaced by
+    # imagelist[0]), so needs_convolution=True without ref_image_conv failed,
+    # and so did array inputs.
+    if ref_image_conv is None and isinstance(imagelist[0], str):
+        ref_image_conv = sort_list_by_beam_size(imagelist=imagelist,
+                                            return_df = False)[0][::-1][0]
 
     
-    if isinstance(ref_image_conv, str):
+    if needs_convolution and isinstance(ref_image_conv, str):
         psf_zise = int(get_beam_size_px(ref_image_conv)[0])
         psf_image_size = int(load_fits_data(ref_image_conv).shape[0])
         print(f"PSF BEAM SIZE is --> {psf_zise} px")
@@ -4608,6 +5073,10 @@ def specidx_map_SY_FF(imagelist,residuallist,
     f_th_33_err = np.empty_like(conv_cube[:,:,0])
     S_tot_33 = np.empty_like(conv_cube[:,:,0])
     S_tot_33_err = np.empty_like(conv_cube[:,:,0])
+    S_sy_33 = np.empty_like(conv_cube[:,:,0])
+    S_sy_33_err = np.empty_like(conv_cube[:,:,0])
+    S_ff_33 = np.empty_like(conv_cube[:,:,0])
+    S_ff_33_err = np.empty_like(conv_cube[:,:,0])
     
     sy_map_33 = np.empty_like(conv_cube[:,:,0])
     sy_map_33_err = np.empty_like(conv_cube[:,:,0])
@@ -4631,10 +5100,14 @@ def specidx_map_SY_FF(imagelist,residuallist,
     Snu0_err[:] = np.nan
     S_tot_33[:] = np.nan
     S_tot_33_err[:] = np.nan
+    S_sy_33[:] = np.nan
+    S_sy_33_err[:] = np.nan
+    S_ff_33[:] = np.nan
+    S_ff_33_err[:] = np.nan
 
     
 #     x = np.log10(freqs)
-    x = freqs.copy()/1e9
+    x = np.asarray(freqs, dtype=float)/1e9
     
     nspec = len(idx)
     tenpc = int(nspec / 10.0)
@@ -4645,42 +5118,23 @@ def specidx_map_SY_FF(imagelist,residuallist,
     masked_cube_res = masked_cube_res.astype(np.float32)
     
     
-    def compute_pixel_nth_spectral_index(i, j, x, masked_cube, masked_cube_res, nu0):
-        y = masked_cube[i, j, :] * 1000
-        yerr = np.sqrt((1*masked_cube_res[i, j, :])**2.0 + (flux_sys_error_frac * masked_cube[i, j, :])**2.0) * 1000
-        results_fit = do_fit_spec_SY_FF_map(x, y, yerr, nu0,fix_alpha_nt)
-        return (i, j, 
-                results_fit.params['alpha_nt'].value, 
-                results_fit.params['alpha_nt'].stderr,
-                results_fit.params['A_sy'].value,
-                results_fit.params['A_sy'].stderr,
-                results_fit.params['A_ff'].value,
-                results_fit.params['A_ff'].stderr,
-                y,yerr,results_fit
-                )
-    
-    
-    # pixel_indices = [(i, j) for i, j in idx]
-    # results = Parallel(n_jobs=n_jobs)(
-    # delayed(compute_pixel_nth_spectral_index)(i, j, x, masked_cube, masked_cube_res, nu0) 
-    # for i, j in tqdm(pixel_indices, total=len(pixel_indices))
-    # )
-    
-    pixel_indices = [(i, j) for i, j in idx]
-    with Parallel(n_jobs=n_jobs) as parallel:
-        results = parallel(
-            delayed(compute_pixel_nth_spectral_index)(
-                i, j, x, masked_cube, masked_cube_res, nu0
-            ) for i, j in tqdm(pixel_indices, total=len(pixel_indices))
-        )
-    
+    chunk_results = _fit_pixels_in_chunks(
+        fit_spectra_SY_FF_chunk, idx, x, masked_cube, masked_cube_res,
+        (nu0, flux_sys_error_frac, fix_alpha_nt),
+        n_jobs=n_jobs, chunk_size=chunk_size, verbose=verbose,
+        label='specidx_map_SY_FF')
+    # one (alpha_nt, alpha_nt_err, A_sy, A_sy_err, A_ff, A_ff_err) per pixel;
+    # a missing stderr (None, e.g. a parameter on its bound) becomes NaN
+    results = [(i, j, *(np.nan if v is None else v for v in pixel_fit))
+               for (i, j), pixel_fit in
+               zip(idx, (p for chunk in chunk_results for p in chunk))]
+
     if sed_model == 'S2':
         # for i, j in tqdm(idx):
         # for i, j in idx:
         for (i, j, alpha_nt_value, alpha_nt_err,
              A_sy_value,A_sy_err,
-             A_ff_value,A_ff_err,
-             y,yerr,results_fit) in results:
+             A_ff_value,A_ff_err) in results:
             # if count == 0:
             #     print(str(pcount) + '%...')
             
@@ -4701,7 +5155,8 @@ def specidx_map_SY_FF(imagelist,residuallist,
             sy_map_33[i,j] = A_sy_value * (33/nu0)**alpha_nt_value
             ff_map_33[i,j] = A_ff_value * (33/nu0)**(-0.1)
             sy_map_33_err[i,j] = sy_map_33[i,j] * np.sqrt((A_sy_err/A_sy_value)**2.0 + (alpha_nt_err * np.log(33/nu0))**2.0)
-            ff_map_33_err[i,j] = ff_map_33[i,j] * np.sqrt((A_ff_err/A_ff_value)**2.0 + (0.1 * np.log(33/nu0))**2)
+            # the free-free index (-0.1) is fixed: it carries no error
+            ff_map_33_err[i,j] = ff_map_33[i,j] * np.sqrt((A_ff_err/A_ff_value)**2.0)
             
             Snu0[i,j] = RC_function_SY_FF(nu0, 
                                     A_sy_value, 
@@ -4714,47 +5169,42 @@ def specidx_map_SY_FF(imagelist,residuallist,
                                     alpha_nt_value,
                                     nu0)
             
-            S_tot_33_err = RC_function_SY_FF(33, 
+            S_tot_33_err[i,j] = RC_function_SY_FF(33, 
                                     A_sy_err, 
                                     A_ff_err, 
                                     alpha_nt_value,
                                     nu0)
             
-            S_sy_33 = RC_function_SY_FF(33, 
+            S_sy_33_px = RC_function_SY_FF(33, 
                                     A_sy_value,
                                     0.0, 
                                     alpha_nt_value,
                                     nu0)
-            S_sy_33_err = RC_function_SY_FF(33, 
+            S_sy_33_err_px = RC_function_SY_FF(33, 
                                     A_sy_err, 
                                     0.0, 
                                     alpha_nt_value,
                                     nu0)
             
-            S_ff_33 = RC_function_SY_FF(33, 
+            S_ff_33_px = RC_function_SY_FF(33, 
                                     0.0, 
                                     A_ff_value, 
                                     0.0,
                                     nu0)
-            S_ff_33_err = RC_function_SY_FF(33, 
+            S_ff_33_err_px = RC_function_SY_FF(33, 
                                     0.0, 
                                     A_ff_err, 
                                     0.0,
                                     nu0)
             
-            sed_sy_ff = {'S_sy_33':S_sy_33,
-                         'S_sy_33_err':S_sy_33_err,
-                        'S_ff_33':S_ff_33,
-                        'S_ff_33_err':S_ff_33_err,
-                        'sy_map_33':sy_map_33,
-                        'sy_map_33_err':sy_map_33_err,
-                        'ff_map_33':ff_map_33,
-                        'ff_map_33_err':ff_map_33_err,
-                        'S_tot_33':S_tot_33}
+            S_sy_33[i,j] = S_sy_33_px
+            S_sy_33_err[i,j] = S_sy_33_err_px
+            S_ff_33[i,j] = S_ff_33_px
+            S_ff_33_err[i,j] = S_ff_33_err_px
             
-            f_th_33[i,j] = S_ff_33 / S_tot_33[i,j]
+            f_th_33[i,j] = S_ff_33_px / S_tot_33[i,j]
             
-            f_th_33_err[i,j] = f_th_33[i,j] * np.sqrt((S_ff_33_err/S_ff_33)**2.0 + (S_tot_33_err/(S_ff_33+S_sy_33))**2.0)
+            f_th_33_err[i,j] = f_th_33[i,j] * np.sqrt((S_ff_33_err_px/S_ff_33_px)**2.0 + (S_tot_33_err[i,j]/(S_ff_33_px+S_sy_33_px))**2.0)
             
             try:
                 Snu0_err[i,j] = RC_function_SY_FF(nu0, 
@@ -4770,13 +5220,18 @@ def specidx_map_SY_FF(imagelist,residuallist,
                 count = 0
                 pcount += 10
                 if verbose>0:
-                    model_best = RC_function_SY_FF(x, 
-                                                A_sy_value, 
+                    # re-fit this pixel in the parent (deterministic, same
+                    # result) to get y, yerr and the report for the plot
+                    y = masked_cube[i, j, :] * 1000
+                    yerr = np.sqrt((1*masked_cube_res[i, j, :])**2.0 + (flux_sys_error_frac * masked_cube[i, j, :])**2.0) * 1000
+                    results_fit = do_fit_spec_SY_FF_map(x, y, yerr, nu0,fix_alpha_nt)
+                    model_best = RC_function_SY_FF(x,
+                                                A_sy_value,
                                                 A_ff_value,
                                                 alpha_nt_value,
                                                 nu0
                                                 )
-                    
+
                     model_best_sy = RC_function_SY_FF(x, 
                                                 A_sy_value, 
                                                 0.0,
@@ -4816,6 +5271,18 @@ def specidx_map_SY_FF(imagelist,residuallist,
                     plt.show()
                     print(lmfit.fit_report(results_fit.params))
         
+    
+    # 33 GHz decomposition maps (all entries are 2D maps)
+    sed_sy_ff = {'S_sy_33':S_sy_33,
+                 'S_sy_33_err':S_sy_33_err,
+                 'S_ff_33':S_ff_33,
+                 'S_ff_33_err':S_ff_33_err,
+                 'sy_map_33':sy_map_33,
+                 'sy_map_33_err':sy_map_33_err,
+                 'ff_map_33':ff_map_33,
+                 'ff_map_33_err':ff_map_33_err,
+                 'S_tot_33':S_tot_33,
+                 'S_tot_33_err':S_tot_33_err}
     
     if isinstance(imagelist[0], str):
         """
@@ -4861,63 +5328,91 @@ def specidx_map_SY_FF(imagelist,residuallist,
 # import matplotlib.pyplot as plt
 # import lmfit
 
-def create_frequency_maps(A_sy, A_sy_err, A_ff, A_ff_err, alpha_nt, alpha_nt_err, 
-                         frequencies, nu0=10.0):
+def create_frequency_maps(A_sy, A_sy_err, A_ff, A_ff_err, alpha_nt, alpha_nt_err,
+                         frequencies, nu0=10.0,
+                         cov_sy_ff=None, cov_sy_alpha=None, cov_ff_alpha=None):
     """
     Calculate synchrotron and free-free maps at specified frequencies.
-    
+
+    With S = A_sy*(nu/nu0)**alpha_nt and F = A_ff*(nu/nu0)**(-0.1), the
+    total is T = S + F and the thermal fraction is f_th = F/T. Errors are
+    propagated to first order with the covariance of the fitted parameters:
+    A_sy and A_ff are strongly anti-correlated, so the errors of T and f_th
+    are not the quadrature sum of the errors of S and F. The free-free index
+    (-0.1) is fixed and carries no error.
+
     Parameters:
     -----------
     A_sy, A_sy_err : array_like
         Synchrotron amplitude and error maps
-    A_ff, A_ff_err : array_like  
+    A_ff, A_ff_err : array_like
         Free-free amplitude and error maps
     alpha_nt, alpha_nt_err : array_like
-        Non-thermal spectral index and error maps
+        Non-thermal spectral index and error maps (error 0 when it is fixed)
     frequencies : array_like
         Target frequencies in GHz
     nu0 : float
         Reference frequency in GHz
-        
+    cov_sy_ff, cov_sy_alpha, cov_ff_alpha : array_like, optional
+        Covariance maps cov(A_sy, A_ff), cov(A_sy, alpha_nt) and
+        cov(A_ff, alpha_nt). None means uncorrelated.
+
     Returns:
     --------
-    dict : Dictionary containing maps for each frequency
+    dict : Dictionary containing maps for each frequency ('<freq>GHz'):
+        synchrotron, free_free, total, thermal_fraction and their '_err'.
     """
+    A_sy = np.asarray(A_sy, dtype=float)
+    A_ff = np.asarray(A_ff, dtype=float)
+    alpha_nt = np.asarray(alpha_nt, dtype=float)
+    var_sy = np.asarray(A_sy_err, dtype=float) ** 2
+    var_ff = np.asarray(A_ff_err, dtype=float) ** 2
+    var_al = np.asarray(alpha_nt_err, dtype=float) ** 2
+    zero = np.zeros_like(A_sy)
+    c_sf = zero if cov_sy_ff is None else np.asarray(cov_sy_ff, dtype=float)
+    c_sa = zero if cov_sy_alpha is None else np.asarray(cov_sy_alpha, dtype=float)
+    c_fa = zero if cov_ff_alpha is None else np.asarray(cov_ff_alpha, dtype=float)
+
     results = {}
-    
+
     for freq in frequencies:
         freq_key = f'{freq:.1f}GHz'
-        
-        # Synchrotron component
-        sy_map = A_sy * (freq/nu0)**alpha_nt
-        sy_map_err = sy_map * np.sqrt((A_sy_err/A_sy)**2 + (alpha_nt_err * np.log(freq/nu0))**2)
-        
-        
-        # Free-free component (spectral index = -0.1)
-        ff_map = A_ff * (freq/nu0)**(-0.1)
-        ff_map_err = ff_map * np.sqrt((A_ff_err/A_ff)**2 + (0.1 * np.log(freq/nu0))**2)
-        
-        # Total emission
-        total_map = sy_map + ff_map
-        total_map_err = np.sqrt(sy_map_err**2 + ff_map_err**2)
-        
-        # Thermal fraction
-        thermal_fraction = ff_map / total_map
-        thermal_fraction_err = thermal_fraction * np.sqrt(
-            (ff_map_err/ff_map)**2 + (total_map_err/total_map)**2
-        )
-        
-        results[freq_key] = {
-            'synchrotron': sy_map,
-            'synchrotron_err': sy_map_err,
-            'free_free': ff_map,
-            'free_free_err': ff_map_err,
-            'total': total_map,
-            'total_err': total_map_err,
-            'thermal_fraction': thermal_fraction,
-            'thermal_fraction_err': thermal_fraction_err
-        }
-    
+        r = freq / nu0
+        lnr = np.log(r)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            r_nt = r ** alpha_nt
+            r_ff = r ** (-0.1)
+
+            # Synchrotron component
+            sy_map = A_sy * r_nt
+            var_S = (r_nt ** 2 * var_sy + (sy_map * lnr) ** 2 * var_al
+                     + 2.0 * r_nt * sy_map * lnr * c_sa)
+
+            # Free-free component (fixed spectral index = -0.1)
+            ff_map = A_ff * r_ff
+            var_F = r_ff ** 2 * var_ff
+
+            # Total emission
+            cov_SF = r_nt * r_ff * c_sf + sy_map * lnr * r_ff * c_fa
+            total_map = sy_map + ff_map
+            var_T = var_S + var_F + 2.0 * cov_SF
+
+            # Thermal fraction f = F/(S+F): df/dS = -F/T**2, df/dF = S/T**2
+            thermal_fraction = ff_map / total_map
+            var_f = (ff_map ** 2 * var_S + sy_map ** 2 * var_F
+                     - 2.0 * ff_map * sy_map * cov_SF) / total_map ** 4
+
+            results[freq_key] = {
+                'synchrotron': sy_map,
+                'synchrotron_err': np.sqrt(np.maximum(var_S, 0.0)),
+                'free_free': ff_map,
+                'free_free_err': np.sqrt(np.maximum(var_F, 0.0)),
+                'total': total_map,
+                'total_err': np.sqrt(np.maximum(var_T, 0.0)),
+                'thermal_fraction': thermal_fraction,
+                'thermal_fraction_err': np.sqrt(np.maximum(var_f, 0.0))
+            }
+
     return results
 
 def prepare_input_data(imagelist, residuallist, freqs=None):
@@ -5193,45 +5688,73 @@ def extract_fit_parameters(results_fit):
     
     return params
 
-def save_parameter_maps(output_maps, ref_image_conv, imagelist):
+def save_parameter_maps(output_maps, ref_image_conv, imagelist, tag='',
+                        frequency_maps=None, bin_labels=None, target_beam=None,
+                        out_dir=None):
     """
     Save parameter maps to FITS files.
-    
+
     Parameters:
     -----------
     output_maps : dict
         Dictionary of parameter maps
     ref_image_conv : str
-        Reference image for header copying
+        Reference image for header copying (and for the output names)
     imagelist : list
-        List of input images
+        List of input images; nothing is written for array inputs
+    tag : str
+        Tag added to every file name (binning, weighting, ...), so different
+        kinds of runs do not overwrite each other.
+    frequency_maps : dict, optional
+        Output of `create_frequency_maps`; the thermal fraction and its
+        error are saved for each frequency.
+    bin_labels : int array, optional
+        Bin label map (saved when given).
+    target_beam : tuple, optional
+        (bmaj_arcsec, bmin_arcsec, bpa_deg) to stamp in the headers when the
+        maps are not at the beam of ref_image_conv (use_model_images).
+    out_dir : str, optional
+        Directory for the files. Default: one directory above the images.
+
+    Returns:
+    --------
+    list : names of the files written
     """
-    if not isinstance(imagelist[0], str):
-        return
-    
-    # Define save parameters
+    if not isinstance(imagelist[0], str) or not isinstance(ref_image_conv, str):
+        return []
+
+    # map key -> (file suffix, BUNIT)
     save_params = {
-        'alpha_nt': 'alpha_nt',
-        'alpha_nt_err': 'alpha_nt_error', 
-        'A_sy': 'A_sy',
-        'A_sy_err': 'A_sy_error',
-        'A_ff': 'A_ff', 
-        'A_ff_err': 'A_ff_error'
+        'alpha_nt': ('alpha_nt', ''),
+        'alpha_nt_err': ('alpha_nt_error', ''),
+        'A_sy': ('A_sy', 'mJy/beam'),
+        'A_sy_err': ('A_sy_error', 'mJy/beam'),
+        'A_ff': ('A_ff', 'mJy/beam'),
+        'A_ff_err': ('A_ff_error', 'mJy/beam'),
+        'S_nu0': ('S_nu0', 'mJy/beam'),
+        'S_nu0_err': ('S_nu0_error', 'mJy/beam'),
+        'chi2_red': ('chi2red_syff', ''),
+        'fit_flag': ('fitflag_syff', ''),
     }
-    
-    base_dir = os.path.dirname(os.path.dirname(ref_image_conv))
-    
-    for map_key, file_suffix in save_params.items():
-        if map_key in output_maps:
-            filename = (ref_image_conv
-                       .replace('-image.', f'-{file_suffix}.')
-                       .replace('-image.cutout', f'-{file_suffix}.cutout')
-                       .replace('-image-pb', f'-{file_suffix}-pb'))
-            
-            output_path = os.path.join(base_dir, os.path.basename(filename))
-            
-            pf.writeto(output_path, output_maps[map_key], overwrite=True)
-            copy_header(ref_image_conv, output_path, output_path)
+    to_write = [(suffix, output_maps[key], bunit)
+                for key, (suffix, bunit) in save_params.items()
+                if key in output_maps]
+    for freq_key, maps in (frequency_maps or {}).items():
+        to_write += [
+            (f'S_sy_{freq_key}', maps['synchrotron'], 'mJy/beam'),
+            (f'S_sy_error_{freq_key}', maps['synchrotron_err'], 'mJy/beam'),
+            (f'S_ff_{freq_key}', maps['free_free'], 'mJy/beam'),
+            (f'S_ff_error_{freq_key}', maps['free_free_err'], 'mJy/beam'),
+            (f'S_total_{freq_key}', maps['total'], 'mJy/beam'),
+            (f'S_total_error_{freq_key}', maps['total_err'], 'mJy/beam'),
+            (f'fth_{freq_key}', maps['thermal_fraction'], ''),
+            (f'fth_error_{freq_key}', maps['thermal_fraction_err'], ''),
+        ]
+    if bin_labels is not None:
+        to_write.append(('syffbins', bin_labels.astype(np.int32), ''))
+
+    return _save_spec_maps(to_write, ref_image_conv, tag=tag,
+                           target_beam=target_beam, out_dir=out_dir)
 
 def t_specidx_map_SY_FF(imagelist, residuallist,
                       ref_image_conv=None,
@@ -5250,187 +5773,327 @@ def t_specidx_map_SY_FF(imagelist, residuallist,
                       do_average_cube=False,
                       bin_size=2,
                       n_jobs=1,
+                      chunk_size=None,
                       verbose=0,
-                      output_frequencies=[1.4, 6.0, 33.0]):
+                      output_frequencies=(1.4, 6.0, 33.0),
+                      binning=None,
+                      binning_kwargs=None,
+                      beam_area_px=None,
+                      weighting='chi2',
+                      robust_scale=3.0,
+                      noise_rms=None,
+                      alpha_nt_fixed=-0.85,
+                      alpha_nt_bounds=(-2.5, -0.2),
+                      use_model_images=False,
+                      modellist=None,
+                      target_beam=None,
+                      add_residual=True,
+                      smooth_residual_to_target=False,
+                      residual_beams=None,
+                      model_out_dir=None,
+                      out_dir=None,
+                      save_fits=True):
     """
-    Perform pixel-by-pixel SED modelling to decompose radio emission.
-    
+    Resolved SED decomposition into synchrotron and free-free emission:
+
+        S(nu) = A_sy*(nu/nu0)**alpha_nt + A_ff*(nu/nu0)**(-0.1)
+
+    fitted to the spectrum of every pixel, or of every spatial bin, of a
+    list of images at different frequencies. A_sy and A_ff are the
+    synchrotron and free-free surface brightness at nu0 (both >= 0).
+
+    The cube preparation (mask, convolution, model restoring, frequency
+    averaging), the spatial binning and the noise model are the ones of
+    `specidx_map`, so the arguments they share mean the same.
+
     Parameters:
     -----------
     imagelist : list or array
-        Input images or image cube
+        Input images (FITS names) or image cube (ny, nx, nfreq), Jy/beam
     residuallist : list or array
         Residual images or residual cube
     ref_image_conv : str, optional
-        Reference image for convolution
+        Reference image for convolution and for the output names/headers.
+        Default: the image with the largest beam.
     freqs : array_like, optional
-        Frequency array in Hz
+        Frequency array in Hz (read from the headers if None)
     ref_image_mask : str, optional
         Reference image for mask creation
     flux_sys_error_frac : float
-        Systematic flux error fraction
+        Fractional flux error added in quadrature to the noise of every
+        point: yerr = sqrt(noise**2 + (flux_sys_error_frac*S)**2). It is
+        treated as independent per band; with 'chi2' it enters the reported
+        errors directly (set it to 0 for noise-only errors).
     nu0 : float
         Reference frequency in GHz
     mask : array_like, optional
         Processing mask
-    sigma_global_mask : float
-        Sigma threshold for mask creation
-    iterations : int
-        Mask dilation iterations
-    dilation_size : int
-        Mask dilation size
+    sigma_global_mask, iterations, dilation_size :
+        Used to build the mask when `mask` is None
     sed_model : str
-        SED model type
+        Only 'S2' (synchrotron + free-free) is implemented
     fix_alpha_nt : bool
-        Fix non-thermal spectral index
-    needs_convolution : bool
-        Whether convolution is needed
-    conv_task : str
-        Convolution method
-    do_average_cube : bool
-        Apply frequency averaging
-    bin_size : int
-        Frequency averaging bin size
+        Fix the non-thermal spectral index at `alpha_nt_fixed`. The model is
+        then linear in A_sy and A_ff, and the decomposition is much better
+        constrained: with alpha_nt free, alpha_nt and A_ff are strongly
+        degenerate over a limited frequency range.
+    needs_convolution, conv_task :
+        As in `specidx_map`
+    do_average_cube, bin_size :
+        Average the cube in groups of `bin_size` consecutive frequencies
     n_jobs : int
         Number of parallel jobs
+    chunk_size : int, optional
+        Spectra fitted per parallel task. Default (None) splits them into
+        ~16 chunks per job.
     verbose : int
-        Verbosity level
-    output_frequencies : list
+        Verbosity level; > 0 also shows ten example fits
+    output_frequencies : sequence
         Frequencies for derived quantity maps (GHz)
-        
+    binning : str or None
+        None: fit every pixel. 'contour': contour binning (see
+        `specidx_map`); one mean spectrum per bin is fitted and its
+        parameters are given to all pixels of the bin.
+    binning_kwargs : dict
+        Options of the binning method (target_snr, smooth_sigma_px,
+        constraint, ref_map, rms). The thermal fraction comes from the
+        curvature of the spectrum, so it needs more signal-to-noise than a
+        single spectral index, in particular when alpha_nt is free.
+    beam_area_px : float
+        Beam area in pixels for the binning. Default: the largest beam of
+        the inputs (1 for array inputs).
+    weighting : str
+        'chi2' (default): yerr = sqrt(noise_rms**2 + (flux_sys_error_frac*S)**2)
+            is the 1-sigma error of each point, residuals (S - model)/yerr,
+            robust (Cauchy) threshold of `robust_scale` sigma, and absolute
+            parameter errors from the covariance at the best fit. These
+            stay defined when A_ff (or A_sy) sits on its lower bound of 0,
+            where the error is the scale of an upper limit.
+        'log': the previous behaviour; the residual pixel value is the noise
+            term, used as mild log-weights; errors are rescaled by the
+            scatter about the fit and are missing (NaN) at the bounds.
+    robust_scale : float
+        'chi2' only: points beyond ~robust_scale sigma are down-weighted.
+    noise_rms : None, array (nfreq,) or array (ny, nx, nfreq)
+        'chi2' only: noise per band. None: mad_std of each residual image
+        outside the mask.
+    alpha_nt_fixed : float
+        Value of alpha_nt when fix_alpha_nt=True.
+    alpha_nt_bounds : (min, max)
+        Bounds of alpha_nt when it is free. The maximum is kept below the
+        free-free index (-0.1): above it the two components swap roles.
+    use_model_images, modellist, target_beam, add_residual,
+    smooth_residual_to_target, residual_beams, model_out_dir :
+        Build the cube from the clean-component models restored with a
+        common beam; see `specidx_map`.
+    out_dir : str, optional
+        Directory for the FITS outputs. Default (None): one directory above
+        the input images.
+    save_fits : bool
+        False: write no FITS files.
+
     Returns:
     --------
     dict : Comprehensive results dictionary containing:
-        - parameter_maps: Primary fit parameter maps
-        - frequency_maps: Derived quantities at specified frequencies  
-        - data_products: Processed cubes and masks
-        - metadata: Processing information
+        - parameter_maps: alpha_nt, A_sy, A_ff, S_nu0 (total at nu0) and
+          their '_err'; cov_sy_ff, cov_sy_alpha, cov_ff_alpha; chi2_red;
+          n_bands; fit_flag. Amplitudes are in mJy/beam.
+          fit_flag marks fits that ended on a bound: 1 = A_sy at 0,
+          2 = A_ff at 0 (no free-free detected; A_ff_err is then the scale
+          of an upper limit), 4 = alpha_nt at one of alpha_nt_bounds (the
+          decomposition is then not constrained by the data and the errors
+          are not meaningful); the values add up.
+        - frequency_maps: synchrotron, free_free, total, thermal_fraction
+          (and '_err') at each of output_frequencies
+        - data_products: conv_cube, masked_cube, masked_cube_res, mask,
+          bin_map (None without binning), noise_rms (per band, 'chi2')
+        - metadata: processing information, including the files written
+
+    FITS outputs (file inputs only) get a tag for the binning, the weighting
+    and a fixed alpha_nt ('-alphafix'), e.g.
+    '<name>-fth_33.0GHz-contourbin-chi2-alphafix.fits'.
     """
-    
-    # 1. Prepare input data
-    cube_image, cube_residuals, frequencies_hz = prepare_input_data(
-        imagelist, residuallist, freqs
-    )
-    
-    # Convert frequencies to GHz for processing
-    frequencies_ghz = frequencies_hz / 1e9
-    
-    # 2. Create processing mask
-    mask, inv_mask_3d = create_processing_mask(
-        ref_image_mask, residuallist if isinstance(residuallist[0], str) else None,
-        mask, sigma_global_mask, iterations, dilation_size
-    )
-    
-    # 3. Handle convolution if needed
-    if needs_convolution:
-        if ref_image_conv is None:
-            ref_image_conv = sort_list_by_beam_size(
-                imagelist=imagelist, return_df=False
-            )[0][::-1][0]
-        
-        conv_cube, conv_cube_res = convolve_images_to_common_resolution(
-            cube_image, cube_residuals, imagelist, residuallist, 
-            ref_image_conv, conv_task
-        )
-    else:
-        conv_cube = cube_image.copy()
-        conv_cube_res = cube_residuals.copy()
-        if ref_image_conv is None:
-            ref_image_conv = imagelist[0] if isinstance(imagelist[0], str) else "ref_image"
-    
-    # 4. Apply mask and averaging
-    masked_cube = np.where(inv_mask_3d, np.nan, conv_cube)
-    masked_cube_res = np.where(inv_mask_3d, np.nan, conv_cube_res)
-    
-    if do_average_cube:
-        masked_cube, masked_cube_res, frequencies_ghz = apply_frequency_averaging(
-            masked_cube, masked_cube_res, frequencies_ghz, bin_size
-        )
-    
-    # Convert to float32 for memory efficiency
-    masked_cube = masked_cube.astype(np.float32)
-    masked_cube_res = masked_cube_res.astype(np.float32)
-    
-    # 5. Initialize output maps
-    output_maps = initialize_output_maps(conv_cube.shape[:2])
-    
-    # 6. Perform pixel-by-pixel fitting
-    pixel_indices = [(i, j) for i, j in np.column_stack(np.where(mask))]
-    
-    with Parallel(n_jobs=n_jobs) as parallel:
-        results = parallel(
-            delayed(fit_single_pixel_spectrum)(
-                i, j, frequencies_ghz, masked_cube, masked_cube_res, 
-                nu0, flux_sys_error_frac, fix_alpha_nt
-            ) for i, j in tqdm(pixel_indices, total=len(pixel_indices))
-        )
-    
-    # 7. Process fitting results
-    count = 0
-    tenpc = max(1, len(results) // 10)
-    
-    for i, j, results_fit, y, yerr in results:
-        # Extract parameters
-        params = extract_fit_parameters(results_fit)
-        
-        # Store primary parameters
-        output_maps['alpha_nt'][i, j] = params['alpha_nt']
-        output_maps['alpha_nt_err'][i, j] = params['alpha_nt_err']
-        output_maps['A_sy'][i, j] = params['A_sy']
-        output_maps['A_sy_err'][i, j] = params['A_sy_err']
-        output_maps['A_ff'][i, j] = params['A_ff']
-        output_maps['A_ff_err'][i, j] = params['A_ff_err']
-        
-        # Calculate flux at reference frequency
-        output_maps['S_nu0'][i, j] = RC_function_SY_FF(
-            nu0, params['A_sy'], params['A_ff'], params['alpha_nt'], nu0
-        )
-        
-        # Progress reporting with optional plotting
-        count += 1
-        if verbose > 0 and count % tenpc == 0:
-            print(f"Progress: {100 * count // len(results)}%")
-            
-            # Plot example fit
-            model_best = RC_function_SY_FF(
-                frequencies_ghz, params['A_sy'], params['A_ff'], params['alpha_nt'], nu0
-            )
-            model_sy = RC_function_SY_FF(
-                frequencies_ghz, params['A_sy'], 0.0, params['alpha_nt'], nu0
-            )
-            model_ff = RC_function_SY_FF(
-                frequencies_ghz, 0.0, params['A_ff'], 0.0, nu0
-            )
-            
+    if sed_model != 'S2':
+        raise NotImplementedError(f"sed_model={sed_model!r}: only 'S2' "
+                                  "(synchrotron + free-free) is implemented")
+
+    # 1-4. Cubes, mask, convolution / model restoring, frequency averaging
+    prep = _prepare_spec_cube(
+        imagelist, residuallist, ref_image_conv=ref_image_conv, freqs=freqs,
+        ref_image_mask=ref_image_mask, mask=mask,
+        sigma_global_mask=sigma_global_mask, iterations=iterations,
+        dilation_size=dilation_size, needs_convolution=needs_convolution,
+        conv_task=conv_task, do_average_cube=do_average_cube,
+        bin_size=bin_size, beam_area_px=beam_area_px, verbose=verbose,
+        use_model_images=use_model_images, modellist=modellist,
+        target_beam=target_beam, add_residual=add_residual,
+        smooth_residual_to_target=smooth_residual_to_target,
+        residual_beams=residual_beams, model_out_dir=model_out_dir)
+    conv_cube = prep['conv_cube']
+    masked_cube = prep['masked_cube']
+    masked_cube_res = prep['masked_cube_res']
+    mask = prep['mask']
+    ref_image_conv = prep['ref_image_conv']
+    target_beam = prep['target_beam']
+    if prep['freqs'] is None:
+        raise ValueError("Frequencies must be provided when using pre-loaded cubes")
+    frequencies_ghz = prep['freqs'] / 1e9
+    file_inputs = isinstance(imagelist[0], str)
+    if ref_image_conv is None:
+        ref_image_conv = (sort_list_by_beam_size(imagelist=imagelist,
+                                                 return_df=False)[0][::-1][0]
+                          if file_inputs else "ref_image")
+
+    # 5. What is fitted: pixels or bins, each with its noise term
+    (bin_labels, fit_idx, fit_cube, fit_cube_res,
+     beam_area_px, noise_term) = _prepare_fit_spectra(
+        imagelist, prep['conv_cube_res'], masked_cube, masked_cube_res, mask,
+        weighting=weighting, noise_rms=noise_rms,
+        do_average_cube=do_average_cube, bin_size=bin_size,
+        binning=binning, binning_kwargs=binning_kwargs,
+        beam_area_px=prep['beam_area_px'], verbose=verbose)
+    nspec = len(fit_idx)
+    n_free = 2 if fix_alpha_nt else 3
+    if len(frequencies_ghz) < n_free:
+        raise ValueError(f"{len(frequencies_ghz)} frequencies cannot constrain "
+                         f"{n_free} free parameters")
+    if verbose > 0 and len(frequencies_ghz) == n_free:
+        print(f" > WARNING: {n_free} free parameters and {n_free} frequencies: "
+              "the fit has no degrees of freedom.")
+
+    # 6. Fit
+    chunk_results = _fit_pixels_in_chunks(
+        fit_spectra_SY_FF_cov_chunk, fit_idx, frequencies_ghz,
+        fit_cube, fit_cube_res,
+        (nu0, flux_sys_error_frac, fix_alpha_nt, weighting, robust_scale,
+         alpha_nt_fixed, tuple(alpha_nt_bounds)),
+        n_jobs=n_jobs, chunk_size=chunk_size, verbose=verbose,
+        label=('t_specidx_map_SY_FF' if binning is None
+               else f't_specidx_map_SY_FF [{binning} binning]'),
+        unit='pixels' if binning is None else 'bins')
+    fit_values = (np.concatenate(chunk_results, axis=0) if nspec
+                  else np.empty((0, len(SY_FF_KEYS))))
+
+    # 7. Parameter maps: every pixel of a bin gets the fit of the bin
+    image_shape = conv_cube.shape[:2]
+
+    def _to_map(values):
+        out_map = np.full(image_shape, np.nan)
+        if bin_labels is None:
+            out_map[fit_idx[:, 0], fit_idx[:, 1]] = values
+        else:
+            in_bin = bin_labels >= 0
+            out_map[in_bin] = values[bin_labels[in_bin]]
+        return out_map
+
+    output_maps = {key: _to_map(fit_values[:, k])
+                   for k, key in enumerate(SY_FF_KEYS)}
+    # total flux density at nu0 (A_sy + A_ff) with its covariance
+    output_maps['S_nu0'] = output_maps['A_sy'] + output_maps['A_ff']
+    with np.errstate(invalid='ignore'):
+        output_maps['S_nu0_err'] = np.sqrt(np.maximum(
+            output_maps['A_sy_err'] ** 2 + output_maps['A_ff_err'] ** 2
+            + 2.0 * np.nan_to_num(output_maps['cov_sy_ff']), 0.0))
+
+    # Fits that ended on a bound: 1 = A_sy at 0, 2 = A_ff at 0 (no free-free
+    # detected), 4 = alpha_nt at one of alpha_nt_bounds (values add up). A
+    # first-order error is not reliable there; with alpha_nt on a bound the
+    # decomposition itself is not constrained by the data.
+    fitted = np.isfinite(fit_values[:, 2])
+    with np.errstate(invalid='ignore'):
+        amp_tol = np.maximum(1e-4 * (np.abs(fit_values[:, 2]) + np.abs(fit_values[:, 4])), 2e-6)
+        fit_flag = (1 * (fit_values[:, 2] <= amp_tol)
+                    + 2 * (fit_values[:, 4] <= amp_tol)).astype(float)
+        if not fix_alpha_nt:
+            fit_flag += 4 * ((fit_values[:, 0] <= alpha_nt_bounds[0] + 1e-3)
+                             | (fit_values[:, 0] >= alpha_nt_bounds[1] - 1e-3))
+    fit_flag[~fitted] = np.nan
+    output_maps['fit_flag'] = _to_map(fit_flag)
+
+    if verbose > 0 and nspec:
+        unit = 'pixels' if binning is None else 'bins'
+        flags = fit_flag[fitted].astype(int)
+        print(f" > t_specidx_map_SY_FF: {int(fitted.sum())}/{nspec} {unit} "
+              f"fitted; median chi2_red = {np.nanmedian(fit_values[:, 9]):.2f}; "
+              f"on a bound: A_ff=0 in {int(np.sum(flags & 2 > 0))}, "
+              f"A_sy=0 in {int(np.sum(flags & 1 > 0))}"
+              + ('' if fix_alpha_nt else
+                 f", alpha_nt in {int(np.sum(flags & 4 > 0))}") + f" {unit}.")
+
+        # ten example fits, re-fitted here (deterministic, same result) to
+        # get the report
+        for p in np.unique(np.linspace(0, nspec - 1, min(10, nspec)).astype(int)):
+            i, j = fit_idx[p]
+            alpha_p, A_sy_p, A_ff_p = fit_values[p, 0], fit_values[p, 2], fit_values[p, 4]
+            if not np.isfinite(A_sy_p):
+                continue
+            y, yerr = spectral_fit.spectrum_yerr(fit_cube[i, j, :],
+                                                 fit_cube_res[i, j, :],
+                                                 flux_sys_error_frac)
+            results_fit = do_fit_spec_SY_FF_map(
+                frequencies_ghz, y, yerr, nu0, fix_alpha_nt,
+                weighting=weighting, robust_scale=robust_scale,
+                alpha_nt_fixed=alpha_nt_fixed,
+                alpha_nt_bounds=tuple(alpha_nt_bounds))
+            nu_plot = np.geomspace(0.8 * np.nanmin(frequencies_ghz),
+                                   1.25 * np.nanmax(frequencies_ghz), 100)
             plt.figure(figsize=(4, 5))
-            plt.errorbar(frequencies_ghz, y, yerr=abs(yerr), fmt='o', 
+            plt.errorbar(frequencies_ghz, y, yerr=abs(yerr), fmt='o',
                         label='Data', color='k', ecolor='gray', alpha=0.5)
-            plt.plot(frequencies_ghz, model_best, 'r-.', label='Best-fit model')
-            plt.plot(frequencies_ghz, model_sy, 'b-.', label='Synchrotron')
-            plt.plot(frequencies_ghz, model_ff, 'orange', linestyle='-.', label='Free-free')
-            
-            plt.ylim(abs(np.nanmin(y) * 0.1), np.nanmax(y) * 100)
+            plt.plot(nu_plot, RC_function_SY_FF(nu_plot, A_sy_p, A_ff_p, alpha_p, nu0),
+                     'r-.', label='Best-fit model')
+            plt.plot(nu_plot, RC_function_SY_FF(nu_plot, A_sy_p, 0.0, alpha_p, nu0),
+                     'b-.', label='Synchrotron')
+            plt.plot(nu_plot, RC_function_SY_FF(nu_plot, 0.0, A_ff_p, 0.0, nu0),
+                     'orange', linestyle='-.', label='Free-free')
+            y_pos = y[np.isfinite(y) & (y > 0)]
+            if y_pos.size:
+                plt.ylim(y_pos.min() * 0.1, y_pos.max() * 10)
             plt.semilogy()
             plt.semilogx()
             plt.xlabel('Frequency [GHz]')
-            plt.ylabel('Pixel Flux Density [mJy/Beam]')
+            plt.ylabel('Pixel Flux Density [mJy/Beam]' if bin_labels is None
+                       else 'Bin mean Flux Density [mJy/Beam]')
             plt.legend()
-            plt.title(f'Fit at pixel ({i}, {j})')
+            plt.title(f'Fit at pixel ({i}, {j})' if bin_labels is None
+                      else f'Fit of bin {i}')
             plt.show()
             print(lmfit.fit_report(results_fit.params))
-    
+
     # 8. Create frequency-dependent maps
+    output_frequencies = list(output_frequencies)
     frequency_maps = create_frequency_maps(
         output_maps['A_sy'], output_maps['A_sy_err'],
         output_maps['A_ff'], output_maps['A_ff_err'],
         output_maps['alpha_nt'], output_maps['alpha_nt_err'],
-        output_frequencies, nu0
+        output_frequencies, nu0,
+        cov_sy_ff=np.nan_to_num(output_maps['cov_sy_ff']),
+        cov_sy_alpha=np.nan_to_num(output_maps['cov_sy_alpha']),
+        cov_ff_alpha=np.nan_to_num(output_maps['cov_ff_alpha'])
     )
-    
+
     # 9. Save maps if input was file paths
-    save_parameter_maps(output_maps, ref_image_conv, imagelist)
-    
+    tag = (_spec_output_tag(binning, weighting, use_model_images, add_residual,
+                            smooth_residual_to_target)
+           + ('-alphafix' if fix_alpha_nt else ''))
+    files_written = []
+    if save_fits:
+        files_written = save_parameter_maps(
+            output_maps, ref_image_conv, imagelist, tag=tag,
+            frequency_maps=frequency_maps, bin_labels=bin_labels,
+            target_beam=target_beam if use_model_images else None,
+            out_dir=out_dir)
+    if verbose > 0:
+        _report_files_written(files_written, save_fits, file_inputs)
+
     # 10. Compile comprehensive results
+    # noise rms per band used by 'chi2' (the full cube if it varies spatially)
+    noise_per_band = None
+    if weighting == 'chi2' and mask.any():
+        noise_in_mask = np.asarray(noise_term[mask], dtype=float)
+        noise_per_band = noise_in_mask[0]
+        if not np.allclose(noise_in_mask, noise_per_band, equal_nan=True):
+            noise_per_band = np.array(noise_term, dtype=float)
     results_dict = {
         'parameter_maps': output_maps,
         'frequency_maps': frequency_maps,
@@ -5438,18 +6101,866 @@ def t_specidx_map_SY_FF(imagelist, residuallist,
             'conv_cube': conv_cube,
             'masked_cube': masked_cube,
             'masked_cube_res': masked_cube_res,
-            'mask': mask
+            'mask': mask,
+            'bin_map': bin_labels,
+            'noise_rms': noise_per_band
         },
         'metadata': {
             'frequencies_ghz': frequencies_ghz,
             'output_frequencies': output_frequencies,
             'nu0': nu0,
+            'weighting': weighting,
+            'binning': binning,
+            'beam_area_px': beam_area_px,
+            'fix_alpha_nt': fix_alpha_nt,
+            'alpha_nt_fixed': alpha_nt_fixed if fix_alpha_nt else None,
+            'flux_sys_error_frac': flux_sys_error_frac,
+            'units': 'A_sy, A_ff, S_nu0 and the frequency maps are in mJy/beam',
+            'files_written': files_written,
             'processing_stats': {
-                'total_pixels_fitted': len(results),
+                'total_pixels_fitted': int(np.count_nonzero(np.isfinite(output_maps['A_sy']))),
+                'n_fitted': nspec,
                 'cube_shape': conv_cube.shape,
                 'averaging_applied': do_average_cube
             }
         }
     }
-    
+
     return results_dict
+
+
+# ---------------------------------------------------------------------------
+# Resolved synchrotron + free-free maps with free-free absorption (FFA)
+# ---------------------------------------------------------------------------
+
+def emission_measure_from_turnover(nu_t_GHz, T_e=1e4):
+    """
+    Emission measure [pc cm^-6] of the gas that has free-free optical depth
+    1 at nu_t (Mezger & Henderson 1967):
+        EM_t = nu_t**2.1 (T_e/1e4 K)**1.35 / 3.28e-7  ~ 3.05e6 nu_t**2.1.
+    Use the fitted turnover frequency, never the frequency of the spectral
+    peak (which is ~1.5 nu_t behind a screen and would give EM ~2.5x too high).
+    """
+    return np.asarray(nu_t_GHz, dtype=float) ** 2.1 * (T_e / 1e4) ** 1.35 / FF_TAU_COEFF
+
+
+def brightness_temperature_beam(S_mJy_beam, nu_GHz, bmaj_arcsec, bmin_arcsec):
+    """
+    Rayleigh-Jeans brightness temperature [K] of a surface brightness in
+    mJy/beam, for a Gaussian beam with FWHM axes in arcsec:
+        T_b = 1222 K (S/mJy) (nu/GHz)**-2 (bmaj*bmin/arcsec**2)**-1.
+    """
+    return 1222.0 * np.asarray(S_mJy_beam, dtype=float) / (nu_GHz ** 2 * bmaj_arcsec * bmin_arcsec)
+
+
+def emission_measure_from_thin_ff(S_ff_mJy_beam, nu_GHz, bmaj_arcsec,
+                                  bmin_arcsec, T_e=1e4):
+    """
+    Beam-averaged emission measure [pc cm^-6] implied by an optically thin
+    free-free surface brightness: T_b = T_e tau_ff, with tau_ff from
+    Mezger & Henderson (1967). Returns (EM_thin, T_b_ff).
+    """
+    Tb = brightness_temperature_beam(S_ff_mJy_beam, nu_GHz, bmaj_arcsec, bmin_arcsec)
+    em = Tb / (T_e * FF_TAU_COEFF * (T_e / 1e4) ** (-1.35) * nu_GHz ** (-2.1))
+    return em, Tb
+
+
+def estimate_subband_scatter(imagelist, residuallist, band_groups, freqs=None,
+                             mask=None, min_snr=50.0):
+    """
+    Measure how much the sub-band images of each band scatter beyond
+    thermal noise, to set `flux_ind_error_frac` of `t_specidx_map_SY_FF_FFA`.
+
+    In every bright pixel a power law is fitted to the sub-bands of one band
+    (in log space); the fractional rms about it, corrected for the two
+    fitted parameters, is compared with the fractional thermal noise. What
+    is left is the image-to-image error that a common flux-scale factor of
+    the band cannot describe (sub-band imaging, primary beam, in-band
+    calibration).
+
+    Parameters
+    ----------
+    imagelist, residuallist : lists of FITS names, or cubes (ny, nx, nfreq)
+    band_groups : array (nfreq,) of group ids (same id = same band)
+    freqs : array (nfreq,) in Hz; read from the headers if None
+    mask : bool (ny, nx), optional; pixels to use (default: all)
+    min_snr : float
+        Only pixels above min_snr in every sub-band of the band are used.
+
+    Returns
+    -------
+    dict of arrays with one entry per group (NaN for groups with fewer than
+    three images or without bright pixels):
+        group : the group ids;
+        scatter : median fractional scatter about the in-band power law;
+        noise : median fractional thermal noise of the same pixels;
+        excess : sqrt(scatter**2 - noise**2), the suggested
+            flux_ind_error_frac of the images of that group;
+        alpha_inband : median in-band spectral index;
+        n_pix : pixels used;
+    and 'per_image' (nfreq,): `excess` of the group of each image.
+    """
+    if isinstance(imagelist[0], str):
+        cube = makecube(imagelist)
+        cube_res = makecube(residuallist)
+        if freqs is None:
+            freqs = getfreqs(imagelist)
+    else:
+        cube, cube_res = np.asarray(imagelist), np.asarray(residuallist)
+    if freqs is None:
+        raise ValueError("freqs must be given when the inputs are arrays")
+    freqs = np.asarray(freqs, dtype=float)
+    band_groups = np.asarray(band_groups)
+    sel = (np.ones(cube.shape[:2], dtype=bool) if mask is None
+           else np.asarray(mask, dtype=bool))
+    rms = np.array([mad_std(cube_res[:, :, k][np.isfinite(cube_res[:, :, k])])
+                    for k in range(cube.shape[2])])
+    groups = np.unique(band_groups)
+    out = {key: np.full(groups.size, np.nan)
+           for key in ('scatter', 'noise', 'excess', 'alpha_inband')}
+    out['group'] = groups
+    out['n_pix'] = np.zeros(groups.size, dtype=int)
+    for g_idx, g in enumerate(groups):
+        k = np.where(band_groups == g)[0]
+        if k.size < 3:
+            continue
+        Y = np.asarray(cube[sel][:, k], dtype=float)
+        ok = np.all(np.isfinite(Y) & (Y > min_snr * rms[k]), axis=1)
+        if ok.sum() < 10:
+            continue
+        Y = Y[ok]
+        A = np.vstack([np.log(freqs[k]), np.ones(k.size)]).T
+        coef, *_ = np.linalg.lstsq(A, np.log(Y).T, rcond=None)
+        resid = np.log(Y) - (A @ coef).T
+        scatter = (np.sqrt(np.mean(resid ** 2, axis=1))
+                   * np.sqrt(k.size / (k.size - 2.0)))
+        noise = np.sqrt(np.mean((rms[k] / Y) ** 2, axis=1))
+        out['scatter'][g_idx] = np.median(scatter)
+        out['noise'][g_idx] = np.median(noise)
+        out['excess'][g_idx] = np.sqrt(max(np.median(scatter) ** 2
+                                           - np.median(noise) ** 2, 0.0))
+        out['alpha_inband'][g_idx] = np.median(coef[0])
+        out['n_pix'][g_idx] = int(ok.sum())
+    out['per_image'] = out['excess'][np.searchsorted(groups, band_groups)]
+    return out
+
+
+def _propagate_errors(func, P, COV, rel_step=1e-4):
+    """
+    First-order error of func(P) for parameter vectors P (n, npar) with
+    covariances COV (n, npar, npar): sqrt(g^T C g), g the numerical gradient
+    (central differences). func must be vectorised over the rows of P.
+    """
+    n, npar = P.shape
+    grad = np.zeros((n, npar))
+    for a in range(npar):
+        h = rel_step * np.maximum(np.abs(P[:, a]), 1e-3)
+        Pp, Pm = P.copy(), P.copy()
+        Pp[:, a] += h
+        Pm[:, a] -= h
+        with np.errstate(all='ignore'):
+            grad[:, a] = (func(Pp) - func(Pm)) / (2.0 * h)
+    grad = np.where(np.isfinite(grad), grad, 0.0)
+    var = np.einsum('na,nab,nb->n', grad, COV, grad)
+    with np.errstate(invalid='ignore'):
+        return np.sqrt(np.maximum(var, 0.0))
+
+
+def plot_SY_FF_FFA_fit(x, y, sigma, fit, nu0=10.0, geometry='thesis',
+                       f_cov=1.0, flux_sys_error_frac=0.1, ax=None, title=None,
+                       ylabel='Flux Density [mJy/Beam]',
+                       flux_ind_error_frac=0.0):
+    """
+    Plot one spectrum with its FFA fit (`fit` is the output of
+    `fit_SY_FF_FFA_spectrum`): data, absorbed model and its two terms, the
+    intrinsic (unabsorbed) spectrum and the best unabsorbed fit.
+
+    The error bars are sqrt(sigma**2 + f**2 |data| model), with f the
+    quadrature sum of flux_sys_error_frac and flux_ind_error_frac (the
+    fractional errors refer to the geometric mean of data and model, as in
+    the fit).
+    """
+    x = np.asarray(x, dtype=float)
+    if ax is None:
+        _, ax = plt.subplots(figsize=(5.5, 4.5))
+    fitted_fcov = isinstance(f_cov, str) or fit.get('f_cov_err', 0.0) != 0.0
+    if isinstance(f_cov, str):      # 'fit': use the fitted covering factor
+        f_cov = fit['f_cov']
+    nu = np.geomspace(0.7 * np.nanmin(x), 1.4 * np.nanmax(x), 300)
+    A_sy, A_ff, al, nut = fit['A_sy'], fit['A_ff'], fit['alpha_nt'], fit['nu_t']
+    model = RC_function_SY_FF_FFA(nu, A_sy, A_ff, al, nut, nu0, geometry, f_cov)
+    sy, ff = RC_function_SY_FF_FFA(nu, A_sy, A_ff, al, nut, nu0, geometry,
+                                   f_cov, components=True)
+    intrinsic = RC_function_SY_FF_FFA(nu, A_sy, A_ff, al, 0.0, nu0, geometry, f_cov)
+    null = RC_function_SY_FF_FFA(nu, fit['A_sy_null'], fit['A_ff_null'],
+                                 fit['alpha_nt_null'], 0.0, nu0, geometry, f_cov)
+    model_x = RC_function_SY_FF_FFA(x, A_sy, A_ff, al, nut, nu0, geometry, f_cov)
+    fsys = np.broadcast_to(np.asarray(flux_sys_error_frac, dtype=float), x.shape)
+    find = np.broadcast_to(np.asarray(
+        0.0 if flux_ind_error_frac is None else flux_ind_error_frac,
+        dtype=float), x.shape)
+    yerr = np.sqrt(np.asarray(sigma, dtype=float) ** 2
+                   + (fsys ** 2 + find ** 2) * np.abs(np.asarray(y, dtype=float) * model_x))
+    ax.errorbar(x, y, yerr=yerr, fmt='o', color='k', ecolor='gray', ms=4,
+                alpha=0.7, label='Data', zorder=5)
+    ax.plot(nu, model, 'r-', lw=1.8, label='SY+FF+FFA')
+    ax.plot(nu, sy, 'b--', lw=1, label='Synchrotron (absorbed)')
+    ax.plot(nu, ff, color='orange', ls='--', lw=1, label='Free-free (absorbed)')
+    ax.plot(nu, intrinsic, color='r', ls=':', lw=1, label='Intrinsic (no absorber)')
+    ax.plot(nu, null, color='gray', ls='-.', lw=1, label='Best SY+FF, no FFA')
+    if np.isfinite(nut):
+        ax.axvline(nut, color='purple', ls=':', lw=0.8)
+    y_pos = np.asarray(y, dtype=float)
+    y_pos = y_pos[np.isfinite(y_pos) & (y_pos > 0)]
+    if y_pos.size:
+        ax.set_ylim(0.2 * y_pos.min(), 3.0 * y_pos.max())
+    ax.set_xscale('log')
+    ax.set_yscale('log')
+    ax.set_xlabel('Frequency [GHz]')
+    ax.set_ylabel(ylabel)
+    dof = max(fit['n_bands'] - fit['n_free'], 1)
+    lo, hi = 10.0 ** fit['log_nu_t_lo'], 10.0 ** fit['log_nu_t_hi']
+    text = (rf"$\nu_t$ = {nut:.2f} [{lo:.2f}, {hi:.2f}] GHz" "\n"
+            rf"$\alpha_{{\rm sy}}$ = {al:.2f}, $\chi^2_\nu$ = {fit['chi2'] / dof:.2f}" "\n"
+            rf"$\Delta$BIC = {fit['delta_bic']:.1f}")
+    if fitted_fcov or fit.get('f_cov', 1.0) != 1.0:
+        text += "\n" + rf"$\Xi$ = {fit.get('f_cov', f_cov):.2f}"
+        if fit.get('f_cov_err', 0.0) > 0:
+            text += rf" $\pm$ {fit['f_cov_err']:.2f}"
+    ax.text(0.97, 0.97, text, transform=ax.transAxes, ha='right', va='top',
+            fontsize=8)
+    ax.legend(fontsize=6, loc='lower left')
+    if title:
+        ax.set_title(title, fontsize=9)
+    return ax
+
+
+def t_specidx_map_SY_FF_FFA(imagelist, residuallist,
+                            ref_image_conv=None,
+                            freqs=None,
+                            ref_image_mask=None,
+                            flux_sys_error_frac=0.1,
+                            nu0=10.0,
+                            mask=None,
+                            sigma_global_mask=6,
+                            iterations=1,
+                            dilation_size=2,
+                            geometry='thesis',
+                            f_cov=1.0,
+                            fix_alpha_nt=False,
+                            alpha_nt_fixed=-0.85,
+                            alpha_nt_bounds=(-2.0, -0.3),
+                            alpha_nt_prior=None,
+                            nu_t_bounds=None,
+                            band_groups=None,
+                            flux_ind_error_frac=None,
+                            delta_bic_min=6.0,
+                            needs_convolution=False,
+                            conv_task='fft',
+                            do_average_cube=False,
+                            bin_size=2,
+                            n_jobs=1,
+                            chunk_size=None,
+                            verbose=0,
+                            output_frequencies=(1.4, 6.0, 33.0),
+                            binning=None,
+                            binning_kwargs=None,
+                            beam_area_px=None,
+                            noise_rms=None,
+                            T_e=1e4,
+                            fth_ref_freq=33.0,
+                            beam_arcsec=None,
+                            use_model_images=False,
+                            modellist=None,
+                            target_beam=None,
+                            add_residual=True,
+                            smooth_residual_to_target=False,
+                            residual_beams=None,
+                            model_out_dir=None,
+                            out_dir=None,
+                            save_fits=True,
+                            fit_options=None,
+                            n_examples=10,
+                            example_panels='SNR_fit'):
+    """
+    Resolved SED maps of synchrotron + free-free emission with free-free
+    absorption (FFA):
+
+        S(nu) = A_sy (nu/nu0)**alpha_nt g_sy(tau) + A_ff (nu/nu0)**-0.1 g_ff(tau),
+        tau = (nu/nu_t)**-2.1,
+
+    fitted to the spectrum of every pixel, or of every spatial bin. A_sy and
+    A_ff are the UNABSORBED surface brightnesses at nu0 and nu_t is the
+    turnover frequency (tau = 1), not the frequency of the spectral peak.
+
+    Geometry (`geometry`, `f_cov`; see `spectral_fit.ffa_factors`)
+        'thesis' (default): synchrotron behind a foreground screen,
+            g_sy = 1 - f_cov (1 - e^-tau) (= e^-tau for the homogeneous
+            screen, f_cov = 1); free-free emission absorbed by the gas that
+            emits it, g_ff = (1 - e^-tau)/tau.
+        'screen': both terms behind the screen.  'mixed': both terms mixed
+            with the absorber, (1 - e^-tau)/tau.
+        f_cov is a number (fixed, default 1), or 'fit' (geometry 'thesis'
+        only): the covering factor is then fitted for every pixel or bin.
+        The screen term splits into a covered part, f_cov e^-tau, and an
+        uncovered part, 1 - f_cov, which are two non-negative amplitudes of
+        the synchrotron spectrum; no extra non-linear parameter is searched.
+        With f_cov < 1 the spectrum does not cut off below nu_t but levels
+        to (1 - f_cov) of the unabsorbed synchrotron, so a point well below
+        nu_t measures 1 - f_cov and the bands around nu_t measure nu_t. Use
+        it with enough data: it adds one free parameter (see the warning
+        printed when fewer than three degrees of freedom remain).
+
+    Method (`spectral_fit.fit_SY_FF_FFA_spectrum`)
+        Separable least squares: for each trial (alpha_nt, nu_t) the
+        amplitudes are solved in closed form with A >= 0; the two non-linear
+        parameters are searched on a grid over their whole range and then
+        refined, so the result does not depend on a starting point. The
+        error model depends on the model flux, so each solution is judged
+        with its own error model (-2 ln L = chi2 + ln det C); the unabsorbed
+        model is fitted the same way and gives delta_bic, the evidence for
+        the absorption.
+
+    The cube preparation, the spatial binning and the noise model are those
+    of `specidx_map` / `t_specidx_map_SY_FF` (noise rms per band, i.e.
+    their weighting='chi2'); arguments with the same name mean the same.
+
+    Parameters specific to this function
+    ------------------------------------
+    flux_sys_error_frac : float or array (nfreq,)
+        Fractional flux-scale error, one value or one per image (e.g. larger
+        for LOFAR). It refers to the geometric mean of the observed and the
+        model flux density, so over- and under-prediction cost the same.
+    band_groups : array (nfreq,) of group ids, optional
+        Images with the same id share ONE flux-scale error (the sub-band
+        images of one observation). None: every image has its own, which
+        over-weights the in-band slopes when several sub-bands per band are
+        fitted.
+    flux_ind_error_frac : float or array (nfreq,), optional
+        Fractional error that stays independent from image to image, added
+        on top of the shared flux-scale error. Default (None): 0.03 when
+        band_groups is given, 0 otherwise. Sub-band images of one band
+        differ by more than thermal noise (imaging, primary beam, in-band
+        calibration); without this term their scatter is judged against the
+        noise alone and chi2_red becomes very large.
+    fix_alpha_nt, alpha_nt_fixed, alpha_nt_bounds :
+        Synchrotron index: free within the bounds (default) or fixed.
+    alpha_nt_prior : (mean, sigma), optional
+        Gaussian prior on a free alpha_nt, e.g. (-0.85, 0.15).
+    nu_t_bounds : (min, max) in GHz, optional
+        Range searched for nu_t. Default: (lowest frequency / 10,
+        min(highest frequency, 20 GHz)).
+    delta_bic_min : float
+        Absorption counts as detected where delta_bic >= delta_bic_min
+        (6: strong, 10: very strong evidence).
+    T_e : float
+        Electron temperature [K] for the emission measures.
+    fth_ref_freq : float
+        Frequency [GHz] at which the free-free brightness is compared with
+        the emission measure of the absorber (see physical_maps).
+    beam_arcsec : (bmaj, bmin), optional
+        Beam FWHM [arcsec] for the brightness temperature. Default: the
+        target beam (use_model_images) or the header of the reference image.
+    out_dir, save_fits :
+        Where the FITS maps go (default: one directory above the images),
+        or no files at all.
+    fit_options : dict, optional
+        Further entries of `spectral_fit.FFA_FIT_DEFAULTS` (n_alpha, n_nu_t,
+        n_iter).
+    n_examples : int
+        With verbose > 0, three figures of n_examples fits each are shown
+        (see example_panels). 0 shows none.
+    example_panels : 'SNR_fit' (default) or 'SNR_pix'
+        How the example fits are chosen.
+        'SNR_fit': by the quality of the fit: the best (lowest chi2_red),
+            intermediate and worst (highest chi2_red) fits.
+        'SNR_pix': by the signal-to-noise of the data: the highest,
+            intermediate and lowest S/N spectra (S/N = median over the
+            bands of flux density / noise).
+        Every panel title gives both the S/N of the spectrum and, in the
+        panel text, its chi2_red and delta_bic.
+
+    Returns
+    -------
+    dict with
+    parameter_maps
+        A_sy, A_ff [mJy/beam, unabsorbed, at nu0], alpha_nt, nu_t [GHz] and
+        their '_err' (first-order, from the covariance; for nu_t the
+        half-width of the profile interval where that is closed);
+        nu_t_lo, nu_t_hi : 68% interval of nu_t from the chi2 profile (the
+            better error when nu_t is poorly constrained; lo = 0 where the
+            data are compatible with no absorption, hi = inf where not
+            bounded from above);
+        nu_t_upper95 : 95% upper limit of nu_t;
+        nu_t_detected : nu_t where delta_bic >= delta_bic_min, NaN elsewhere;
+        f_cov, f_cov_err : covering factor (the fixed input with error 0,
+            or the fitted value; a fitted value on its limit of 1 has no
+            first-order error and is flagged 128);
+        delta_bic (the absorbed model has one parameter more than the
+            unabsorbed one, two with f_cov='fit'), chi2_red, chi2_red_null,
+            alpha_nt_null, n_bands,
+        the covariances ('cov_*', see spectral_fit.FFA_COV_KEYS) and fit_flag.
+    fit_flag (values add up)
+        1 A_sy = 0; 2 A_ff = 0; 4 alpha_nt on a bound; 8 nu_t at its lower
+        bound (no absorption needed); 16 nu_t at its upper bound;
+        32 absorption not significant (delta_bic < delta_bic_min);
+        64 Xi_max < f_cov where absorption is detected (see physical_maps);
+        128 fitted f_cov = 1 (nothing uncovered).
+    frequency_maps['<freq>GHz']
+        synchrotron, free_free, total_intrinsic, thermal_fraction: the
+            UNABSORBED quantities, with '_err';
+        total (+ '_err'), synchrotron_abs, free_free_abs,
+            thermal_fraction_abs: as observed, after absorption;
+        tau: free-free optical depth at that frequency.
+    physical_maps  (the "absorber must emit" test)
+        EM_t, EM_t_lo, EM_t_hi : emission measure [pc cm^-6] of the absorber
+            from nu_t;
+        Tb_ff : brightness temperature [K] of the fitted free-free emission
+            at fth_ref_freq; it must stay well below T_e for the -0.1 slope
+            to hold;
+        EM_thin : beam-averaged emission measure that this free-free
+            emission implies;
+        Xi_max = EM_thin / EM_t : the largest covering factor of a uniform
+            absorber that would not emit more free-free than is fitted.
+            Xi_max < f_cov means the absorber cannot cover that fraction of
+            the beam uniformly (clumpy or cooler gas, or the curvature is
+            not free-free absorption).
+    data_products : conv_cube, masked_cube, masked_cube_res, mask, bin_map,
+        noise_rms.
+    metadata : options used, frequencies, files written.
+    """
+    # 1. Cubes, mask, convolution / model restoring, frequency averaging
+    prep = _prepare_spec_cube(
+        imagelist, residuallist, ref_image_conv=ref_image_conv, freqs=freqs,
+        ref_image_mask=ref_image_mask, mask=mask,
+        sigma_global_mask=sigma_global_mask, iterations=iterations,
+        dilation_size=dilation_size, needs_convolution=needs_convolution,
+        conv_task=conv_task, do_average_cube=do_average_cube,
+        bin_size=bin_size, beam_area_px=beam_area_px, verbose=verbose,
+        use_model_images=use_model_images, modellist=modellist,
+        target_beam=target_beam, add_residual=add_residual,
+        smooth_residual_to_target=smooth_residual_to_target,
+        residual_beams=residual_beams, model_out_dir=model_out_dir)
+    conv_cube = prep['conv_cube']
+    masked_cube = prep['masked_cube']
+    masked_cube_res = prep['masked_cube_res']
+    mask = prep['mask']
+    ref_image_conv = prep['ref_image_conv']
+    target_beam = prep['target_beam']
+    if prep['freqs'] is None:
+        raise ValueError("Frequencies must be provided when using pre-loaded cubes")
+    frequencies_ghz = prep['freqs'] / 1e9
+    nfreq = len(frequencies_ghz)
+    file_inputs = isinstance(imagelist[0], str)
+    if ref_image_conv is None and file_inputs:
+        ref_image_conv = sort_list_by_beam_size(imagelist=imagelist,
+                                                return_df=False)[0][::-1][0]
+
+    # per-image inputs follow the frequency averaging
+    def _per_image(values, name):
+        if values is None or np.ndim(values) == 0:
+            return values
+        values = np.asarray(values)
+        if do_average_cube and values.size == nfreq * bin_size:
+            values = values[::bin_size]
+        if values.size != nfreq:
+            raise ValueError(f"{name} must have one entry per image "
+                             f"({nfreq}), not {values.size}")
+        return values
+    flux_sys_error_frac = _per_image(flux_sys_error_frac, 'flux_sys_error_frac')
+    band_groups = _per_image(band_groups, 'band_groups')
+    flux_ind_error_frac = _per_image(flux_ind_error_frac, 'flux_ind_error_frac')
+
+    options = dict(fit_options or {})
+    options.update(geometry=geometry, f_cov=f_cov, fix_alpha_nt=fix_alpha_nt,
+                   alpha_nt_fixed=alpha_nt_fixed,
+                   alpha_nt_bounds=tuple(alpha_nt_bounds),
+                   alpha_nt_prior=alpha_nt_prior, nu_t_bounds=nu_t_bounds,
+                   band_groups=band_groups,
+                   flux_ind_error_frac=flux_ind_error_frac)
+    unknown = set(options) - set(FFA_FIT_DEFAULTS)
+    if unknown:
+        raise TypeError(f"unknown fit_options: {sorted(unknown)}")
+    fit_fcov = isinstance(f_cov, str)
+    if fit_fcov and (f_cov != 'fit' or geometry != 'thesis'):
+        raise ValueError("f_cov must be a number, or 'fit' with "
+                         "geometry='thesis'")
+    n_free = (3 if fix_alpha_nt else 4) + (1 if fit_fcov else 0)
+    if nfreq < n_free:
+        raise ValueError(f"{nfreq} frequencies cannot constrain {n_free} "
+                         "free parameters")
+    if nu_t_bounds is None:
+        nu_t_bounds = (frequencies_ghz.min() / 10.0,
+                       min(frequencies_ghz.max(), 20.0))
+    if verbose > 0:
+        if nfreq <= n_free:
+            print(f" > WARNING: {n_free} free parameters and {nfreq} "
+                  "frequencies: the fit has no degrees of freedom.")
+        if fit_fcov and nfreq - n_free < 3:
+            print(f" > WARNING: f_cov='fit' with {nfreq} frequencies leaves "
+                  f"{nfreq - n_free} degree(s) of freedom; fix alpha_nt, use "
+                  "alpha_nt_prior, or add sub-band images.")
+        n_below = int(np.sum(frequencies_ghz < 1.0))
+        print(f" > t_specidx_map_SY_FF_FFA: geometry '{geometry}', f_cov = "
+              f"{f_cov}; nu_t searched in [{nu_t_bounds[0]:.3g}, "
+              f"{nu_t_bounds[1]:.3g}] GHz; {nfreq} frequencies "
+              f"({frequencies_ghz.min():.3g}-{frequencies_ghz.max():.3g} GHz, "
+              f"{n_below} below 1 GHz).")
+
+    # 2. What is fitted: pixels or bins, each with its noise rms
+    (bin_labels, fit_idx, fit_cube, fit_cube_res,
+     beam_area_px, noise_term) = _prepare_fit_spectra(
+        imagelist, prep['conv_cube_res'], masked_cube, masked_cube_res, mask,
+        weighting='chi2', noise_rms=noise_rms,
+        do_average_cube=do_average_cube, bin_size=bin_size,
+        binning=binning, binning_kwargs=binning_kwargs,
+        beam_area_px=prep['beam_area_px'], verbose=verbose)
+    nspec = len(fit_idx)
+    unit = 'pixels' if binning is None else 'bins'
+
+    # 3. Fit
+    chunk_results = _fit_pixels_in_chunks(
+        fit_spectra_SY_FF_FFA_chunk, fit_idx, frequencies_ghz,
+        fit_cube, fit_cube_res,
+        (nu0, flux_sys_error_frac, options),
+        n_jobs=n_jobs, chunk_size=chunk_size, verbose=verbose,
+        label=('t_specidx_map_SY_FF_FFA' if binning is None
+               else f't_specidx_map_SY_FF_FFA [{binning} binning]'),
+        unit=unit)
+    V = (np.concatenate(chunk_results, axis=0) if nspec
+         else np.empty((0, len(FFA_KEYS))))
+    col = {key: V[:, k] for k, key in enumerate(FFA_KEYS)}
+    fitted = np.isfinite(col['A_sy'])
+    # covering factor of each spectrum: the fixed input or the fitted value
+    f_cov_arr = np.where(fitted, col['f_cov'], np.nan)
+
+    # parameter vector and covariance of (A_sy, A_ff, alpha_nt, log10 nu_t)
+    P = V[:, :4]
+    COV = np.zeros((nspec, 4, 4))
+    iu = np.triu_indices(4)
+    COV[:, iu[0], iu[1]] = V[:, 4:14]
+    COV[:, iu[1], iu[0]] = V[:, 4:14]
+    no_cov = ~np.isfinite(COV).all(axis=(1, 2))
+    COV_safe = np.where(no_cov[:, None, None], 0.0, COV)
+
+    def _err(func):
+        e = _propagate_errors(func, np.where(fitted[:, None], P, 0.0), COV_safe)
+        e[no_cov | ~fitted] = np.nan
+        return e
+
+    image_shape = conv_cube.shape[:2]
+
+    def _to_map(values):
+        out_map = np.full(image_shape, np.nan)
+        if bin_labels is None:
+            out_map[fit_idx[:, 0], fit_idx[:, 1]] = values
+        else:
+            in_bin = bin_labels >= 0
+            out_map[in_bin] = values[bin_labels[in_bin]]
+        return out_map
+
+    # 4. Parameters
+    with np.errstate(all='ignore'):
+        nu_t = 10.0 ** col['log_nu_t']
+        sig_log = np.sqrt(COV[:, 3, 3])
+        nu_t_lo = np.where(np.isneginf(col['log_nu_t_lo']), 0.0,
+                           10.0 ** col['log_nu_t_lo'])
+        nu_t_hi = 10.0 ** col['log_nu_t_hi']
+        nu_t_up = 10.0 ** col['log_nu_t_up95']
+        # error of nu_t: half-width of the profile interval where it is
+        # closed on both sides, first-order otherwise
+        closed = np.isfinite(nu_t_hi) & (nu_t_lo > 0)
+        nu_t_err = np.where(closed, 0.5 * (nu_t_hi - nu_t_lo),
+                            nu_t * np.log(10.0) * sig_log)
+        dof = col['n_bands'] - n_free
+        chi2_red = np.where(dof > 0, col['chi2'] / dof, np.nan)
+        dof0 = col['n_bands'] - (n_free - 1)
+        chi2_red_null = np.where(dof0 > 0, col['chi2_null'] / dof0, np.nan)
+        detected = fitted & (col['delta_bic'] >= delta_bic_min)
+    values = {
+        'A_sy': col['A_sy'], 'A_sy_err': np.sqrt(COV[:, 0, 0]),
+        'A_ff': col['A_ff'], 'A_ff_err': np.sqrt(COV[:, 1, 1]),
+        'alpha_nt': col['alpha_nt'], 'alpha_nt_err': np.sqrt(COV[:, 2, 2]),
+        'nu_t': nu_t, 'nu_t_err': nu_t_err,
+        'nu_t_lo': nu_t_lo, 'nu_t_hi': nu_t_hi, 'nu_t_upper95': nu_t_up,
+        'nu_t_detected': np.where(detected, nu_t, np.nan),
+        'f_cov': f_cov_arr, 'f_cov_err': col['f_cov_err'],
+        'delta_bic': col['delta_bic'], 'chi2_red': chi2_red,
+        'chi2_red_null': chi2_red_null, 'alpha_nt_null': col['alpha_nt_null'],
+        'n_bands': col['n_bands'],
+    }
+    for k, key in enumerate(spectral_fit.FFA_COV_KEYS):
+        values[key] = V[:, 4 + k]
+
+    # 5. Maps at the output frequencies (errors by propagation)
+    def _sy(Pv, r):
+        return Pv[:, 0] * r ** Pv[:, 2]
+
+    def _ff(Pv, r):
+        return Pv[:, 1] * r ** (-0.1)
+
+    def _absorbed(Pv, nu):
+        return RC_function_SY_FF_FFA(nu, Pv[:, 0], Pv[:, 1], Pv[:, 2],
+                                     10.0 ** Pv[:, 3], nu0, geometry,
+                                     np.nan_to_num(f_cov_arr, nan=1.0))
+
+    output_frequencies = list(output_frequencies)
+    freq_values = {}
+    for freq in output_frequencies:
+        r = freq / nu0
+        with np.errstate(all='ignore'):
+            sy, ff = _sy(P, r), _ff(P, r)
+            sy_abs, ff_abs = RC_function_SY_FF_FFA(
+                freq, P[:, 0], P[:, 1], P[:, 2], nu_t, nu0, geometry,
+                f_cov_arr, components=True)
+            # same keys as t_specidx_map_SY_FF ('33.0GHz'); frequencies that
+            # one decimal cannot represent keep their digits ('0.144GHz')
+            freq_key = (f'{freq:.1f}GHz' if abs(freq - round(freq, 1)) < 1e-9
+                        else f'{freq:g}GHz')
+            freq_values[freq_key] = {
+                'synchrotron': sy,
+                'synchrotron_err': _err(lambda Pv: _sy(Pv, r)),
+                'free_free': ff,
+                'free_free_err': _err(lambda Pv: _ff(Pv, r)),
+                'total_intrinsic': sy + ff,
+                'total_intrinsic_err': _err(lambda Pv: _sy(Pv, r) + _ff(Pv, r)),
+                'thermal_fraction': ff / (sy + ff),
+                'thermal_fraction_err': _err(
+                    lambda Pv: _ff(Pv, r) / (_sy(Pv, r) + _ff(Pv, r))),
+                'total': sy_abs + ff_abs,
+                'total_err': _err(lambda Pv: _absorbed(Pv, freq)),
+                'synchrotron_abs': sy_abs,
+                'free_free_abs': ff_abs,
+                'thermal_fraction_abs': ff_abs / (sy_abs + ff_abs),
+                'tau': ffa_tau(freq, nu_t),
+            }
+
+    # 6. Physics of the absorber: it must also emit
+    if beam_arcsec is None:
+        if use_model_images and target_beam is not None:
+            beam_arcsec = (target_beam[0], target_beam[1])
+        elif isinstance(ref_image_conv, str):
+            try:
+                beam_hdr, _, _ = _fits_beam_cell(ref_image_conv)
+                beam_arcsec = (beam_hdr[0], beam_hdr[1])
+            except Exception:
+                beam_arcsec = None
+    with np.errstate(all='ignore'):
+        EM_t = emission_measure_from_turnover(nu_t, T_e)
+        phys = {'EM_t': EM_t,
+                'EM_t_lo': emission_measure_from_turnover(nu_t_lo, T_e),
+                'EM_t_hi': emission_measure_from_turnover(nu_t_hi, T_e)}
+        if beam_arcsec is not None:
+            S_ff_ref = _ff(P, fth_ref_freq / nu0)
+            EM_thin, Tb_ff = emission_measure_from_thin_ff(
+                S_ff_ref, fth_ref_freq, beam_arcsec[0], beam_arcsec[1], T_e)
+            phys.update(EM_thin=EM_thin, Tb_ff=Tb_ff, Xi_max=EM_thin / EM_t)
+        else:
+            nan = np.full(nspec, np.nan)
+            phys.update(EM_thin=nan, Tb_ff=nan, Xi_max=nan)
+            if verbose > 0:
+                print(" > no beam available (give beam_arcsec): EM_thin, "
+                      "Tb_ff and Xi_max are not computed.")
+        fit_flag = np.where(fitted, col['at_bound'], np.nan)
+        fit_flag = fit_flag + 32 * (fitted & ~detected)
+        fit_flag = fit_flag + 64 * (detected & (phys['Xi_max'] < f_cov_arr))
+    values['fit_flag'] = fit_flag
+
+    output_maps = {key: _to_map(v) for key, v in values.items()}
+    frequency_maps = {fk: {key: _to_map(v) for key, v in d.items()}
+                      for fk, d in freq_values.items()}
+    physical_maps = {key: _to_map(v) for key, v in phys.items()}
+
+    # 7. Summary and example fits
+    if verbose > 0 and nspec:
+        nfit = int(fitted.sum())
+        flags = np.nan_to_num(fit_flag[fitted]).astype(int)
+        with np.errstate(all='ignore'):
+            med_nut = np.nanmedian(nu_t[detected]) if detected.any() else np.nan
+        print(f" > t_specidx_map_SY_FF_FFA: {nfit}/{nspec} {unit} fitted; "
+              f"median chi2_red = {np.nanmedian(chi2_red):.2f} "
+              f"(no absorber: {np.nanmedian(chi2_red_null):.2f}).")
+        print(f"   absorption detected (delta_bic >= {delta_bic_min:g}) in "
+              f"{int(detected.sum())} {unit}, median nu_t = {med_nut:.3g} GHz; "
+              f"of these, Xi_max < f_cov in {int(np.sum(flags & 64 > 0))}.")
+        if fit_fcov and detected.any():
+            fc_det = f_cov_arr[detected]
+            print(f"   fitted covering factor where detected: median "
+                  f"{np.nanmedian(fc_det):.2f} (p16 {np.nanpercentile(fc_det, 16):.2f}, "
+                  f"p84 {np.nanpercentile(fc_det, 84):.2f}); f_cov = 1 in "
+                  f"{int(np.sum(flags & 128 > 0))} {unit}.")
+        print(f"   on a bound: A_ff=0 in {int(np.sum(flags & 2 > 0))}, "
+              f"A_sy=0 in {int(np.sum(flags & 1 > 0))}, alpha_nt in "
+              f"{int(np.sum(flags & 4 > 0))}, nu_t upper in "
+              f"{int(np.sum(flags & 16 > 0))} {unit}.")
+
+        # example fits in three figures: the highest, intermediate and
+        # lowest signal-to-noise spectra (S/N = median over the bands of
+        # flux density / noise)
+        with np.errstate(all='ignore'):
+            snr = np.nanmedian(
+                np.asarray(fit_cube[fit_idx[:, 0], fit_idx[:, 1], :], dtype=float)
+                / np.asarray(fit_cube_res[fit_idx[:, 0], fit_idx[:, 1], :], dtype=float),
+                axis=1)
+        if example_panels == 'SNR_pix':
+            ranked = np.nonzero(fitted & np.isfinite(snr))[0]
+            ranked = ranked[np.argsort(-snr[ranked])]       # highest S/N first
+            panel_names = ('Highest S/N', 'Intermediate S/N', 'Lowest S/N')
+        elif example_panels == 'SNR_fit':
+            ranked = np.nonzero(fitted & np.isfinite(chi2_red))[0]
+            ranked = ranked[np.argsort(chi2_red[ranked])]   # best fit first
+            panel_names = ('Best fits (lowest chi2_red)', 'Intermediate fits',
+                           'Worst fits (highest chi2_red)')
+        else:
+            raise ValueError("example_panels must be 'SNR_fit' or 'SNR_pix', "
+                             f"not {example_panels!r}")
+        n_ex = int(min(max(n_examples, 0), len(ranked)))
+        groups_ex = []
+        if n_ex > 0:
+            mid0 = max((len(ranked) - n_ex) // 2, 0)
+            used = set()
+            for label, sel in ((panel_names[0], ranked[:n_ex]),
+                               (panel_names[1], ranked[mid0:mid0 + n_ex]),
+                               (panel_names[2], ranked[len(ranked) - n_ex:])):
+                sel = [p for p in sel if p not in used]     # few spectra: no repeats
+                used.update(sel)
+                if sel:
+                    groups_ex.append((label, sel))
+        f_ind_plot = flux_ind_error_frac
+        if f_ind_plot is None:
+            f_ind_plot = 0.03 if band_groups is not None else 0.0
+        for label, picks in groups_ex:
+            ncol = min(5, len(picks))
+            nrow = int(np.ceil(len(picks) / ncol))
+            fig, axes = plt.subplots(nrow, ncol, figsize=(4.6 * ncol, 4.0 * nrow),
+                                     squeeze=False)
+            for ax, p_idx in zip(axes.ravel(), picks):
+                i, j = fit_idx[p_idx]
+                y = np.asarray(fit_cube[i, j, :], dtype=float) * 1000
+                sig = np.asarray(fit_cube_res[i, j, :], dtype=float) * 1000
+                fit = fit_SY_FF_FFA_spectrum(frequencies_ghz, y, sig, nu0,
+                                             flux_sys_error_frac, **options)
+                where = f'pixel ({i}, {j})' if bin_labels is None else f'bin {i}'
+                plot_SY_FF_FFA_fit(frequencies_ghz, y, sig, fit, nu0, geometry,
+                                   fit['f_cov'], flux_sys_error_frac, ax=ax,
+                                   flux_ind_error_frac=f_ind_plot,
+                                   title=f'{where}, S/N = {snr[p_idx]:.0f}')
+            for ax in axes.ravel()[len(picks):]:
+                ax.set_visible(False)
+            if example_panels == 'SNR_pix':
+                span = f'S/N {snr[picks[-1]]:.0f} to {snr[picks[0]]:.0f}'
+            else:
+                span = (f'chi2_red {chi2_red[picks[0]]:.2f} to '
+                        f'{chi2_red[picks[-1]]:.2f}')
+            fig.suptitle(f'{label}: {unit} ({span})', fontsize=13)
+            fig.tight_layout()
+            plt.show()
+
+    # 8. FITS
+    tag = (_spec_output_tag(binning, 'chi2', use_model_images, add_residual,
+                            smooth_residual_to_target)
+           + f'-ffa{geometry}' + ('-fcovfit' if fit_fcov else '')
+           + ('-alphafix' if fix_alpha_nt else ''))
+    files_written = []
+    if save_fits and file_inputs and isinstance(ref_image_conv, str):
+        to_write = [
+            ('alpha_nt', output_maps['alpha_nt'], ''),
+            ('alpha_nt_error', output_maps['alpha_nt_err'], ''),
+            ('A_sy', output_maps['A_sy'], 'mJy/beam'),
+            ('A_sy_error', output_maps['A_sy_err'], 'mJy/beam'),
+            ('A_ff', output_maps['A_ff'], 'mJy/beam'),
+            ('A_ff_error', output_maps['A_ff_err'], 'mJy/beam'),
+            ('nu_t', output_maps['nu_t'], 'GHz'),
+            ('nu_t_lo', output_maps['nu_t_lo'], 'GHz'),
+            ('nu_t_hi', output_maps['nu_t_hi'], 'GHz'),
+            ('nu_t_upper95', output_maps['nu_t_upper95'], 'GHz'),
+            ('nu_t_detected', output_maps['nu_t_detected'], 'GHz'),
+            ('f_cov', output_maps['f_cov'], ''),
+            ('f_cov_error', output_maps['f_cov_err'], ''),
+            ('delta_bic', output_maps['delta_bic'], ''),
+            ('chi2red', output_maps['chi2_red'], ''),
+            ('chi2red_noffa', output_maps['chi2_red_null'], ''),
+            ('fitflag', output_maps['fit_flag'], ''),
+            ('EM_t', physical_maps['EM_t'], 'pc cm-6'),
+            ('EM_thin', physical_maps['EM_thin'], 'pc cm-6'),
+            ('Xi_max', physical_maps['Xi_max'], ''),
+        ]
+        for freq_key, maps in frequency_maps.items():
+            to_write += [
+                # intrinsic (unabsorbed) components and their sum
+                (f'S_sy_{freq_key}', maps['synchrotron'], 'mJy/beam'),
+                (f'S_sy_error_{freq_key}', maps['synchrotron_err'], 'mJy/beam'),
+                (f'S_ff_{freq_key}', maps['free_free'], 'mJy/beam'),
+                (f'S_ff_error_{freq_key}', maps['free_free_err'], 'mJy/beam'),
+                (f'S_total_{freq_key}', maps['total_intrinsic'], 'mJy/beam'),
+                (f'S_total_error_{freq_key}', maps['total_intrinsic_err'], 'mJy/beam'),
+                # as observed, after absorption
+                (f'S_sy_abs_{freq_key}', maps['synchrotron_abs'], 'mJy/beam'),
+                (f'S_ff_abs_{freq_key}', maps['free_free_abs'], 'mJy/beam'),
+                (f'S_total_abs_{freq_key}', maps['total'], 'mJy/beam'),
+                (f'S_total_abs_error_{freq_key}', maps['total_err'], 'mJy/beam'),
+                (f'fth_{freq_key}', maps['thermal_fraction'], ''),
+                (f'fth_error_{freq_key}', maps['thermal_fraction_err'], ''),
+                (f'fth_abs_{freq_key}', maps['thermal_fraction_abs'], ''),
+                (f'tau_{freq_key}', maps['tau'], ''),
+            ]
+        if bin_labels is not None:
+            to_write.append(('bins', bin_labels.astype(np.int32), ''))
+        files_written = _save_spec_maps(
+            to_write, ref_image_conv, tag=tag,
+            target_beam=target_beam if use_model_images else None,
+            out_dir=out_dir)
+    if verbose > 0:
+        _report_files_written(files_written, save_fits, file_inputs)
+
+    # 9. Results
+    noise_per_band = None
+    if mask.any():
+        noise_in_mask = np.asarray(noise_term[mask], dtype=float)
+        noise_per_band = noise_in_mask[0]
+        if not np.allclose(noise_in_mask, noise_per_band, equal_nan=True):
+            noise_per_band = np.array(noise_term, dtype=float)
+    return {
+        'parameter_maps': output_maps,
+        'frequency_maps': frequency_maps,
+        'physical_maps': physical_maps,
+        'data_products': {
+            'conv_cube': conv_cube,
+            'masked_cube': masked_cube,
+            'masked_cube_res': masked_cube_res,
+            'mask': mask,
+            'bin_map': bin_labels,
+            'noise_rms': noise_per_band,
+        },
+        'metadata': {
+            'frequencies_ghz': frequencies_ghz,
+            'output_frequencies': output_frequencies,
+            'nu0': nu0,
+            'geometry': geometry,
+            'f_cov': f_cov,
+            'fix_alpha_nt': fix_alpha_nt,
+            'alpha_nt_fixed': alpha_nt_fixed if fix_alpha_nt else None,
+            'alpha_nt_prior': alpha_nt_prior,
+            'nu_t_bounds': tuple(nu_t_bounds),
+            'band_groups': band_groups,
+            'flux_sys_error_frac': flux_sys_error_frac,
+            'flux_ind_error_frac': flux_ind_error_frac,
+            'delta_bic_min': delta_bic_min,
+            'T_e': T_e,
+            'fth_ref_freq': fth_ref_freq,
+            'beam_arcsec': beam_arcsec,
+            'binning': binning,
+            'beam_area_px': beam_area_px,
+            'fit_options': options,
+            'units': 'amplitudes and frequency maps in mJy/beam, nu_t in GHz, '
+                     'EM in pc cm^-6',
+            'files_written': files_written,
+            'processing_stats': {
+                'n_fitted': int(fitted.sum()),
+                'n_spectra': nspec,
+                'n_detected': int(detected.sum()),
+                'cube_shape': conv_cube.shape,
+                'averaging_applied': do_average_cube,
+            },
+        },
+    }
