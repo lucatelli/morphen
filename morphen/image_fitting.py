@@ -2658,69 +2658,89 @@ def sorted_detected_coordinates(reference_x,
                                 detected_x, 
                                 detected_y, 
                                 reference_coordinate, 
-                                tolerance=2):
+                                tolerance=None):
     """
-    This function will sort a new set of detected coordinates 
-    by distance to a reference position in the same order as a reference set 
-    of coordinates. 
-    
-    Consider for example, that in a high-resolution image, we have a set of
-    detected structures such as ID1, ID2, ID3. 
-    
-    If in a new image (e.g. a low-resolution image) we detect the same structures
-    in addition to other structures, we will have for example: 
-        ID1_new, ID2_new, ID3_new, ID4_new, ID5_new.
-    However, the order of the detected structures can be any. For example,
-    ID1_new may be the same as ID1, but not for the others. 
-    
-    This function will sort the new coordinates in the same order they appear 
-    in the reference coordinates, in addition to the extra detected coordinates.
-    
-    A typical use case is: 
-    - Perform a source detection in a VLA image (reference image), at 33 GHz.
-    - Perform a source detection in an e-MERLIN image, at 6 GHz.
-    The number of Structures may differ, but some of them are the same.
-    This allow us to connect the labels of the structures in both images.
-    
+    Order a new set of detections like a reference set, so that ID n means the
+    same structure in both (e.g. a VLA 33 GHz extraction used as reference for
+    an e-MERLIN 6 GHz one).
+
+    Each reference source is matched to at most one detection (optimal
+    one-to-one assignment on pixel distance, `scipy.optimize.linear_sum_assignment`),
+    and only within `tolerance` pixels. The output order is: the matched
+    detections in the reference's order, then every unmatched detection sorted
+    by distance to `reference_coordinate`. Reference sources without a
+    counterpart are reported and skipped, so later IDs shift down.
+
+    Parameters
+    ----------
+    reference_x, reference_y : array-like
+        Reference positions, in reference-ID order (e.g. SE_ref.objects['xc']).
+    detected_x, detected_y : array-like
+        New detections, in catalogue order.
+    reference_coordinate : (x, y)
+        Point used to order the unmatched detections (usually the image centre).
+    tolerance : float, optional
+        Maximum match distance in pixels. Default: half the smallest separation
+        between reference sources (so a match is never ambiguous), at least 2 px.
+
+    Returns
+    -------
+    coords : ndarray (N, 2)
+        Detected (x, y) in the new order.
+    distances : ndarray (N,)
+        Their distances to `reference_coordinate`.
+    indices : ndarray (N,) of int
+        Permutation of range(N): indices[k] is the catalogue index of ID k+1.
+
+    Notes
+    -----
+    The previous implementation built the reference-ordered list but returned
+    the plain distance order instead (`sorted_detected_indices`), so SE_ref had
+    no effect on the IDs; its coords/distances outputs also had length
+    n_ref + n_det with the same detection repeated for every reference.
     """
-    print('+++++++++++++++++++++++++++++++++++++++++++++++++++++++')
-    print('+++++++++++++++++++++++++++++++++++++++++++++++++++++++')
-    # Reference coordinate
-    # Reference coordinate
+    from scipy.optimize import linear_sum_assignment
+
+    rx = np.asarray(reference_x, dtype=float).ravel()
+    ry = np.asarray(reference_y, dtype=float).ravel()
+    dx = np.asarray(detected_x, dtype=float).ravel()
+    dy = np.asarray(detected_y, dtype=float).ravel()
     x_ref, y_ref = reference_coordinate
+    detected_distances = np.hypot(dx - x_ref, dy - y_ref)
 
-    # Calculate distances to the reference coordinate for both sets of coordinates
-    reference_distances = np.sqrt((reference_x - x_ref)**2 + (reference_y - y_ref)**2)
-    detected_distances = np.sqrt((detected_x - x_ref)**2 + (detected_y - y_ref)**2)
+    if tolerance is None:
+        if rx.size > 1:
+            sep_ref = np.hypot(rx[:, None] - rx[None, :], ry[:, None] - ry[None, :])
+            sep_ref[np.diag_indices_from(sep_ref)] = np.inf
+            tolerance = max(2.0, 0.5 * float(sep_ref.min()))
+        else:
+            tolerance = np.inf
 
-    # Sort the reference and detected indices by distance
-    sorted_reference_indices = np.argsort(reference_distances)
-    sorted_detected_indices = np.argsort(detected_distances)
+    matched_order = []
+    unmatched_refs = list(range(1, rx.size + 1))
+    if rx.size and dx.size:
+        d = np.hypot(rx[:, None] - dx[None, :], ry[:, None] - dy[None, :])
+        rows, cols = linear_sum_assignment(d)
+        ok = d[rows, cols] <= tolerance
+        match = dict(zip(rows[ok].tolist(), cols[ok].tolist()))
+        matched_order = [match[r] for r in range(rx.size) if r in match]
+        unmatched_refs = [r + 1 for r in range(rx.size) if r not in match]
 
-    # Initialize lists to store the sorted detected coordinates, distances, and indices
-    sorted_detected_coordinates = []
-    sorted_detected_distances = []
-    sorted_detected_original_indices = []
+    taken = set(matched_order)
+    rest = [int(i) for i in np.argsort(detected_distances, kind='stable')
+            if int(i) not in taken]
+    indices = np.array(matched_order + rest, dtype=int)
 
-    # Match reference coordinates to detected coordinates by closest distance
-    for ref_idx in sorted_reference_indices:
-        if len(sorted_detected_indices) > 0:
-            closest_idx = sorted_detected_indices[0]
-            sorted_detected_coordinates.append([detected_x[closest_idx], detected_y[closest_idx]])
-            sorted_detected_distances.append(detected_distances[closest_idx])
-            sorted_detected_original_indices.append(closest_idx)
-            # Remove the matched index to avoid duplicate matching
-            # sorted_detected_indices = np.delete(sorted_detected_indices, 0)
+    print(f"++==>> SE_ref matching: {len(matched_order)}/{rx.size} reference "
+          f"sources matched within {tolerance:.1f} px; "
+          f"{len(rest)} unmatched detection(s) appended by distance.")
+    if unmatched_refs:
+        print(f"       WARNING: reference IDs without a counterpart: "
+              f"{unmatched_refs} (IDs after them shift down)")
 
-    # Add any remaining detected coordinates that were not matched
-    for det_idx in sorted_detected_indices:
-        sorted_detected_coordinates.append([detected_x[det_idx], detected_y[det_idx]])
-        sorted_detected_distances.append(detected_distances[det_idx])
-        sorted_detected_original_indices.append(det_idx)
-
-    return (np.array(sorted_detected_coordinates), 
-            np.array(sorted_detected_distances), 
-            np.array(sorted_detected_indices))
+    coords = np.column_stack([dx[indices], dy[indices]]) if indices.size \
+        else np.zeros((0, 2))
+    return coords, detected_distances[indices], indices
     
 
 
@@ -2955,6 +2975,7 @@ def prepare_fit(ref_image, ref_res, z, ids_to_add=None,
                 adaptive_background=True,
                 preserve_extended=True,
                 min_separation=None,
+                robust_legacy=False,
                 error_map=None, use_residual_as_error=False):
     """
     Prepare the imaging data to be modeled.
@@ -3033,7 +3054,11 @@ def prepare_fit(ref_image, ref_res, z, ids_to_add=None,
         _, mask = mask_dilation(crop_image, sigma=sigma_mask, dilation_size=None,
                                 iterations=2, rms=std_res)
 
-    mask_detection = mask.copy()
+    # No mask and apply_mask=False means "do not restrict": every extractor and
+    # `compute_petro_source` take None as the whole image, and the returned
+    # `mask` (-> SE.mask) is None, which `run_image_fitting` already handles by
+    # building its own region. (Was `mask.copy()` unconditionally -> crash.)
+    mask_detection = mask.copy() if mask is not None else None
 
     if SE is not None:
         print(" ++>> Using provided Source Extractor (SE) object for source extraction.")
@@ -3146,7 +3171,8 @@ def prepare_fit(ref_image, ref_res, z, ids_to_add=None,
                                 merge_threshold=merge_threshold,
                                 adaptive_background=adaptive_background,
                                 preserve_extended=preserve_extended,
-                                min_separation=min_separation)
+                                min_separation=min_separation,
+                                legacy=robust_legacy)
 
     sigma_level = 3
     vmin = 3
