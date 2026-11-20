@@ -405,3 +405,521 @@ def adjust_arrays(a, b):
         b = np.pad(b, (0, len_a - len_b), 'constant', constant_values=np.nan)
 
     return a, b
+
+
+# import numpy as np
+# import pandas as pd
+PRINT_INFO_LEVELS = ('simple', 'full')
+
+def _factor(f, row):
+    """Resolve a conversion factor: a number is constant, a str is a column name."""
+    return row[f] if isinstance(f, str) else f
+
+
+def _has_err(row, ecol):
+    """True if the error column exists for this row and is a finite number."""
+    if ecol is None:
+        return False
+    e = row[ecol]
+    try:
+        return bool(np.isfinite(float(e)))
+    except (TypeError, ValueError):
+        return False
+
+
+def _check_print_info(print_info):
+    if print_info not in PRINT_INFO_LEVELS:
+        raise ValueError(f"print_info must be one of {PRINT_INFO_LEVELS}, "
+                         f"got {print_info!r}")
+
+def _with_derived_columns(df):
+    """
+    Return a copy of `df` with derived columns added when they are missing:
+
+      local_snr     = peak_of_flux / local_rms
+      local_snr_err = peak_error   / local_rms   (noise on local_rms ignored)
+
+    `local_rms` is the noise measured inside the region itself (residual map,
+    or sigma-clipped image when no residual was given), so this SNR differs
+    from `peak_snr`, which uses the global map std. A `local_snr` column
+    already present in `df` is left untouched.
+    """
+    out = df.copy()
+    if ('local_snr' not in out.columns
+            and {'peak_of_flux', 'local_rms'} <= set(out.columns)):
+        lrms = pd.to_numeric(out['local_rms'], errors='coerce')
+        lrms = lrms.where(lrms > 0)                     # 0/neg rms -> NaN SNR
+        out['local_snr'] = pd.to_numeric(out['peak_of_flux'], errors='coerce') / lrms
+        if 'peak_error' in out.columns:
+            out['local_snr_err'] = (pd.to_numeric(out['peak_error'], errors='coerce')
+                                    / lrms)
+    return out
+
+
+# Columns shown with print_info='simple', in display order.
+SIMPLE_MORPHO_COLS = [
+    'total_flux_mask',
+    'peak_of_flux',
+    'C50radii_major',
+    'C50radii_minor',
+    'C95radii_major',
+    'C95radii_minor',
+    'local_rms',
+    'local_snr',
+]
+
+def build_morpho_specs(print_info='full'):
+    """
+    Declarative spec for the final measurement table. One entry per printed
+    column. Keys:
+      'col'   : value column name (required)
+      'err'   : uncertainty column name (optional)
+      'units' : list of (label, factor). factor is a constant (e.g. 1000 for
+                Jy->mJy) or a column name resolved per row ('cell_size' for
+                pixel->arcsec). Use 1 for pass-through / already-correct units,
+                and None for text columns (printed/saved as-is).
+      'fmt'   : format spec (default '.3f')
+
+    print_info : 'full'   -> every column below (the original table).
+                 'simple' -> only SIMPLE_MORPHO_COLS: total flux, peak,
+                             a/b at 50% and 95%, local_rms and local_snr.
+
+    Conversions:
+      cell_size : pixel -> arcsec  (radial / size quantities)
+      1000      : Jy -> mJy        (fluxes, peaks, rms)
+      1         : identity         (dimensionless, degrees, counts, already-arcsec)
+      None      : text (no conversion, no formatting)
+
+    Sizes:
+      CXXradii        circularised radius sqrt(A/pi) = sqrt(a*b) -- NOT a semi-axis
+      CXXradii_major  semi-major axis  a = R / sqrt(q_eff)
+      CXXradii_minor  semi-minor axis  b = R * sqrt(q_eff)
+    Shape (all errors are 1-sigma, from the beam-correlated bootstrap):
+      q_eff +/- sigma_q_eff   axis ratio used for the major/minor conversion
+      q_convex +/- q_convex_err, PA_convex +/- PA_convex_err
+      PA_convex is CCW from the image +x axis, NOT east of north (for the usual
+      CDELT1 < 0 orientation, PA_EoN = (PA_convex - 90) mod 180).
+      sigma_q_method  'bootstrap_beam' / 'bootstrap_white' / 'rule'
+    Noise:
+      local_rms   noise inside the measured region (see compute_local_rms)
+      local_snr   peak_of_flux / local_rms, derived by _with_derived_columns
+    """
+    _check_print_info(print_info)
+    full = [
+        {'col': 'total_flux_mask',        'err': 'total_flux_error',
+         'units': [('mJy', 1000)],                          'fmt': '.3f'},
+        {'col': 'peak_of_flux',           'err': 'peak_error',
+         'units': [('mJy/bm', 1000)],                       'fmt': '.3f'},
+        {'col': 'C50radii',               'err': 'C50radii_err',
+         'units': [('arcsec', 'cell_size')],                'fmt': '.4f'},
+        {'col': 'C50radii_major',         'err': 'C50radii_major_err',
+         'units': [('arcsec', 'cell_size')],                'fmt': '.4f'},
+        {'col': 'C50radii_minor',         'err': 'C50radii_minor_err',
+         'units': [('arcsec', 'cell_size')],                'fmt': '.4f'},
+        {'col': 'C95radii',               'err': 'C95radii_err',
+         'units': [('arcsec', 'cell_size')],                'fmt': '.4f'},
+        {'col': 'C95radii_major',         'err': 'C95radii_major_err',
+         'units': [('arcsec', 'cell_size')],                'fmt': '.4f'},
+        {'col': 'C95radii_minor',         'err': 'C95radii_minor_err',
+         'units': [('arcsec', 'cell_size')],                'fmt': '.4f'},
+        {'col': 'q_eff',                  'err': 'sigma_q_eff',
+         'units': [('', 1)],                                'fmt': '.3f'},
+        {'col': 'sigma_q_method',
+         'units': [('', None)]},
+        {'col': 'q_convex',               'err': 'q_convex_err',
+         'units': [('', 1)],                                'fmt': '.3f'},
+        {'col': 'PA_convex',              'err': 'PA_convex_err',
+         'units': [('deg', 1)],                             'fmt': '.2f'},
+        {'col': 'convex_major_diameter',  'err': 'convex_major_diameter_err',
+         'units': [('arcsec', 'cell_size')],                'fmt': '.4f'},
+        {'col': 'convex_minor_diameter',  'err': 'convex_minor_diameter_err',
+         'units': [('arcsec', 'cell_size')],                'fmt': '.4f'},
+        {'col': 'C1',                     'err': 'C1_err',
+         'units': [('', 1)],                                'fmt': '.3f'},
+        {'col': 'C2',                     'err': 'C2_err',
+         'units': [('', 1)],                                'fmt': '.3f'},
+        {'col': 'TvPA',
+         'units': [('deg', 1)],                             'fmt': '.2f'},
+        {'col': 'Tvlength',
+         'units': [('arcsec', 'cell_size')],                'fmt': '.4f'},
+        {'col': 'rms_residual',
+         'units': [('mJy/bm', 1000)],                       'fmt': '.4f'},
+        {'col': 'local_rms',
+         'units': [('mJy/bm', 1000)],                       'fmt': '.4f'},
+        {'col': 'number_of_beams_in_mask',
+         'units': [('', 1)],                                'fmt': '.1f'},
+        {'col': 'bmajor',
+         'units': [('arcsec', 1)],                          'fmt': '.3f'},
+    ]
+    if print_info == 'full':
+        return full
+
+    by_col = {s['col']: s for s in full}
+    by_col['local_snr'] = {'col': 'local_snr', 'err': 'local_snr_err',
+                           'units': [('', 1)], 'fmt': '.1f'}
+    return [by_col[c] for c in SIMPLE_MORPHO_COLS]
+
+
+def _iter_output_columns(df, specs):
+    """Yield (header, value_col, err_col, factor, fmt) for each output column."""
+    for s in specs:
+        if s['col'] not in df.columns:
+            continue
+        err = s.get('err') if s.get('err') in df.columns else None
+        fmt = s.get('fmt', '.3f')
+        for label, f in s['units']:
+            header = f"{s['col']} ({label})" if label else s['col']
+            yield header, s['col'], err, f, fmt
+
+def _resolve_specs(print_info, specs, coord_specs):
+    """Defaults for specs/coord_specs. Explicitly passed specs always win.
+    'simple' shows no RA/Dec columns unless coord_specs is passed."""
+    _check_print_info(print_info)
+    if specs is None:
+        specs = build_morpho_specs(print_info)
+    if coord_specs is None:
+        coord_specs = build_coord_specs() if print_info == 'full' else []
+    return specs, coord_specs
+
+def print_morpho_table(df, specs=None, coord_specs=None,
+                       id_col='comp_ID', freq_col='freq', print_info='full'):
+    """
+    Pretty-print selected quantities with per-column unit conversions and
+    paired uncertainties. comp_ID == 0 (whole source) shown as 'whole'.
+    RA/Dec position columns (coord_specs) are appended as formatted strings.
+    A NaN uncertainty (e.g. bootstrap switched off) prints the value alone.
+
+    print_info : 'full'   -> all quantities + RA/Dec columns (original table).
+                 'simple' -> total_flux_mask, peak_of_flux, C50/C95 major and
+                             minor, local_rms, local_snr; no RA/Dec columns
+                             (pass coord_specs explicitly to add them back).
+    """
+    import mlibs
+    specs, coord_specs = _resolve_specs(print_info, specs, coord_specs)
+    df = _with_derived_columns(df)
+    coord_specs = [c for c in coord_specs if c['col'] in df.columns]
+
+    t = mlibs.PrettyTable()
+    fields = ['comp_ID', 'freq (GHz)']
+    for header, _, _, _, _ in _iter_output_columns(df, specs):
+        fields.append(header)
+    for c in coord_specs:
+        fields.append(c['header'])
+    t.field_names = fields
+
+    ids = pd.to_numeric(df[id_col], errors='coerce')
+    for i, (_, row) in enumerate(df.iterrows()):
+        label = 'whole' if ids.iloc[i] == 0 else f"{int(ids.iloc[i])}"
+        values = [label, f"{row[freq_col] / 1e9:.4f}"]
+        for _, vcol, ecol, f, fmt in _iter_output_columns(df, specs):
+            if f is None:                               # text column
+                values.append(str(row[vcol]))
+                continue
+            k = _factor(f, row)
+            v = row[vcol] * k
+            if _has_err(row, ecol):
+                values.append(f"{v:{fmt}} ± {row[ecol] * k:{fmt}}")
+            else:
+                values.append(f"{v:{fmt}}")
+        for c in coord_specs:
+            values.append(_format_coord_cell(row[c['col']], c))
+        t.add_row(values)
+
+    print(t)
+    return t
+
+
+def save_morpho_csv(df, path, specs=None, coord_specs=None,
+                    id_col='comp_ID', freq_col='freq', coord_split=True,
+                    print_info='full'):
+    """
+    Save the converted quantities to CSV. Values and errors are numeric
+    (converted to the target units); value and error get separate columns.
+    Header labels carry the unit, matching the printed table. Text columns
+    (factor None, e.g. sigma_q_method) are written as-is.
+
+    coord_split : if True, RA/Dec columns are written as two numeric columns
+                  ('<header> RA (deg)', '<header> Dec (deg)') in decimal degrees;
+                  if False, one formatted string column per coordinate.
+    print_info  : 'full' or 'simple', same column selection as print_morpho_table.
+    """
+    specs, coord_specs = _resolve_specs(print_info, specs, coord_specs)
+    df = _with_derived_columns(df)
+    coord_specs = [c for c in coord_specs if c['col'] in df.columns]
+
+    out = pd.DataFrame()
+    out['comp_ID'] = pd.to_numeric(df[id_col], errors='coerce').astype('Int64')
+    out['freq_GHz'] = df[freq_col].values / 1e9
+
+    for header, vcol, ecol, f, _ in _iter_output_columns(df, specs):
+        if f is None:                                   # text column
+            out[header] = df[vcol].values
+            continue
+        k = df[f].values if isinstance(f, str) else f
+        out[header] = pd.to_numeric(df[vcol], errors='coerce').values * k
+        if ecol is not None:
+            out[f"{header} err"] = pd.to_numeric(df[ecol], errors='coerce').values * k
+
+    for c in coord_specs:
+        parsed = df[c['col']].apply(_parse_radec)
+        if coord_split:
+            out[f"{c['header']} RA (deg)"]  = [p[0] for p in parsed]
+            out[f"{c['header']} Dec (deg)"] = [p[1] for p in parsed]
+        else:
+            out[c['header']] = df[c['col']].apply(lambda v: _format_coord_cell(v, c))
+
+    out.to_csv(path, index=False)
+    print(f"Saved {len(out)} rows x {out.shape[1]} cols -> {path}")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# LaTeX export (transposed: one row per component, S column per frequency)
+# ---------------------------------------------------------------------------
+
+def build_latex_specs():
+    """
+    Column layout for the compact LaTeX table. Two kinds of columns:
+
+    Per-frequency (one output column per frequency present):
+      {'kind': 'perfreq', 'col', 'err', 'factor', 'fmt',
+       'header': callable(freq_ghz)->str}
+
+    Per-component (single value, taken from the lowest-frequency row):
+      {'kind': 'single', 'col', 'err'(opt), 'factor', 'fmt', 'header': str}
+
+    factor: constant, or column name resolved on the source row.
+    R50/R95 are circularised radii sqrt(a*b); a/b are the semi-major/minor axes.
+    """
+    return [
+        {'kind': 'perfreq', 'col': 'total_flux_mask', 'err': 'total_flux_error',
+         'factor': 1000, 'fmt': '.1f',
+         'header': lambda ghz: rf'$S_{{{_band(ghz)}}}$'},
+        {'kind': 'single', 'col': 'C50radii', 'err': 'C50radii_err',
+         'factor': 'cell_size', 'fmt': '.3f', 'header': r'$R_{50}$'},
+        {'kind': 'single', 'col': 'C50radii_major', 'err': 'C50radii_major_err',
+         'factor': 'cell_size', 'fmt': '.3f', 'header': r'$a_{50}$'},
+        {'kind': 'single', 'col': 'C50radii_minor', 'err': 'C50radii_minor_err',
+         'factor': 'cell_size', 'fmt': '.3f', 'header': r'$b_{50}$'},
+        {'kind': 'single', 'col': 'C95radii', 'err': 'C95radii_err',
+         'factor': 'cell_size', 'fmt': '.3f', 'header': r'$R_{95}$'},
+        {'kind': 'single', 'col': 'C95radii_major', 'err': 'C95radii_major_err',
+         'factor': 'cell_size', 'fmt': '.3f', 'header': r'$a_{95}$'},
+        {'kind': 'single', 'col': 'C95radii_minor', 'err': 'C95radii_minor_err',
+         'factor': 'cell_size', 'fmt': '.3f', 'header': r'$b_{95}$'},
+        {'kind': 'single', 'col': 'q_eff', 'err': 'sigma_q_eff',
+         'factor': 1, 'fmt': '.2f', 'header': r'$q_{\mathrm{eff}}$'},
+        {'kind': 'single', 'col': 'PA_convex', 'err': 'PA_convex_err',
+         'factor': 1, 'fmt': '.1f', 'header': r'PA'},
+        {'kind': 'single', 'col': 'convex_minor_diameter',
+         'err': 'convex_minor_diameter_err',
+         'factor': 'cell_size', 'fmt': '.3f', 'header': r'$D_{\mathrm{min}}$'},
+        {'kind': 'single', 'col': 'convex_major_diameter',
+         'err': 'convex_major_diameter_err',
+         'factor': 'cell_size', 'fmt': '.3f', 'header': r'$D_{\mathrm{maj}}$'},
+        {'kind': 'single', 'col': 'number_of_beams_in_mask',
+         'factor': 1, 'fmt': '.1f', 'header': r'$N_{\Theta}$'},
+        {'kind': 'single', 'col': 'TvPA',
+         'factor': 1, 'fmt': '.2f', 'header': r'$\Theta$'},
+    ]
+
+def _band(freq_ghz):
+    """Rough radio band letter from frequency in GHz (for S-column subscripts)."""
+    bands = [(4, 8, 'C'), (8, 12, 'X'), (12, 18, 'Ku'),
+             (18, 27, 'K'), (27, 40, 'Ka'), (1, 2, 'L'), (2, 4, 'S')]
+    for lo, hi, name in bands:
+        if lo <= freq_ghz < hi:
+            return rf'\mathrm{{{name}}}'
+    return rf'{freq_ghz:.0f}'
+
+
+def to_latex_table(df, latex_specs=None, id_col='comp_ID', freq_col='freq',
+                   source_names=None, table_title=None, path=None):
+    """
+    Build a compact LaTeX tabular: one row per component, per-frequency fluxes
+    spread across S-columns, frequency-independent quantities taken from the
+    lowest-frequency row of each component. Columns missing from `df` are
+    skipped.
+
+    source_names : dict {comp_id: 'Label'} for the Source column. comp_id is
+                   matched numerically (0, 1, 2, ...).
+    table_title  : optional \\multicolumn banner row.
+    path         : if given, write the .tex; otherwise just return the string.
+    """
+    if latex_specs is None:
+        latex_specs = build_latex_specs()
+    latex_specs = [s for s in latex_specs if s['col'] in df.columns]
+
+    ids = pd.to_numeric(df[id_col], errors='coerce')
+    freqs_ghz = np.sort((df[freq_col] / 1e9).unique())
+    comp_ids = sorted(ids.dropna().unique())
+
+    perfreq = [s for s in latex_specs if s['kind'] == 'perfreq']
+    singles = [s for s in latex_specs if s['kind'] == 'single']
+
+    # ---- header row ----
+    heads = ['Source']
+    for s in perfreq:
+        for ghz in freqs_ghz:
+            heads.append(s['header'](ghz))
+    for s in singles:
+        heads.append(s['header'])
+    ncols = len(heads)
+
+    def fac(f, row):
+        return row[f] if isinstance(f, str) else f
+
+    def fmt_pm(row, s):
+        k = fac(s['factor'], row)
+        v = row[s['col']] * k
+        if s.get('err') and s['err'] in df.columns and _has_err(row, s['err']):
+            return rf"{v:{s['fmt']}} $\pm$ {row[s['err']] * k:{s['fmt']}}"
+        return f"{v:{s['fmt']}}"
+
+    body = []
+    for cid in comp_ids:
+        sub = df[ids == cid]
+        sub_ghz = (sub[freq_col] / 1e9)
+        low_row = sub.loc[sub_ghz.idxmin()]     # lowest-freq row for singles
+
+        label = None
+        if source_names is not None:
+            label = source_names.get(cid, source_names.get(int(cid),
+                                     source_names.get(str(int(cid)))))
+        if label is None:
+            label = 'whole' if cid == 0 else f'{int(cid)}'
+
+        cells = [label]
+        # per-frequency flux columns
+        for s in perfreq:
+            for ghz in freqs_ghz:
+                match = sub[np.isclose(sub_ghz.values, ghz)]
+                if len(match):
+                    r = match.iloc[0]
+                    k = fac(s['factor'], r)
+                    v = r[s['col']] * k
+                    prefix = rf"({ghz:.1f})~"
+                    if s.get('err') and s['err'] in df.columns and _has_err(r, s['err']):
+                        cells.append(rf"{prefix}{v:{s['fmt']}} $\pm$ {r[s['err']] * k:{s['fmt']}}")
+                    else:
+                        cells.append(rf"{prefix}{v:{s['fmt']}}")
+                else:
+                    cells.append('--')
+        # frequency-independent columns (from lowest-freq row)
+        for s in singles:
+            cells.append(fmt_pm(low_row, s))
+        body.append(' & '.join(cells) + r' \\')
+
+    # ---- assemble ----
+    lines = [r'\begin{tabular}{' + 'c' + 'r' * (ncols - 1) + '}',
+             r'\hline\hline']
+    if table_title:
+        lines.append(rf'\multicolumn{{{ncols}}}{{c}}{{\it {table_title}}} \\ \hline')
+    lines.append(' & '.join(heads) + r' \\ \hline')
+    lines.extend(body)
+    lines.append(r'\hline')
+    lines.append(r'\end{tabular}')
+    tex = '\n'.join(lines)
+
+    if path:
+        with open(path, 'w') as fh:
+            fh.write(tex + '\n')
+        print(f"Wrote LaTeX table -> {path}")
+    return tex
+
+
+# ---------------------------------------------------------------------------
+# RA/Dec coordinate columns  (values like (233.73842514, 23.50319123) in deg)
+# ---------------------------------------------------------------------------
+
+def _parse_radec(val):
+    """Return (ra_deg, dec_deg) from a tuple/list/np.array or a '(ra, dec)' string."""
+    if val is None or (np.isscalar(val) and pd.isna(val)):
+        return (np.nan, np.nan)
+    if isinstance(val, str):
+        import ast
+        try:
+            val = ast.literal_eval(val.strip())
+        except (ValueError, SyntaxError):
+            nums = [float(x) for x in
+                    val.replace('(', ' ').replace(')', ' ').replace(',', ' ').split()]
+            val = nums
+    ra, dec = float(val[0]), float(val[1])
+    return (ra, dec)
+
+
+def _radec_hmsdms(ra_deg, dec_deg, sep='hmsdms', precision=2):
+    """Format decimal-degree RA/Dec as sexagesimal. Uses astropy if present,
+    else a pure-python fallback."""
+    if not np.isfinite(ra_deg) or not np.isfinite(dec_deg):
+        return '--'
+    try:
+        from astropy.coordinates import SkyCoord
+        import astropy.units as u
+        c = SkyCoord(ra=ra_deg * u.deg, dec=dec_deg * u.deg, frame='icrs')
+        return c.to_string('hmsdms', precision=precision)
+    except ImportError:
+        # RA in hours:min:sec, Dec in deg:arcmin:arcsec
+        rh = ra_deg / 15.0
+        rh_h = int(rh); rh_m = int((rh - rh_h) * 60)
+        rh_s = (rh - rh_h - rh_m / 60) * 3600
+        sign = '-' if dec_deg < 0 else '+'
+        d = abs(dec_deg)
+        dd = int(d); dm = int((d - dd) * 60); ds = (d - dd - dm / 60) * 3600
+        return (f"{rh_h:02d}h{rh_m:02d}m{rh_s:0{3+precision}.{precision}f}s "
+                f"{sign}{dd:02d}d{dm:02d}m{ds:0{3+precision}.{precision}f}s")
+
+
+def build_coord_specs():
+    """
+    RA/Dec position columns. 'style': 'sexagesimal' (hms/dms) or 'decimal'.
+    Printed/saved as a single 'RA Dec' string per column (no unit conversion,
+    no uncertainty pairing).
+    """
+    return [
+        {'col': 'peak_position_Ra_Dec',            'header': 'Peak RA/Dec',
+         'style': 'sexagesimal', 'precision': 2},
+        {'col': 'centroid_convex_position_Ra_Dec', 'header': 'Centroid RA/Dec',
+         'style': 'sexagesimal', 'precision': 2},
+    ]
+
+
+def _format_coord_cell(val, spec):
+    ra, dec = _parse_radec(val)
+    if spec.get('style', 'sexagesimal') == 'decimal':
+        if not (np.isfinite(ra) and np.isfinite(dec)):
+            return '--'
+        p = spec.get('precision', 6)
+        return f"{ra:.{p}f} {dec:+.{p}f}"
+    return _radec_hmsdms(ra, dec, sep='hmsdms', precision=spec.get('precision', 2))
+
+def append_sed_to_df(df, comp_id, result_sed=None, params_sed=None,
+                     id_col='comp_ID', prefix_lmfit='sed_', prefix_mcmc='sed_mcmc_'):
+    """
+    Append one component's SED fit onto its rows (all frequencies) in df.
+    Call once per component with the results from your external
+    do_fit_spec_RC_linear call.
+    """
+    mask = df[id_col] == comp_id
+    if not mask.any():
+        raise ValueError(f"No rows with {id_col} == {comp_id!r}. "
+                         f"Found: {df[id_col].unique()}")
+
+    def setcol(col, val):
+        if col not in df.columns:
+            df[col] = np.nan
+        df.loc[mask, col] = val
+
+    if result_sed is not None:
+        for name, p in result_sed.params.items():
+            setcol(f'{prefix_lmfit}{name}',     p.value)
+            setcol(f'{prefix_lmfit}{name}_err', p.stderr)
+
+    if params_sed is not None:
+        for name, d in params_sed.items():
+            setcol(f'{prefix_mcmc}{name}',       d['best'])
+            setcol(f'{prefix_mcmc}{name}_lower', d['lower'])
+            setcol(f'{prefix_mcmc}{name}_upper', d['upper'])
+
+    return df
+
