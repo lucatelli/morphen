@@ -52,7 +52,22 @@ __all__ = [
 ]
 
 # Methods that can be requested via `method=`.
-_METHODS = ('chi2', 'mi', 'xcorr', 'chi2_shift', 'auto', 'ensemble')
+_METHODS = ('chi2', 'mi', 'xcorr', 'chi2_shift', 'peaks', 'auto', 'ensemble')
+
+# Fraction of the target's variance (over the mask) that a shifted, scaled copy
+# of the reference leaves unexplained, above which the result is flagged
+# 'poor_model'. A reduced-chi2 cut does not work for this: at S/N ~ 5000 a VLA
+# S-band vs C-band pair already sits at reduced chi2 ~ 300 from ordinary
+# spectral structure. Measured on UGC 08696: VLA L/S vs C <= 0.05, LOFAR vs
+# VLA C ~ 0.45-0.5.
+_POOR_MODEL_FRAC = 0.2
+
+# Minimum chi2-vs-MI disagreement, as a fraction of the broader beam, that
+# 'auto' reads as a component flip.
+_FLIP_BEAM_FRAC = 0.25
+
+# Half-width, in pixels, of the box each MI start is refined within.
+_MI_LOCAL_PX = 15.0
 
 # Legacy `shift_correction_mode` values -> new method names.
 _LEGACY_METHODS = {
@@ -84,7 +99,13 @@ class ShiftResult:
     flags : list of str
         Diagnostics worth acting on: ``'consistent_with_zero'``,
         ``'clamped'``, ``'component_flip_suspected'``, ``'no_uncertainty'``,
-        ``'beam_matched'``, ``'not_converged'``, ``'empty_mask'``.
+        ``'beam_matched'``, ``'not_converged'``, ``'empty_mask'``,
+        ``'large_shift'`` (accepted, but beyond one reference beam),
+        ``'peaks_disagree'`` (the answer is not where the component pattern
+        puts it -- for a linear estimator, typically peak-on-peak), ``'poor_model'`` (a shifted, scaled copy of the
+        reference leaves more than ``_POOR_MODEL_FRAC`` of the target's
+        variance unexplained -- e.g. a component flip; see
+        ``diagnostics['unexplained_fraction']`` and ``['reduced_chi2']``).
     diagnostics : dict
         Per-backend estimates, mask size, rms values, beams -- everything needed
         to understand why the answer came out the way it did.
@@ -368,16 +389,37 @@ def split_shift(dy, dx):
 # reference; `estimate_image_shift` negates once, at the end, to get the
 # correction.
 # ---------------------------------------------------------------------------
-def _coarse_xcorr(ref, tgt, mask, max_shift):
+def _asinh_scale(data, rms):
+    """``arcsinh(I / rms)`` of the positive part: linear near the noise,
+    logarithmic above it.
+
+    Compresses the dynamic range so the brightest component stops owning the
+    correlation. On linear intensity a cross-correlation is dominated by the
+    product of the two peaks, so when the brightest component at one frequency
+    is a *different* component at the other (UGC 08696 / Mrk 273: the N nucleus
+    at 6 GHz, the free-free-absorbed-around SW nucleus at 144 MHz), it locks
+    peak-on-peak -- one beam away from the truth -- however well the rest of
+    the structure agrees.
+    """
+    return np.arcsinh(np.clip(_clean(data), 0.0, None) / rms)
+
+
+def _coarse_xcorr(ref, tgt, mask, max_shift, rms_ref=None, rms_tgt=None):
     """Integer-pixel un-whitened cross-correlation peak.
 
     Deliberately *not* phase-normalised (see the module docstring). Used only
     to seed the refiners, so that a source with several components cannot drop
-    them into the wrong local optimum.
+    them into the wrong local optimum. When the noise levels are given the
+    images are arcsinh-scaled first (see :func:`_asinh_scale`), so the seed
+    follows the overall structure rather than the brightest peak.
     """
     w = _taper(mask)
-    r = _clean(ref) * w
-    t = _clean(tgt) * w
+    if rms_ref is not None and rms_tgt is not None:
+        r = _asinh_scale(ref, rms_ref) * w
+        t = _asinh_scale(tgt, rms_tgt) * w
+    else:
+        r = _clean(ref) * w
+        t = _clean(tgt) * w
     r = r - r.mean()
     t = t - t.mean()
     cc = np.fft.fftshift(np.real(np.fft.ifft2(
@@ -390,12 +432,13 @@ def _coarse_xcorr(ref, tgt, mask, max_shift):
     return float(j - b), float(i - b)
 
 
-def _starts(x0, max_shift=None):
-    """Seed points for the refiners: the coarse peak, plus the origin.
+def _starts(seeds, max_shift=None):
+    """Seed points for the refiners: every seed given (the coarse peak, and the
+    component-pattern match when one was found), plus the origin.
 
     Deduplicated, and clipped to the search box when one is given.
     """
-    cand = [np.asarray(x0, dtype=float), np.zeros(2)]
+    cand = [np.asarray(s, dtype=float) for s in seeds] + [np.zeros(2)]
     if max_shift is not None:
         cand = [np.clip(c, -max_shift, max_shift) for c in cand]
     out = []
@@ -456,14 +499,14 @@ def _hessian_errors(cost, p, step=0.05):
         return np.nan, np.nan
 
 
-def _refine_chi2(ref, tgt, mask, rms_ref, rms_tgt, x0, max_shift):
+def _refine_chi2(ref, tgt, mask, rms_ref, rms_tgt, seeds, max_shift):
     cost = _chi2_cost_factory(ref, tgt, mask, rms_ref, rms_tgt)
     # Two starts: the coarse cross-correlation peak, and the origin. The coarse
     # peak is usually the better seed, but it is exactly what goes wrong when
     # one component dominates in only one of the two bands -- in that case it
     # can land 10+ px away and a local optimiser will happily stay there.
     best = None
-    for start in _starts(x0):
+    for start in _starts(seeds):
         res = optimize.minimize(cost, start, method='Nelder-Mead',
                                 options=dict(xatol=1e-3, fatol=1e-3,
                                              maxiter=2000))
@@ -510,16 +553,26 @@ def _mi_cost_factory(ref, tgt, mask, rms_ref, rms_tgt, bins=48, smooth=1.0):
     return neg_mi
 
 
-def _refine_mi(ref, tgt, mask, rms_ref, rms_tgt, x0, max_shift,
+def _refine_mi(ref, tgt, mask, rms_ref, rms_tgt, seeds, max_shift,
                n_bootstrap=6, rng=None):
     neg_mi = _mi_cost_factory(ref, tgt, mask, rms_ref, rms_tgt)
-    bounds = [(-max_shift, max_shift), (-max_shift, max_shift)]
     # Multi-start matters more here than for chi2: MI is the fallback precisely
     # for the case where the coarse seed is untrustworthy, so it must not be
     # anchored to it.
+    #
+    # Each start is searched only within `_MI_LOCAL_PX` of itself. Bounded
+    # Powell line-searches the *whole* bounded interval, and on a multimodal
+    # MI surface over a wide box (max_shift = 150 px) that walked off a seed
+    # sitting on the true optimum (MI 0.88) into noise (MI 0.45). Reaching far
+    # optima is the seeds' job, not the line search's.
+    def _local(c):
+        return [(max(-max_shift, v - _MI_LOCAL_PX), min(max_shift, v + _MI_LOCAL_PX))
+                for v in c]
+
     res = None
-    for start in _starts(x0, max_shift):
-        r = optimize.minimize(neg_mi, start, method='Powell', bounds=bounds,
+    for start in _starts(seeds, max_shift):
+        r = optimize.minimize(neg_mi, start, method='Powell',
+                              bounds=_local(start),
                               options=dict(xtol=1e-3, ftol=1e-5))
         if res is None or r.fun < res.fun:
             res = r
@@ -534,7 +587,8 @@ def _refine_mi(ref, tgt, mask, rms_ref, rms_tgt, x0, max_shift,
         for _ in range(int(n_bootstrap)):
             noisy = tgt + rng.normal(0.0, rms_tgt, tgt.shape)
             f = _mi_cost_factory(ref, noisy, mask, rms_ref, rms_tgt)
-            r = optimize.minimize(f, res.x, method='Powell', bounds=bounds,
+            r = optimize.minimize(f, res.x, method='Powell',
+                                  bounds=_local(res.x),
                                   options=dict(xtol=1e-2, ftol=1e-4))
             samples.append(r.x)
         s = np.asarray(samples)
@@ -542,7 +596,7 @@ def _refine_mi(ref, tgt, mask, rms_ref, rms_tgt, x0, max_shift,
     return dy, dx, ey, ex, bool(res.success)
 
 
-def _refine_xcorr(ref, tgt, mask, rms_ref, rms_tgt, x0, max_shift,
+def _refine_xcorr(ref, tgt, mask, rms_ref, rms_tgt, seeds, max_shift,
                   upsample=100):
     """Upsampled *plain* cross-correlation via skimage.
 
@@ -565,12 +619,18 @@ def _refine_xcorr(ref, tgt, mask, rms_ref, rms_tgt, x0, max_shift,
     return -float(sh[0]), -float(sh[1]), np.nan, np.nan, True
 
 
-def _refine_chi2_shift(ref, tgt, mask, rms_ref, rms_tgt, x0, max_shift):
+def _refine_chi2_shift(ref, tgt, mask, rms_ref, rms_tgt, seeds, max_shift):
     """Adam Ginsburg's ``image_registration.chi2_shift``.
 
     An optional external cross-check: an independently written chi2 registration
     with its own error model. Kept optional because a core cutout routine should
     not acquire a hard dependency.
+
+    Two caveats. It searches the *whole* frame -- `max_shift` cannot be passed
+    down, so it only acts afterwards, through the QA gate's clamp. And it is a
+    linear-intensity statistic, so it shares chi2's failure under a component
+    flip: on UGC 08696 LOFAR vs VLA-C it returned the peak-on-peak (90, -37) px
+    against a structural (75, -48) px. Use 'auto' or 'peaks' there.
     """
     try:
         from image_registration import chi2_shift
@@ -591,11 +651,102 @@ def _refine_chi2_shift(ref, tgt, mask, rms_ref, rms_tgt, x0, max_shift):
     return float(dy), float(dx), float(edy), float(edx), True
 
 
+def _find_peaks(data, rms, nsigma=10.0, size=9, max_peaks=15):
+    """Positions ``(y, x)`` of the brightest local maxima above `nsigma` * rms.
+
+    Sub-pixel positions come from the flux-weighted centroid of the 3x3
+    neighbourhood. Brightest first, at most `max_peaks` of them.
+    """
+    d = _clean(data)
+    size = max(3, int(size) | 1)
+    peak = (d == ndimage.maximum_filter(d, size=size)) & (d > nsigma * rms)
+    pos = np.argwhere(peak)
+    if len(pos) == 0:
+        return np.zeros((0, 2))
+    order = np.argsort(-d[pos[:, 0], pos[:, 1]])[:max_peaks]
+    out = []
+    ny, nx = d.shape
+    for y, x in pos[order]:
+        y0, y1 = max(y - 1, 0), min(y + 2, ny)
+        x0, x1 = max(x - 1, 0), min(x + 2, nx)
+        w = np.clip(d[y0:y1, x0:x1], 0.0, None)
+        yy, xx = np.mgrid[y0:y1, x0:x1]
+        out.append((np.sum(w * yy) / w.sum(), np.sum(w * xx) / w.sum()))
+    return np.asarray(out, dtype=float)
+
+
+def _match_peaks(P, Q, D, tol):
+    """Pairs ``(i, j)`` with ``|Q[j] - D - P[i]| < tol``, nearest per target."""
+    if len(P) == 0 or len(Q) == 0:
+        return np.zeros(0, int), np.zeros(0, int)
+    diff = (Q - D)[:, None, :] - P[None, :, :]
+    dist = np.hypot(diff[..., 0], diff[..., 1])
+    i = dist.argmin(1)
+    j = np.arange(len(Q))
+    ok = dist[j, i] < tol
+    return i[ok], j[ok]
+
+
+def _refine_peaks(ref, tgt, mask, rms_ref, rms_tgt, seeds, max_shift,
+                  size=9, tol=3.0, nsigma=10.0, min_matches=3):
+    """Match the *pattern* of compact components, ignoring their fluxes.
+
+    Every pairing of a reference peak with a target peak proposes a
+    displacement; the one that brings the most other peaks into coincidence
+    wins, and is then refined as the mean offset of the matched pairs. Only
+    positions enter, so a component whose brightness inverts between bands --
+    or vanishes, as an absorbed nucleus does at low frequency -- costs one
+    match, not the answer. That is what the intensity estimators cannot offer:
+    each of them weights a pixel by its brightness.
+
+    The uncertainty is the scatter of the matched pairs, i.e. it includes any
+    genuine frequency-dependent displacement between components rather than
+    pretending they share one position. Fewer than `min_matches` coincident
+    pairs is reported as not converged: two can line up by chance.
+
+    Meant for the *native* images, not the beam-matched ones: matching blurs
+    the sharper image, merging components a beam apart (the two Mrk 273 nuclei
+    at 0.83") into one peak, and positions are all this backend uses.
+    `size` is the local-maximum window, `tol` the matching radius, in pixels.
+    """
+    P = _find_peaks(ref, rms_ref, nsigma=nsigma, size=size)
+    Q = _find_peaks(tgt, rms_tgt, nsigma=nsigma, size=size)
+    if len(P) == 0 or len(Q) == 0:
+        return 0.0, 0.0, np.nan, np.nan, False
+
+    cand = (Q[:, None, :] - P[None, :, :]).reshape(-1, 2)
+    cand = cand[np.hypot(cand[:, 0], cand[:, 1]) <= max_shift]
+    best = None
+    for D in cand:
+        i, j = _match_peaks(P, Q, D, tol)
+        resid = np.hypot(*(Q[j] - D - P[i]).T).mean() if len(i) else np.inf
+        key = (-len(i), resid)
+        if best is None or key < best[0]:
+            best = (key, D)
+    if best is None:
+        return 0.0, 0.0, np.nan, np.nan, False
+
+    D = best[1]
+    for _ in range(3):               # re-centre on the matched set, re-match
+        i, j = _match_peaks(P, Q, D, tol)
+        if len(i) == 0:
+            break
+        D = np.mean(Q[j] - P[i], axis=0)
+    n = len(i)
+    if n >= 3:
+        err = np.std(Q[j] - P[i], axis=0, ddof=1) / np.sqrt(n)
+        ey, ex = float(err[0]), float(err[1])
+    else:
+        ey = ex = np.nan
+    return float(D[0]), float(D[1]), ey, ex, bool(n >= min_matches)
+
+
 _BACKENDS = {
     'chi2': _refine_chi2,
     'mi': _refine_mi,
     'xcorr': _refine_xcorr,
     'chi2_shift': _refine_chi2_shift,
+    'peaks': _refine_peaks,
 }
 
 
@@ -621,17 +772,29 @@ def estimate_image_shift(reference, target,
     reference, target : str or 2D ndarray
         FITS paths or image planes. Paths are preferred: they let the beam, the
         pixel scale and the companion residual's noise be read automatically.
-    method : {'chi2', 'mi', 'xcorr', 'chi2_shift', 'auto', 'ensemble'}
+    method : {'chi2', 'mi', 'xcorr', 'chi2_shift', 'peaks', 'auto', 'ensemble'}
         ``'chi2'``   forward model with a free flux scale (default; best
                      general-purpose accuracy, good to SNR ~ 3);
-        ``'mi'``     mutual information (the only one robust to a component
-                     whose brightness ratio inverts between bands, but noisier);
+        ``'mi'``     mutual information (robust to a component whose
+                     brightness ratio inverts between bands, but noisier);
         ``'xcorr'``  upsampled plain cross-correlation via scikit-image;
         ``'chi2_shift'`` external ``image_registration`` backend;
+        ``'peaks'``  match the pattern of compact components by position
+                     only; immune to flips, but needs >= 3 components above
+                     10 sigma in both images, and is only as precise as their
+                     positions agree between bands;
         ``'auto'``   run chi2 and mi, and fall back to mi when they disagree --
-                     which is the signature of a component flip;
+                     which is the signature of a component flip -- checking
+                     the answer against 'peaks';
         ``'ensemble'`` run everything available, take the median, and use the
                      inter-method scatter as the uncertainty.
+
+        Every intensity backend is seeded from an arcsinh-scaled
+        cross-correlation and from the 'peaks' match, not from the linear
+        peak alone. With a component flip *and* an offset of several beams
+        (UGC 08696 LOFAR vs VLA-C: ~90 px, the brightest component a
+        different nucleus in each band) the linear seed sits peak-on-peak,
+        one beam from the truth, and MI never left it.
     mask : 2D bool ndarray, optional
         Pixels to fit over. Defaults to the union of the >`nsigma` regions of
         both images, dilated by `grow_px`. Pass ``mlibs.mask_dilation(...)[0]``
@@ -645,7 +808,10 @@ def estimate_image_shift(reference, target,
         returned shift applies to the native images.
     max_shift : float, optional
         Largest shift to search for and to accept, in pixels. Defaults to one
-        reference beam major axis (or 15 px when no beam is known).
+        reference beam major axis (or 15 px when no beam is known). Raise it
+        for data with a known large astrometric error; an accepted shift
+        beyond one beam is flagged ``'large_shift'`` so it is not mistaken
+        for a clamp.
     n_sigma_reject : float
         A shift smaller than this many sigma is reported as zero, with a
         ``'consistent_with_zero'`` flag. This is what prevents a genuinely
@@ -653,8 +819,12 @@ def estimate_image_shift(reference, target,
         that leaves the images worse aligned than doing nothing. Set to 0 to
         always apply the raw estimate.
     flip_tolerance : float
-        In ``'auto'``, the pixel disagreement between chi2 and mi beyond which
-        the component-flip fallback triggers.
+        In ``'auto'``, the minimum pixel disagreement between chi2 and mi
+        beyond which the component-flip fallback triggers. When the beam is
+        known the threshold is at least ``_FLIP_BEAM_FRAC`` of the broader
+        beam (in pixels), so finely sampled images do not read MI's ordinary
+        sub-beam scatter as a flip; the value used is in
+        ``diagnostics['flip_threshold']``.
 
     Returns
     -------
@@ -711,43 +881,83 @@ def estimate_image_shift(reference, target,
         if matched:
             flags.append('beam_matched')
 
-    x0 = _coarse_xcorr(ref_e, tgt_e, m, max_shift)
+    # Peak-finding scales: the local-maximum window from the sharper beam (so
+    # components a beam apart stay separate), the matching radius from the
+    # broader one.
+    beam_px, peak_kw = None, {}
+    beams_px = [b[0] / cell_size for b in (ref_beam, target_beam)
+                if b is not None and cell_size]
+    if beams_px:
+        beam_px = max(beams_px)
+        peak_kw = dict(size=max(5, int(round(0.7 * min(beams_px)))),
+                       tol=max(2.0, 0.3 * beam_px))
+    ref_beam_px = (ref_beam[0] / cell_size
+                   if ref_beam is not None and cell_size else None)
+
+    coarse = _coarse_xcorr(ref_e, tgt_e, m, max_shift, rms_ref, rms_target)
 
     diagnostics = dict(mask_px=int(m.sum()), rms_ref=rms_ref,
-                       rms_target=rms_target, coarse=x0,
+                       rms_target=rms_target, coarse=coarse,
                        ref_beam=ref_beam, target_beam=target_beam,
                        cell_size=cell_size, max_shift=max_shift,
                        beam_matched=matched, per_method={})
 
-    def _run(name):
+    def _run(name, seeds):
+        if name in diagnostics['per_method']:
+            r = diagnostics['per_method'][name]
+            return r['dy'], r['dx'], r['dy_err'], r['dx_err'], r['converged']
         kw = {}
         if name == 'mi':
             kw['n_bootstrap'] = mi_bootstrap
-        dy, dx, ey, ex, ok = _BACKENDS[name](ref_e, tgt_e, m, rms_ref,
-                                             rms_target, x0, max_shift, **kw)
+        elif name == 'peaks':
+            kw.update(peak_kw)
+        # 'peaks' works on the native images -- see `_refine_peaks`.
+        r_in, t_in = (ref, tgt) if name == 'peaks' else (ref_e, tgt_e)
+        dy, dx, ey, ex, ok = _BACKENDS[name](r_in, t_in, m, rms_ref,
+                                             rms_target, seeds, max_shift, **kw)
         diagnostics['per_method'][name] = dict(dy=dy, dx=dx, dy_err=ey,
                                                dx_err=ex, converged=ok)
         return dy, dx, ey, ex, ok
 
+    # The component-pattern match is cheap, and is the one seed a brightness
+    # flip cannot move, so every refiner starts from it as well.
+    p_dy, p_dx, p_ey, p_ex, p_ok = _run('peaks', [])
+    seeds = [coarse, (p_dy, p_dx)]
+    diagnostics['seeds'] = seeds
+
+    def _n(v):
+        return float(v) if np.isfinite(v) else 0.0
+
     used = method
     if method in _BACKENDS:
-        dy, dx, ey, ex, ok = _run(method)
+        dy, dx, ey, ex, ok = _run(method, seeds)
         if not ok:
             flags.append('not_converged')
 
     elif method == 'auto':
-        c_dy, c_dx, c_ey, c_ex, c_ok = _run('chi2')
-        m_dy, m_dx, m_ey, m_ex, m_ok = _run('mi')
+        c_dy, c_dx, c_ey, c_ex, c_ok = _run('chi2', seeds)
+        m_dy, m_dx, m_ey, m_ex, m_ok = _run('mi', seeds)
         # The trigger must clear *both* estimators' noise, not just chi2's.
         # MI is the coarser statistic by a wide margin, so keying the threshold
         # off chi2's (very small) formal error alone made `auto` discard good
         # chi2 answers in favour of noisier MI ones whenever the two happened to
         # differ by half a pixel.
-        def _n(v):
-            return float(v) if np.isfinite(v) else 0.0
+        #
+        # It must also scale with the resolution. A flip drags a brightness-
+        # weighted estimator a good fraction of the way between two resolved
+        # components, which are at least ~a beam apart, so it shows up as a
+        # disagreement of several pixels at fine sampling. A fixed 1 px
+        # trigger instead fired on UGC 08696 VLA-L vs VLA-C (13 px beam):
+        # chi2 (-0.06, 0.31) vs MI (0.11, 1.49), 0.1 beam apart, and the
+        # compact N nucleus -- Gaussian-fitted in both -- gave (-0.06, 0.20),
+        # i.e. chi2 was right and MI's own coarseness was the disagreement.
+        # MI's bootstrap errors are too small to absorb that (they restart
+        # from the optimum), hence the beam term.
         scale = max(flip_tolerance,
+                    _FLIP_BEAM_FRAC * beam_px if beam_px else 0.0,
                     3.0 * np.hypot(_n(c_ey), _n(c_ex)),
                     3.0 * np.hypot(_n(m_ey), _n(m_ex)))
+        diagnostics['flip_threshold'] = float(scale)
         if np.hypot(c_dy - m_dy, c_dx - m_dx) > scale:
             # chi2 and MI only diverge like this when the intensity relation
             # between the bands is not a single global scaling -- a component
@@ -761,9 +971,11 @@ def estimate_image_shift(reference, target,
 
     else:   # ensemble
         got = []
-        for name in ('chi2', 'mi', 'xcorr', 'chi2_shift'):
+        for name in ('chi2', 'mi', 'xcorr', 'chi2_shift', 'peaks'):
+            if name == 'peaks' and not p_ok:
+                continue
             try:
-                r = _run(name)
+                r = _run(name, seeds)
                 got.append((r[0], r[1]))
             except ImportError:
                 continue
@@ -778,6 +990,45 @@ def estimate_image_shift(reference, target,
         else:
             ey = ex = np.nan
         ok, used = True, 'ensemble'
+
+    # Independent check by position alone, for every intensity answer. Not used
+    # to override: 'peaks' disagreeing can as well mean the components really
+    # do sit at different places in the two bands. But a linear estimator that
+    # has gone peak-on-peak under a flip lands one component separation away
+    # from it, which is the one warning sign its own fit quality does not give
+    # (the bright peak dominates that fit too).
+    if p_ok and used != 'peaks':
+        tol = max(flip_tolerance,
+                  3.0 * np.hypot(_n(ey), _n(ex)),
+                  3.0 * np.hypot(_n(p_ey), _n(p_ex)),
+                  0.3 * beam_px if beam_px else 0.0)
+        if np.hypot(dy - p_dy, dx - p_dx) > tol:
+            flags.append('peaks_disagree')
+
+    # How well a single shifted, scaled copy of the reference describes the
+    # target at the chosen shift. A reduced chi2 far above 1 means the two
+    # images differ in more than position (a flip, an absorbed component,
+    # spectral structure), and then the chi2 curvature errors are formal
+    # rather than real -- they came out at 0.004 px for the UGC 08696 LOFAR
+    # sub-bands, which scattered by 3 px. Those are inflated by
+    # sqrt(reduced chi2); MI (bootstrap) and peaks (pair scatter) carry their
+    # own empirical errors and are left alone. The 'poor_model' flag uses the
+    # unexplained-variance fraction instead, which does not grow with S/N.
+    y = tgt_e[m]
+    A = np.vstack([apply_pixel_shift(ref_e, dy, dx)[m], np.ones_like(y)]).T
+    coef, *_ = np.linalg.lstsq(A, y, rcond=None)
+    resid = y - A @ coef
+    sig = np.sqrt(rms_target ** 2 + (coef[0] * rms_ref) ** 2)
+    rchi2 = float(np.sum((resid / sig) ** 2)) / max(int(m.sum()) - 4, 1)
+    frac = float(np.sum(resid ** 2) / max(np.sum((y - y.mean()) ** 2), 1e-300))
+    diagnostics['reduced_chi2'] = rchi2
+    diagnostics['unexplained_fraction'] = frac
+    if frac > _POOR_MODEL_FRAC:
+        flags.append('poor_model')
+    if used in ('chi2', 'chi2_shift') and rchi2 > 1.0:
+        k = float(np.sqrt(rchi2))
+        ey, ex = ey * k, ex * k
+        diagnostics['error_scale'] = k
 
     # displacement -> correction
     dy, dx = -dy, -dx
@@ -795,6 +1046,8 @@ def estimate_image_shift(reference, target,
         flags.append('clamped')
         s = max_shift / np.hypot(dy, dx)
         dy, dx = dy * s, dx * s
+    elif ref_beam_px and np.hypot(dy, dx) > ref_beam_px:
+        flags.append('large_shift')
 
     result = ShiftResult(dy=dy, dx=dx, dy_err=ey, dx_err=ex,
                          dy_raw=dy_raw, dx_raw=dx_raw, method=used,
