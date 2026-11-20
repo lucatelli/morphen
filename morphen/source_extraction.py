@@ -1164,7 +1164,938 @@ Author: Developed for morphen library
 """
 
 
-def robust_source_ext(imagename, residualname=None, 
+def _robust_log(verbose):
+    """print() when `verbose`, otherwise a no-op with the same signature."""
+    return print if verbose else (lambda *args, **kwargs: None)
+
+
+def _robust_display_norm(image, s, stretch='asinh'):
+    """
+    Display norm for the robust-extraction figures that cannot fail.
+
+    The legacy norm was vmin=s, vmax=0.25*max, which raises (or renders blank)
+    whenever the peak is below 4 sigma -- a faint image or an empty field.
+    Falls back to percentiles, then to any non-degenerate interval.
+    """
+    finite = image[np.isfinite(image)]
+    if finite.size == 0:
+        return simple_norm(np.zeros((2, 2)), stretch='linear', vmin=0, vmax=1)
+    vmin, vmax = float(s), 0.25 * float(np.max(finite))
+    if not (np.isfinite(vmin) and vmax > vmin):
+        vmin, vmax = np.percentile(finite, [1.0, 99.8])
+    if not vmax > vmin:
+        vmax = vmin + max(abs(vmin), 1.0) * 1e-6
+    return simple_norm(image, stretch=stretch, asinh_a=0.02, vmin=vmin, vmax=vmax)
+
+
+def _robust_beam_px(imagename, verbose=True):
+    """
+    Geometric-mean beam FWHM in pixels, or None when there is no beam.
+
+    Reads BMAJ/BMIN and the pixel scale straight from the FITS header.
+    `get_beam_size_px` is not used: it goes through CASA `imhead`, needs a
+    third (frequency) axis, and on any failure silently returns a 1-pixel
+    beam -- so a 2D cutout that does carry BMAJ/BMIN would lose its beam, and
+    "no beam" would be indistinguishable from "1-pixel beam".
+    """
+    if not isinstance(imagename, str):
+        return None
+    try:
+        from astropy.io import fits as _fits
+        from astropy.wcs import WCS as _WCS
+        from astropy.wcs.utils import proj_plane_pixel_scales
+        hdr = None
+        with _fits.open(imagename) as hdul:
+            for hdu in hdul:
+                if 'BMAJ' in hdu.header and 'BMIN' in hdu.header:
+                    hdr = hdu.header
+                    break
+        if hdr is None:
+            _robust_log(verbose)("      no BMAJ/BMIN in the header: beam unknown.")
+            return None
+        scales = proj_plane_pixel_scales(_WCS(hdr).celestial)   # deg / px
+        pix_deg = float(np.sqrt(abs(scales[0] * scales[1])))
+        beam_px = float(np.sqrt(hdr['BMAJ'] * hdr['BMIN'])) / pix_deg
+        if np.isfinite(beam_px) and beam_px > 0:
+            return beam_px
+    except Exception as e:
+        _robust_log(verbose)(f"      WARNING: could not read the beam from "
+                             f"{imagename} ({type(e).__name__}: {e}).")
+    return None
+
+
+def _robust_noise(values):
+    """Sigma-clipped MAD std of the finite entries of `values`."""
+    from astropy.stats import sigma_clip
+    v = np.asarray(values, dtype=float)
+    v = v[np.isfinite(v)]
+    if v.size == 0:
+        return np.nan
+    clipped = sigma_clip(v, sigma=3.0, maxiters=10, stdfunc='mad_std',
+                         masked=False)
+    return float(mad_std(clipped)) if clipped.size > 10 else float(mad_std(v))
+
+
+def _robust_sep_extract(data, thresh, verbose=True, **kwargs):
+    """
+    sep.extract that does not crash on large extended emission.
+
+    sep's default pixel stack (300k) overflows on big / low-threshold sources
+    ("internal pixel buffer full"), and many sub-objects overflow the deblender.
+    Raise both limits up front; if deblending still overflows, retry without
+    sep deblending -- the watershed step does the splitting anyway.
+    """
+    log = _robust_log(verbose)
+    if sep.get_extract_pixstack() < data.size:
+        sep.set_extract_pixstack(int(data.size))
+    if sep.get_sub_object_limit() < 4096:
+        sep.set_sub_object_limit(4096)
+    try:
+        return sep.extract(data, thresh, **kwargs)
+    except Exception as e:
+        log(f"      WARNING: sep.extract failed ({e}); retrying with a larger "
+            f"sub-object limit.")
+    sep.set_sub_object_limit(16384)
+    try:
+        return sep.extract(data, thresh, **kwargs)
+    except Exception as e:
+        log(f"      WARNING: sep.extract failed again ({e}); retrying without "
+            f"sep deblending.")
+    kwargs = dict(kwargs, deblend_cont=1.0)
+    return sep.extract(data, thresh, **kwargs)
+
+
+def _robust_label_adjacency(labels, image, connectivity=2):
+    """
+    Saddle level and shared-border length for every pair of touching labels.
+
+    For each pair of neighbouring pixels (p, q) carrying different non-zero
+    labels, the pass level between them is min(image[p], image[q]); the saddle
+    of a pair of regions is the highest such level over their common border --
+    i.e. the brightest route from one region into the other.
+
+    Returns a dict {(a, b): (saddle, border_pixel_pairs)} with a < b.
+    """
+    shifts = [(slice(None), slice(None, -1), slice(None), slice(1, None)),
+              (slice(None, -1), slice(None), slice(1, None), slice(None))]
+    if connectivity >= 2:
+        shifts += [(slice(None, -1), slice(None, -1), slice(1, None), slice(1, None)),
+                   (slice(None, -1), slice(1, None), slice(1, None), slice(None, -1))]
+    la, lb, lv = [], [], []
+    for r0, c0, r1, c1 in shifts:
+        a = labels[r0, c0]
+        b = labels[r1, c1]
+        m = (a != b) & (a > 0) & (b > 0)
+        if not m.any():
+            continue
+        av, bv = a[m], b[m]
+        la.append(np.minimum(av, bv))
+        lb.append(np.maximum(av, bv))
+        lv.append(np.minimum(image[r0, c0][m], image[r1, c1][m]))
+    if not la:
+        return {}
+    la, lb, lv = np.concatenate(la), np.concatenate(lb), np.concatenate(lv)
+    keys = la.astype(np.int64) * (int(labels.max()) + 1) + lb
+    order = np.argsort(keys, kind='stable')
+    keys, la, lb, lv = keys[order], la[order], lb[order], lv[order]
+    starts = np.flatnonzero(np.r_[True, keys[1:] != keys[:-1]])
+    saddles = np.maximum.reduceat(lv, starts)
+    counts = np.diff(np.r_[starts, keys.size])
+    return {(int(la[i]), int(lb[i])): (float(sv), int(c))
+            for i, sv, c in zip(starts, saddles, counts)}
+
+
+def _robust_relabel(labels, mapping):
+    """Apply {old: new} (new = 0 drops the label) and renumber to 1..N."""
+    lut = np.arange(int(labels.max()) + 1, dtype=np.int64)
+    for old, new in mapping.items():
+        lut[old] = new
+    out = lut[labels]
+    uniq = np.unique(out[out > 0])
+    lut2 = np.zeros(int(out.max()) + 1, dtype=np.int32)
+    lut2[uniq] = np.arange(1, uniq.size + 1, dtype=np.int32)
+    return lut2[out]
+
+
+def _robust_merge_insignificant_dips(labels, image, noise_at, nsigma,
+                                     connectivity=2, contrast=0.0):
+    """
+    Merge touching regions that are not separated by a significant dip, or
+    whose branch carries too little of the structure's flux.
+
+    Pairs are visited from the highest saddle down (a merge tree). At saddle
+    S, the fainter group is merged into the brighter one when either
+      - its peak rises less than `nsigma` x noise above S (dip not
+        significant), or
+      - its flux above S is below `contrast` x the total flux of the
+        connected structure both belong to (SExtractor/sep `deblend_cont`).
+    Union-find makes chains A-B-C merge transitively, and only regions that
+    actually touch can merge, so a merged mask is always connected.
+
+    `noise_at(label)` returns the noise to use at that region's peak.
+    """
+    nlab = int(labels.max())
+    if nlab < 2:
+        return labels, 0
+    idx = np.arange(1, nlab + 1)
+    peaks = np.asarray(nd.maximum(image, labels, idx), dtype=float)
+    peak_of = {int(l): float(p) for l, p in zip(idx, peaks)}
+    adj = _robust_label_adjacency(labels, image, connectivity)
+    parent = {int(l): int(l) for l in idx}
+
+    # per-label sorted pixel values + suffix sums: flux above any level S in
+    # O(log n) -> sum(v - S for v > S)
+    sorted_vals, suffix = {}, {}
+    if contrast > 0:
+        order = np.argsort(labels.ravel(), kind='stable')
+        flat_l = labels.ravel()[order]
+        flat_v = image.ravel()[order]
+        bounds = np.searchsorted(flat_l, np.arange(nlab + 2))
+        for l in range(1, nlab + 1):
+            v = np.sort(flat_v[bounds[l]:bounds[l + 1]])
+            sorted_vals[l] = v
+            suffix[l] = np.concatenate([np.cumsum(v[::-1])[::-1], [0.0]])
+        comp, _ = nd.label(labels > 0,
+                           structure=nd.generate_binary_structure(2, connectivity))
+        comp_flux = nd.sum(np.clip(image, 0, None), comp,
+                           np.arange(comp.max() + 1))
+        comp_of = {int(l): int(c) for l, c in
+                   zip(idx, nd.maximum(comp, labels, idx))}
+    members = {int(l): [int(l)] for l in idx}
+
+    def flux_above(group, level):
+        tot = 0.0
+        for l in members[group]:
+            v = sorted_vals[l]
+            k = np.searchsorted(v, level, side='right')
+            tot += suffix[l][k] - level * (v.size - k)
+        return tot
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    group_peak = dict(peak_of)
+    group_peak_label = {l: l for l in parent}
+    n_merged = 0
+    for (a, b), (saddle, _) in sorted(adj.items(), key=lambda kv: -kv[1][0]):
+        ga, gb = find(a), find(b)
+        if ga == gb:
+            continue
+        fainter = ga if group_peak[ga] <= group_peak[gb] else gb
+        brighter = gb if fainter == ga else ga
+        dip = group_peak[fainter] - saddle
+        merge = dip < nsigma * noise_at(group_peak_label[fainter])
+        if not merge and contrast > 0:
+            total = comp_flux[comp_of[a]]
+            merge = total > 0 and flux_above(fainter, saddle) < contrast * total
+        if merge:
+            parent[fainter] = brighter
+            members[brighter].extend(members.pop(fainter))
+            n_merged += 1
+    mapping = {l: find(l) for l in parent}
+    return _robust_relabel(labels, mapping), n_merged
+
+
+def _robust_absorb_small(labels, image, npixels, connectivity=2):
+    """
+    Regions smaller than `npixels` join the neighbour they share the longest
+    border with; isolated small regions are dropped. Smallest first, repeated
+    until stable, so a chain of fragments ends up in one parent.
+    """
+    n_absorbed = n_dropped = 0
+    while True:
+        nlab = int(labels.max())
+        if nlab == 0:
+            break
+        areas = np.bincount(labels.ravel(), minlength=nlab + 1)[1:]
+        small = [int(l) for l in np.argsort(areas) + 1 if areas[l - 1] < npixels]
+        if not small:
+            break
+        adj = _robust_label_adjacency(labels, image, connectivity)
+        l = small[0]
+        neigh = [((b if a == l else a), cnt) for (a, b), (_, cnt) in adj.items()
+                 if l in (a, b)]
+        if neigh:
+            target = max(neigh, key=lambda t: t[1])[0]
+            labels = _robust_relabel(labels, {l: target})
+            n_absorbed += 1
+        else:
+            labels = _robust_relabel(labels, {l: 0})
+            n_dropped += 1
+    return labels, n_absorbed, n_dropped
+
+
+def _robust_region_props(labels, data_sub, smooth):
+    """
+    Per-label properties via bounding boxes (one pass, not one full-image
+    comparison per label). Moments use weights clipped at zero, so negative
+    noise pixels cannot drag the centroid off the region. a, b are 2-sigma
+    moment radii (same convention as the legacy code, used for plotting).
+    """
+    props = []
+    for lab, slc in enumerate(nd.find_objects(labels), start=1):
+        if slc is None:
+            continue
+        reg = labels[slc] == lab
+        yy, xx = np.nonzero(reg)
+        yy = yy + slc[0].start
+        xx = xx + slc[1].start
+        vals = data_sub[slc][reg]
+        w = np.clip(vals, 0, None)
+        if not np.sum(w) > 0:
+            w = np.ones_like(vals)
+        xc = np.average(xx, weights=w)
+        yc = np.average(yy, weights=w)
+        dx, dy = xx - xc, yy - yc
+        mxx = np.average(dx ** 2, weights=w)
+        myy = np.average(dy ** 2, weights=w)
+        mxy = np.average(dx * dy, weights=w)
+        tr, det = mxx + myy, mxx * myy - mxy ** 2
+        disc = np.sqrt(max(tr ** 2 - 4 * det, 0.0))
+        a = 2 * np.sqrt(max(0.5 * (tr + disc), 0.0))
+        b = 2 * np.sqrt(max(0.5 * (tr - disc), 0.0))
+        theta = 0.5 * np.arctan2(2 * mxy, mxx - myy)
+        ipk = int(np.argmax(smooth[slc][reg]))
+        props.append({'label': lab, 'x': float(xc), 'y': float(yc),
+                      'xpeak': int(xx[ipk]), 'ypeak': int(yy[ipk]),
+                      'peak': float(vals[ipk]), 'flux': float(np.sum(vals)),
+                      'area': int(reg.sum()), 'a': float(max(a, 1.0)),
+                      'b': float(max(b, 1.0)), 'theta': float(theta)})
+    return props
+
+
+def _robust_match_reference(SE_ref, x, y, tolerance_px):
+    """
+    Order detections like a reference extraction (e.g. the same source at
+    another frequency), so that ID n means the same structure in both.
+
+    One-to-one nearest matching (Hungarian on pixel distance) within
+    `tolerance_px`. Returns (matched detection indices in reference order,
+    reference IDs left unmatched). `SE_ref` is an `mp.source_extraction`
+    object or a dict with 'xc'/'yc'.
+
+    Note: `sorted_detected_coordinates` is not used here -- it always takes
+    the first detection for every reference (its de-duplication line is
+    commented out) and returns duplicated indices.
+    """
+    from scipy.optimize import linear_sum_assignment
+    ref = SE_ref.objects if hasattr(SE_ref, 'objects') else SE_ref
+    rx = np.asarray(ref['xc'], dtype=float)
+    ry = np.asarray(ref['yc'], dtype=float)
+    if rx.size == 0 or len(x) == 0:
+        return [], list(range(1, rx.size + 1))
+    d = np.hypot(rx[:, None] - np.asarray(x)[None, :],
+                 ry[:, None] - np.asarray(y)[None, :])
+    rows, cols = linear_sum_assignment(d)
+    ok = d[rows, cols] <= tolerance_px
+    matched = dict(zip(rows[ok], cols[ok]))
+    order = [int(matched[r]) for r in range(rx.size) if r in matched]
+    missing = [r + 1 for r in range(rx.size) if r not in matched]
+    return order, missing
+
+
+def robust_source_ext(imagename, residualname=None,
+                      sigma=6.0, iterations=2, dilation_size=None,
+                      deblend_nthresh=100, deblend_cont=0.005, maskthresh=0.0,
+                      gain=1.0, filter_kernel=None, mask=None,
+                      segmentation_map=False, clean_param=1.0, clean=True,
+                      minarea=20, filter_type='matched',
+                      sort_by='distance',
+                      bw=64, bh=64, fw=3, fh=3, ell_size_factor=None,
+                      apply_mask=False, sigma_mask=6, minarea_factor=1.0,
+                      npixels=None,
+                      multiscale_levels=3,
+                      extended_threshold_factor=0.5,
+                      watershed_connectivity=2,
+                      merge_threshold=0.3,
+                      adaptive_background=True,
+                      preserve_extended=True,
+                      min_separation=None,
+                      show_bkg_map=False, show_detection=False,
+                      # added with the robustness rewrite
+                      SE_ref=None, use_rms_map=False, saddle_nsigma=3.0,
+                      watershed_smooth_px=0.5, match_tolerance_px=None,
+                      extended_min_snr=None, extended_min_beams=5.0,
+                      legacy=False, verbose=True):
+    """
+    Robust source extraction: two-threshold detection, intensity watershed
+    seeded at the detected peaks, and noise-aware merging of regions that are
+    not separated by a significant dip.
+
+    Algorithm
+    ---------
+    1. Load the image; non-finite pixels (e.g. outside the primary beam) are
+       flagged and excluded everywhere.
+    2. Background: `compute_bkg_rms_maps` (source-safe, also gives an RMS map)
+       when `adaptive_background`, else one `sep.Background` with box sizes
+       clamped to the image. Noise `s`: sigma-clipped MAD of the residual if
+       given, else of the source-free background-subtracted pixels.
+    3. Detection with sep at `sigma` (cores, deblended) and, when
+       `preserve_extended`, at `sigma * extended_threshold_factor` (footprint
+       of the extended emission). Filtering uses `filter_kernel`, or sep's
+       default 3x3 kernel (no beam-sized kernel: the image is already
+       beam-convolved, and re-smoothing loses S/N and fuses close knots).
+    4. Markers at every local maximum above `sigma` inside the core
+       footprint (plus the brightest pixel of each sep core), so seeding does
+       not depend on sep's deblending. Peaks closer than `min_separation` are
+       merged (brighter kept). Footprint pieces containing no core get a
+       marker at their own peak if significant (see `extended_min_*`).
+    5. Watershed of the smoothed, background-subtracted intensity, restricted
+       to the detection footprint: boundaries fall on intensity saddles, and
+       faint halos flood into the core they surround instead of becoming
+       separate sources.
+    6. Touching regions merge when the fainter one's peak is less than
+       `saddle_nsigma` x noise above the saddle between them, or when its
+       flux above the saddle is below `deblend_cont` of the structure's
+       total (a merge tree, transitive). Regions smaller than `npixels` join their longest-border
+       neighbour, or are dropped if isolated.
+    7. Sort (`flux`, `area`, `distance` to the image centre, or the order of
+       `SE_ref`) and build the outputs.
+
+    Parameters
+    ----------
+    imagename : str or ndarray
+        FITS image path (an array also works; then there is no beam and
+        figures are not saved).
+    residualname : str or ndarray, optional
+        Residual image, used only for the noise level.
+    sigma : float
+        Core detection threshold, in units of the noise.
+    extended_threshold_factor : float
+        Extended-footprint threshold = sigma * this factor.
+    preserve_extended : bool
+        Detect the low-threshold footprint (otherwise footprint = cores).
+    extended_min_snr : float, optional
+        A footprint piece containing no core becomes a source only if its
+        integrated S/N, sum / (s * sqrt(area * beam_area_px)), reaches this.
+        Default: `sigma`.
+    extended_min_beams : float
+        ... and only if it covers at least this many beam areas (ignored when
+        the beam is unknown). Islands selected above the low threshold have an
+        inflated S/N, and in a large map 4.5-5 sigma noise peaks are expected,
+        so S/N alone cannot reject noise islands of 1-3 beams. Set 0 to keep
+        every core-less piece that passes `extended_min_snr`.
+    deblend_cont : float
+        Also the contrast for the merge step, with sep/SExtractor meaning: a
+        branch stays separate only if its flux above the saddle is at least
+        `deblend_cont` x the total flux of its connected structure (in
+        addition to the `saddle_nsigma` dip test). Smaller = split more.
+    deblend_nthresh, clean, clean_param, filter_type, filter_kernel,
+    maskthresh, gain : passed to sep for the core detection.
+    mask : ndarray, optional
+        Region of interest (True = may contain sources). Detection is
+        restricted to it and it is excluded when estimating the background.
+    apply_mask, sigma_mask, iterations, dilation_size :
+        When `apply_mask` and no `mask`, build one with `mask_dilation`
+        (same as `sep_source_ext`).
+    minarea, minarea_factor, npixels :
+        Minimum region area in pixels (`npixels`, default
+        int(minarea * minarea_factor), at least 1).
+    min_separation : float, optional
+        Peaks closer than this (pixels) are one source. Default 1 beam (two
+        beam-sized components closer than ~0.85 beam do not even produce two
+        maxima, so closer peaks are noise), or 2 px without a beam.
+    watershed_connectivity : int
+        1 (4-neighbour) or 2 (8-neighbour; 3 is accepted as 2).
+    watershed_smooth_px : float
+        Gaussian sigma (px) of the watershed landscape.
+    saddle_nsigma : float
+        Dip significance, in noise units, required to keep two touching
+        regions apart. Larger = merge more.
+    use_rms_map : bool
+        Threshold against the background RMS map instead of a single noise
+        value (use for primary-beam-corrected or mosaicked images).
+    bw, bh, fw, fh : sep background box/filter sizes (non-adaptive path).
+    sort_by : {'distance', 'flux', 'area'}
+    SE_ref : source_extraction object or dict with 'xc'/'yc', optional
+        Order IDs like this reference extraction (detections matched within
+        `match_tolerance_px`, default 1 beam or 5 px); unmatched detections
+        follow, ordered by `sort_by`.
+    segmentation_map : bool
+        Also return the labelled map (labels == IDs).
+    show_bkg_map, show_detection : bool
+        Background diagnostic; segmentation + detection figures.
+    legacy : bool
+        Run the pre-rewrite algorithm unchanged (`_robust_source_ext_legacy`),
+        to reproduce earlier results. `multiscale_levels`, `merge_threshold`
+        are only used by the legacy path; `SE_ref`, `use_rms_map`,
+        `saddle_nsigma`, `watershed_smooth_px`, `match_tolerance_px`,
+        `extended_min_snr`, `extended_min_beams` and `verbose` are ignored
+        by it.
+    verbose : bool
+
+    Returns
+    -------
+    masks_regions : list of bool ndarray
+        One mask per source, in ID order (masks_regions[i] is ID i+1).
+    sorted_indices_desc : ndarray
+        Index of each ID in the internal (pre-sort) region list.
+    bkg_image : ndarray
+    seg_maps : ndarray of int32 (only if `segmentation_map`)
+        0 = background, n = ID n.
+    objects_sorted : dict of arrays, in ID order
+        'xc', 'yc' (intensity-weighted centroids), plus 'xpeak', 'ypeak',
+        'peak', 'flux' (background-subtracted sum), 'area', 'a', 'b', 'theta'.
+    """
+    if legacy:
+        return _robust_source_ext_legacy(
+            imagename, residualname=residualname, sigma=sigma,
+            iterations=iterations, dilation_size=dilation_size,
+            deblend_nthresh=deblend_nthresh, deblend_cont=deblend_cont,
+            maskthresh=maskthresh, gain=gain, filter_kernel=filter_kernel,
+            mask=mask, segmentation_map=segmentation_map,
+            clean_param=clean_param, clean=clean, minarea=minarea,
+            filter_type=filter_type, sort_by=sort_by, bw=bw, bh=bh, fw=fw,
+            fh=fh, ell_size_factor=ell_size_factor, apply_mask=apply_mask,
+            sigma_mask=sigma_mask, minarea_factor=minarea_factor,
+            npixels=npixels, multiscale_levels=multiscale_levels,
+            extended_threshold_factor=extended_threshold_factor,
+            watershed_connectivity=watershed_connectivity,
+            merge_threshold=merge_threshold,
+            adaptive_background=adaptive_background,
+            preserve_extended=preserve_extended,
+            min_separation=min_separation, show_bkg_map=show_bkg_map,
+            show_detection=show_detection)
+
+    from skimage.filters import gaussian
+    from skimage.segmentation import watershed
+
+    log = _robust_log(verbose)
+    if sort_by not in ('distance', 'flux', 'area'):
+        raise ValueError(f"sort_by must be 'distance', 'flux' or 'area', "
+                         f"got {sort_by!r}")
+    connectivity = int(np.clip(watershed_connectivity, 1, 2))
+    struct = nd.generate_binary_structure(2, connectivity)
+    can_save = isinstance(imagename, str)
+
+    log("\n" + "=" * 60)
+    log("ROBUST SOURCE EXTRACTION")
+    log("=" * 60)
+
+    # ------------------------------------------------------------------
+    # 1. Data
+    # ------------------------------------------------------------------
+    data_raw = np.asarray(load_fits_data(imagename), dtype=np.float64)
+    if data_raw.ndim != 2:
+        raise ValueError(f"robust_source_ext needs a 2D image, got shape "
+                         f"{data_raw.shape}")
+    bad = ~np.isfinite(data_raw)
+    if bad.all():
+        raise ValueError("robust_source_ext: the image has no finite pixels.")
+    data_2D = np.ascontiguousarray(np.where(bad, 0.0, data_raw))
+    ny, nx = data_2D.shape
+
+    beam_px = _robust_beam_px(imagename, verbose)
+    if npixels is None:
+        npixels = int(minarea * minarea_factor) if minarea is not None else 0
+    npixels = max(1, int(npixels))
+    if min_separation is None:
+        min_separation = beam_px if beam_px else 2.0
+    if match_tolerance_px is None:
+        match_tolerance_px = beam_px if beam_px else 5.0
+    if extended_min_snr is None:
+        extended_min_snr = sigma
+
+    log(f"\n[1/7] Data loaded: shape={data_2D.shape}, "
+        f"non-finite pixels={int(bad.sum())}")
+    log(f"      beam={'%.2f px' % beam_px if beam_px else 'unknown'}, "
+        f"npixels={npixels}, min_separation={min_separation:.2f} px")
+
+    region = None
+    if mask is not None:
+        region = np.asarray(mask).astype(bool)
+        if region.shape != data_2D.shape:
+            raise ValueError(f"mask shape {region.shape} != image shape "
+                             f"{data_2D.shape}")
+
+    # ------------------------------------------------------------------
+    # 2. Background, RMS map and noise
+    # ------------------------------------------------------------------
+    log("\n[2/7] Background and noise...")
+    bkg_image = rms_map = None
+    src_mask_bkg = None
+    if adaptive_background:
+        try:
+            bkg_image, rms_map, diag = compute_bkg_rms_maps(
+                data_2D, psf_fwhm_px=beam_px, mask=bad,
+                return_diagnostics=True, do_plot=False, verbose=verbose)
+            src_mask_bkg = diag.get('source_mask')
+        except Exception as e:
+            log(f"      WARNING: compute_bkg_rms_maps failed "
+                f"({type(e).__name__}: {e}); using a single sep.Background.")
+            bkg_image = None
+    if bkg_image is None:
+        sep_ignore = bad if region is None else (bad | region)
+        bkg = sep.Background(data_2D, mask=sep_ignore,
+                             bw=int(np.clip(bw, 1, nx)), bh=int(np.clip(bh, 1, ny)),
+                             fw=max(1, int(fw)), fh=max(1, int(fh)))
+        bkg_image = np.asarray(bkg.back(), dtype=np.float64)
+        rms_map = np.asarray(bkg.rms(), dtype=np.float64)
+    bkg_image = np.where(np.isfinite(bkg_image), bkg_image, 0.0)
+
+    data_sub = data_2D - bkg_image
+    data_sub[bad] = 0.0
+    data_sub = np.ascontiguousarray(data_sub)
+
+    if residualname is not None:
+        s = _robust_noise(load_fits_data(residualname))
+        noise_from = 'residual'
+    else:
+        off = ~bad
+        if src_mask_bkg is not None and (off & ~src_mask_bkg).sum() > 100:
+            off = off & ~src_mask_bkg
+        s = _robust_noise(data_sub[off])
+        noise_from = 'image (sigma-clipped, source-free)'
+    if not (np.isfinite(s) and s > 0):
+        s = _robust_noise(data_sub[~bad])
+        noise_from += ' -> whole image fallback'
+    if not (np.isfinite(s) and s > 0):
+        raise ValueError("robust_source_ext: could not estimate a positive "
+                         "noise level (constant image?).")
+    log(f"      noise s={s:.6e} from {noise_from}")
+
+    if use_rms_map:
+        rms_map = np.asarray(rms_map, dtype=np.float64)
+        okr = np.isfinite(rms_map) & (rms_map > 0)
+        fill = np.median(rms_map[okr]) if okr.any() else s
+        rms_map = np.ascontiguousarray(np.where(okr, rms_map, fill))
+        rms_map[bad] = 1e30 * fill        # never detect in flagged pixels
+        log(f"      thresholding against the RMS map "
+            f"(median {fill:.3e})")
+
+    if apply_mask and region is None:
+        _, region = mask_dilation(data_2D, sigma=sigma_mask,
+                                  iterations=iterations, rms=s,
+                                  dilation_size=dilation_size,
+                                  PLOT=show_detection,
+                                  show_figure=show_detection)
+        region = np.asarray(region).astype(bool)
+
+    if show_bkg_map:
+        fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+        norm_d = _robust_display_norm(data_sub, s)
+        axes[0].imshow(data_2D, origin='lower', cmap='gray', norm=norm_d)
+        axes[0].set_title('Original Data')
+        axes[1].imshow(bkg_image, origin='lower', cmap='gray')
+        axes[1].set_title('Background')
+        axes[2].imshow(data_sub, origin='lower', cmap='gray', norm=norm_d)
+        axes[2].set_title('Background-Subtracted')
+        for ax_ in axes:
+            ax_.axis('off')
+        plt.tight_layout()
+        if can_save:
+            plt.savefig(imagename + '_robust_background.jpg', dpi=150,
+                        bbox_inches='tight')
+        plt.show()
+
+    # ------------------------------------------------------------------
+    # 3. Detection (cores + extended footprint)
+    # ------------------------------------------------------------------
+    log("\n[3/7] Detection...")
+    ignore = bad if region is None else (bad | ~region)
+    sep_mask = ignore.astype(np.float32)
+    # No beam-sized kernel by default: a restored radio image is already
+    # convolved with the beam, so filtering it by the beam again halves a
+    # compact peak while the (beam-correlated) noise drops only ~sqrt(2) --
+    # a net S/N loss, and it fuses knots ~1 beam apart. sep's default 3x3
+    # kernel (or the user's `filter_kernel`) is used, as in the legacy code.
+    if use_rms_map:
+        err, t_high, t_low = rms_map, sigma, sigma * extended_threshold_factor
+    else:
+        err, t_high, t_low = None, sigma * s, sigma * extended_threshold_factor * s
+    kern_kw = {} if filter_kernel is None else {'filter_kernel': filter_kernel}
+
+    objects_core, seg_core = _robust_sep_extract(
+        data_sub, t_high, verbose=verbose, err=err, mask=sep_mask,
+        maskthresh=maskthresh, gain=gain,
+        minarea=max(1, int(0.7 * npixels)), filter_type=filter_type,
+        deblend_nthresh=int(deblend_nthresh), deblend_cont=deblend_cont,
+        clean=clean, clean_param=clean_param, segmentation_map=True, **kern_kw)
+    log(f"      cores (>{sigma:g} sigma): {len(objects_core)}")
+
+    footprint = seg_core > 0
+    if preserve_extended:
+        objects_ext, seg_ext = _robust_sep_extract(
+            data_sub, t_low, verbose=verbose, err=err, mask=sep_mask,
+            maskthresh=maskthresh, gain=gain, minarea=npixels,
+            filter_type=filter_type, deblend_cont=1.0, clean=False,
+            segmentation_map=True, **kern_kw)
+        footprint |= seg_ext > 0
+        log(f"      extended footprint (>{sigma * extended_threshold_factor:g}"
+            f" sigma): {len(objects_ext)} structure(s)")
+    footprint &= ~ignore
+
+    def _empty():
+        log("\n*** WARNING: No sources detected! ***")
+        empty_objects = {k: np.array([]) for k in
+                         ('xc', 'yc', 'xpeak', 'ypeak', 'peak', 'flux',
+                          'area', 'a', 'b', 'theta')}
+        if segmentation_map:
+            return ([], np.array([], dtype=int), bkg_image,
+                    np.zeros(data_2D.shape, dtype=np.int32), empty_objects)
+        return [], np.array([], dtype=int), bkg_image, empty_objects
+
+    if not footprint.any():
+        return _empty()
+
+    # ------------------------------------------------------------------
+    # 4. Markers at peaks
+    # ------------------------------------------------------------------
+    log("\n[4/7] Markers...")
+    smooth = gaussian(np.clip(data_sub, 0, None), sigma=watershed_smooth_px,
+                      preserve_range=True) if watershed_smooth_px > 0 \
+        else np.clip(data_sub, 0, None)
+    smooth = np.where(footprint, smooth, 0.0)
+
+    # Seeds = every local maximum above the core threshold inside the core
+    # footprint, NOT only one per sep object. sep deblends on the filtered
+    # image, and with a beam-sized kernel it fuses knots a beam or two apart
+    # (UGC08696: 2 sep cores vs 6+ visible peaks), and no later step can split
+    # what was never seeded. Spurious maxima are harmless here: the
+    # dip-significance merge in step 6 removes every peak that is not
+    # separated from its neighbour by a `saddle_nsigma` dip.
+    from skimage.feature import peak_local_max
+    core_fp = (seg_core > 0) & footprint
+    peak_floor = (sigma * rms_map) if use_rms_map else np.full(data_2D.shape, sigma * s)
+    peaks = []                                  # (value, y, x)
+    if core_fp.any():
+        cand = peak_local_max(np.where(core_fp, smooth, 0.0),
+                              min_distance=1,   # spacing: Euclidean dedupe below
+                              labels=nd.label(core_fp, structure=struct)[0],
+                              exclude_border=False)
+        for py, px in cand:
+            if smooth[py, px] >= peak_floor[py, px]:
+                peaks.append((float(smooth[py, px]), int(py), int(px)))
+    # every sep core keeps at least its brightest pixel as a seed
+    for lab, slc in enumerate(nd.find_objects(seg_core), start=1):
+        if slc is None:
+            continue
+        reg = (seg_core[slc] == lab) & footprint[slc]
+        if not reg.any():
+            continue
+        vals = np.where(reg, smooth[slc], -np.inf)
+        iy, ix = np.unravel_index(int(np.argmax(vals)), vals.shape)
+        peaks.append((float(vals[iy, ix]), iy + slc[0].start, ix + slc[1].start))
+    peaks = list({(py, px): (v, py, px) for v, py, px in peaks}.values())
+    n_core_peaks = len(peaks)
+
+    peaks.sort(key=lambda p: -p[0])
+    kept = []
+    if peaks:
+        from scipy.spatial import cKDTree
+        pts = np.array([[p[1], p[2]] for p in peaks], dtype=float)
+        tree = cKDTree(pts)
+        suppressed = np.zeros(len(peaks), dtype=bool)
+        for j in range(len(peaks)):           # brightest first
+            if suppressed[j]:
+                continue
+            kept.append(peaks[j])
+            for q in tree.query_ball_point(pts[j], r=min_separation - 1e-9):
+                if q != j:
+                    suppressed[q] = True
+    log(f"      core peaks: {n_core_peaks}, after min_separation: {len(kept)}")
+
+    markers = np.zeros(data_2D.shape, dtype=np.int32)
+    for i, (_, py, px) in enumerate(kept, start=1):
+        markers[py, px] = i
+    comp, ncomp = nd.label(footprint, structure=struct)
+    has_marker = np.zeros(ncomp + 1, dtype=bool)
+    has_marker[np.unique(comp[markers > 0])] = True
+    comp_areas = np.bincount(comp.ravel(), minlength=ncomp + 1)
+    # A footprint piece with no core is only a source if it is significant as
+    # a whole: integrated S/N with correlated noise, i.e. the noise of a sum
+    # over `area` pixels is s*sqrt(area * beam_area). Without this gate every
+    # isolated low-threshold noise island of >= npixels became a "source".
+    beam_area_px = 1.1331 * beam_px ** 2 if beam_px else 1.0
+    n_extra = n_rejected = 0
+    nmark = len(kept)
+    for c, slc in enumerate(nd.find_objects(comp), start=1):
+        if slc is None or has_marker[c] or comp_areas[c] < npixels:
+            continue
+        in_c = comp[slc] == c
+        snr = (np.sum(data_sub[slc][in_c])
+               / (s * np.sqrt(comp_areas[c] * max(beam_area_px, 1.0))))
+        too_small = (beam_px is not None
+                     and comp_areas[c] < extended_min_beams * beam_area_px)
+        if snr < extended_min_snr or too_small:
+            footprint[slc][in_c] = False
+            n_rejected += 1
+            continue
+        vals = np.where(in_c, smooth[slc], -np.inf)
+        iy, ix = np.unravel_index(int(np.argmax(vals)), vals.shape)
+        nmark += 1
+        markers[iy + slc[0].start, ix + slc[1].start] = nmark
+        n_extra += 1
+    log(f"      extended structures without a core: {n_extra} seeded, "
+        f"{n_rejected} rejected (integrated S/N < {extended_min_snr:g} or "
+        f"< {extended_min_beams:g} beams)")
+    if nmark == 0:
+        return _empty()
+
+    # ------------------------------------------------------------------
+    # 5. Watershed on intensity
+    # ------------------------------------------------------------------
+    log("\n[5/7] Watershed on the intensity landscape...")
+    seg = watershed(-smooth, markers, mask=footprint,
+                    connectivity=connectivity).astype(np.int32)
+    log(f"      regions: {len(np.unique(seg)) - 1}")
+
+    # ------------------------------------------------------------------
+    # 6. Merge insignificant dips, absorb fragments
+    # ------------------------------------------------------------------
+    log("\n[6/7] Merging regions without a significant dip...")
+    if use_rms_map:
+        lab_peak_yx = {}
+
+        def noise_at(lab):
+            if lab not in lab_peak_yx:
+                sel = np.where(seg == lab, smooth, -np.inf)
+                lab_peak_yx[lab] = np.unravel_index(int(np.argmax(sel)), sel.shape)
+            return float(rms_map[lab_peak_yx[lab]])
+    else:
+        def noise_at(lab):
+            return s
+    seg, n_merged = _robust_merge_insignificant_dips(
+        seg, smooth, noise_at, saddle_nsigma, connectivity,
+        contrast=float(deblend_cont))
+    seg, n_absorbed, n_dropped = _robust_absorb_small(seg, smooth, npixels,
+                                                      connectivity)
+    log(f"      merged pairs: {n_merged}, small fragments absorbed: "
+        f"{n_absorbed}, isolated small regions dropped: {n_dropped}")
+
+    props = _robust_region_props(seg, data_sub, smooth)
+    if len(props) == 0:
+        return _empty()
+
+    # ------------------------------------------------------------------
+    # 7. Sorting and outputs
+    # ------------------------------------------------------------------
+    log("\n[7/7] Sorting...")
+    xs = np.array([p['x'] for p in props])
+    ys = np.array([p['y'] for p in props])
+    ref_centre = (nx / 2.0, ny / 2.0)            # (x, y)
+    if sort_by == 'flux':
+        base_order = np.argsort([-p['flux'] for p in props], kind='stable')
+    elif sort_by == 'area':
+        base_order = np.argsort([-p['area'] for p in props], kind='stable')
+    else:
+        base_order = np.argsort(distances_from_reference(xs, ys, ref_centre),
+                                kind='stable')
+    if SE_ref is not None:
+        matched, missing = _robust_match_reference(SE_ref, xs, ys,
+                                                   match_tolerance_px)
+        sorted_indices_desc = np.array(
+            matched + [int(i) for i in base_order if int(i) not in set(matched)],
+            dtype=int)
+        log(f"      SE_ref: {len(matched)} matched within "
+            f"{match_tolerance_px:.1f} px")
+        if missing:
+            log(f"      WARNING: reference IDs without a counterpart here: "
+                f"{missing} (IDs after them shift down)")
+    else:
+        sorted_indices_desc = np.asarray(base_order, dtype=int)
+
+    seg_maps_final = np.zeros(data_2D.shape, dtype=np.int32)
+    masks_regions_sorted = []
+    for new_id, k in enumerate(sorted_indices_desc, start=1):
+        m = seg == props[k]['label']
+        seg_maps_final[m] = new_id
+        masks_regions_sorted.append(m)
+
+    objects_sorted = {
+        'xc': xs[sorted_indices_desc],
+        'yc': ys[sorted_indices_desc],
+    }
+    for key in ('xpeak', 'ypeak', 'peak', 'flux', 'area', 'a', 'b', 'theta'):
+        objects_sorted[key] = np.array([props[k][key]
+                                        for k in sorted_indices_desc])
+
+    log(f"\n      Final source count: {len(props)} (sorted by "
+        f"{'SE_ref, then ' if SE_ref is not None else ''}{sort_by})")
+
+    # ------------------------------------------------------------------
+    # Figures
+    # ------------------------------------------------------------------
+    if show_detection:
+        from photutils.segmentation import SegmentationImage
+        norm = _robust_display_norm(data_sub, s)
+
+        segm_plot = SegmentationImage(
+            nd.label(seg_maps_final > 0, structure=struct)[0].astype(np.int32))
+        segm_deblend_plot = SegmentationImage(seg_maps_final)
+        fig_segm, axes_segm = plt.subplots(1, 2, figsize=(14, 7))
+        for ax_s, segm_s, title_s in zip(
+                axes_segm, [segm_plot, segm_deblend_plot],
+                [f'Segmentation Map ({segm_plot.labels.size})',
+                 f'Deblended Segmentation Map ({segm_deblend_plot.labels.size})']):
+            ax_s.imshow(data_sub, origin='lower', cmap='gist_gray', norm=norm)
+            ax_s.imshow(segm_s, origin='lower', alpha=0.5,
+                        cmap=segm_s.make_cmap(seed=np.random.randint(1000000)),
+                        interpolation='nearest')
+            ax_s.set_title(title_s)
+            ax_s.set_xlabel('Pixels')
+            ax_s.set_ylabel('Pixels')
+        for i in range(len(objects_sorted['xc'])):
+            axes_segm[1].text(objects_sorted['xc'][i], objects_sorted['yc'][i],
+                              f'ID{i + 1}', color='white', fontsize=8,
+                              ha='center', va='center', weight='bold')
+        plt.tight_layout()
+        if can_save:
+            plt.savefig(imagename + '_robust_segmentation.jpg', dpi=150,
+                        bbox_inches='tight')
+        plt.show()
+
+        fig, ax = plt.subplots(figsize=(10, 10))
+        ax.imshow(data_sub, origin='lower', cmap='gray', norm=norm)
+        if ell_size_factor is None:
+            ell_size_factor = (0.1 * np.sqrt(np.nansum(region) / np.pi)
+                               if region is not None else 1.0)
+        for i in range(len(objects_sorted['xc'])):
+            xc, yc = objects_sorted['xc'][i], objects_sorted['yc'][i]
+            e = Ellipse(xy=(xc, yc),
+                        width=2 * ell_size_factor * objects_sorted['a'][i],
+                        height=2 * ell_size_factor * objects_sorted['b'][i],
+                        angle=np.degrees(objects_sorted['theta'][i]))
+            e.set_facecolor('none')
+            e.set_edgecolor('red')
+            e.set_linewidth(1.5)
+            ax.add_artist(e)
+            ax.contour(masks_regions_sorted[i], levels=[0.5], colors='cyan',
+                       linewidths=0.6, origin='lower')
+            label_x = xc + 3 * ell_size_factor
+            label_y = yc + 20 * ell_size_factor
+            ax.add_artist(Text(label_x, label_y, f"ID{i + 1}", ha='center',
+                               va='center', color='red', fontsize=9,
+                               weight='bold',
+                               bbox=dict(boxstyle='round,pad=0.3',
+                                         facecolor='white', alpha=0.7,
+                                         edgecolor='red')))
+            ax.plot([xc, label_x], [yc, label_y - 5], color='red', alpha=0.4,
+                    linewidth=1)
+        ax.axis('off')
+        plt.title(f'Robust Source Extraction: {len(props)} sources detected',
+                  fontsize=14, weight='bold', pad=20)
+        plt.tight_layout()
+        if can_save:
+            plt.savefig(imagename + '_robust_detection.jpg', dpi=300,
+                        bbox_inches='tight')
+        plt.show()
+
+    log("\n" + "=" * 60)
+    log("ROBUST EXTRACTION COMPLETE")
+    log("=" * 60 + "\n")
+
+    if segmentation_map:
+        return (masks_regions_sorted, sorted_indices_desc, bkg_image,
+                seg_maps_final, objects_sorted)
+    return (masks_regions_sorted, sorted_indices_desc, bkg_image,
+            objects_sorted)
+
+
+def _robust_source_ext_legacy(imagename, residualname=None, 
                       sigma=6.0, iterations=2, dilation_size=None,
                       deblend_nthresh=100, deblend_cont=0.005, maskthresh=0.0,
                       gain=1.0, filter_kernel=None, mask=None,
@@ -1184,6 +2115,12 @@ def robust_source_ext(imagename, residualname=None,
                       min_separation=None,  # Minimum separation between sources (in pixels)
                       show_bkg_map=False, show_detection=False):
     """
+    LEGACY implementation of `robust_source_ext`, kept verbatim so earlier
+    results can be reproduced (`robust_source_ext(..., legacy=True)`).
+    Known issues fixed in the current version: flat watershed landscape,
+    summed overlapping marker labels, non-transitive distance merging,
+    halo pieces becoming separate sources, (ny/2, nx/2) used as (x, y).
+
     Robust source extraction algorithm combining multi-scale detection with 
     intelligent deblending.
     
@@ -1660,11 +2597,44 @@ def robust_source_ext(imagename, residualname=None,
     
     print(f"\n      Final source count: {len(objects_list)}")
     print(f"      Sorting criterion: {sort_by}")
-    
+
     # ========================
     # 8. VISUALIZATION (if requested)
     # ========================
     if show_detection:
+        # Segmentation vs. deblended segmentation, as petrofit's make_catalog
+        # shows for the PF method. "Segmentation" = connected components of
+        # the final detection footprint (what is left without deblending);
+        # "Deblended" = seg_maps_final, whose labels are the IDs used below.
+        from photutils.segmentation import SegmentationImage
+        from scipy.ndimage import label as nd_label
+        segm_deblend_plot = SegmentationImage(seg_maps_final)
+        segm_plot = SegmentationImage(
+            nd_label(seg_maps_final > 0)[0].astype(np.int32))
+        norm_segm = simple_norm(data_sub, stretch='asinh', asinh_a=0.02,
+                                vmin=s, vmax=0.25 * np.nanmax(data_sub))
+        fig_segm, axes_segm = plt.subplots(1, 2, figsize=(14, 7))
+        for ax_s, segm_s, title_s in zip(
+                axes_segm, [segm_plot, segm_deblend_plot],
+                [f'Segmentation Map ({segm_plot.labels.size})',
+                 f'Deblended Segmentation Map ({segm_deblend_plot.labels.size})']):
+            ax_s.imshow(data_sub, origin='lower', cmap='gist_gray',
+                        norm=norm_segm)
+            ax_s.imshow(segm_s, origin='lower', alpha=0.5,
+                        cmap=segm_s.make_cmap(seed=np.random.randint(1000000)),
+                        interpolation='nearest')
+            ax_s.set_title(title_s)
+            ax_s.set_xlabel('Pixels')
+            ax_s.set_ylabel('Pixels')
+        for i in range(len(objects_sorted['xc'])):
+            axes_segm[1].text(objects_sorted['xc'][i], objects_sorted['yc'][i],
+                              f'ID{i + 1}', color='white', fontsize=8,
+                              ha='center', va='center', weight='bold')
+        plt.tight_layout()
+        plt.savefig(imagename + '_robust_segmentation.jpg', dpi=150,
+                    bbox_inches='tight')
+        plt.show()
+
         fig, ax = plt.subplots(figsize=(10, 10))
         
         # Display background-subtracted image
@@ -3363,12 +4333,18 @@ def compute_bkg_rms_maps(data, psf_fwhm_px=None, mask=None,
     kernel = Gaussian2DKernel(x_stddev=psf_fwhm_px / 2.355)
     dilation_px = int(np.ceil(dilate_beams * psf_fwhm_px))
 
+    from astropy.convolution import convolve_fft
+
     def _detect(image, nsigma, ignore):
         """Detect above `nsigma`, smooth first, then dilate. True = source."""
         try:
             threshold = detect_threshold(image, nsigma=nsigma,
                                          sigma_clip=sigma_clip, mask=ignore)
-            segm = detect_sources(convolve(image, kernel), threshold,
+            # FFT convolution: same defaults as `convolve` (normalised kernel,
+            # NaN interpolation, zero-fill boundary) but O(N log N); the direct
+            # version took ~23 s per call pair on a 3072^2 image.
+            smoothed = convolve_fft(image, kernel, allow_huge=True)
+            segm = detect_sources(smoothed, threshold,
                                   npixels=max(5, int(psf_fwhm_px)))
         except Exception:
             return np.zeros(image.shape, dtype=bool)
