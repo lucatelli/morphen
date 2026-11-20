@@ -2360,9 +2360,21 @@ def t_cutout_2D_radec(imagename, residualname=None, modelname=None,
     shift_correction_mode : str
         Alignment estimator, passed through to
         `image_alignment.estimate_image_shift`: one of 'chi2', 'mi', 'xcorr',
-        'chi2_shift', 'auto' (default) or 'ensemble'. The legacy values 'peak',
-        'structural' and 'image_diff' still work and map onto 'chi2', with a
-        DeprecationWarning.
+        'chi2_shift', 'peaks', 'auto' (default) or 'ensemble'. The legacy
+        values 'peak', 'structural' and 'image_diff' still work and map onto
+        'chi2', with a DeprecationWarning.
+
+        When the brightest component differs between the bands (absorbed
+        nuclei at low frequency) the linear-intensity estimators -- 'chi2',
+        'xcorr', 'chi2_shift' -- align peak on peak, i.e. onto the wrong
+        component. Use 'auto' (or 'peaks') there; 'poor_model' and
+        'component_flip_suspected' in the flags are the warning signs. For a
+        large offset (UGC 08696 LOFAR vs VLA: ~90 px), also raise `max_shift`,
+        estimate once on the MFS image, and pass that to every sub-band via
+        `precomputed_shift`; per-sub-band estimates only add scatter. A
+        reference closer in frequency (VLA L for LOFAR) is morphologically
+        closer and gives the more stable answer; to land on a C-band grid,
+        add the L->C shift to the LOFAR->L one.
 
         The shift is applied in two parts: the integer pixels by moving the
         cutout window (exact, no interpolation, no zero-padded edge) and the
@@ -2458,7 +2470,7 @@ def t_cutout_2D_radec(imagename, residualname=None, modelname=None,
     # The shift is computed once, on the image, and reused verbatim for the
     # residual and model so the three stay on a common grid.
     from image_alignment import (estimate_image_shift, apply_pixel_shift,
-                                 split_shift)
+                                 split_shift, _beam_of)
 
     # dy/dx are the *rounded* integer parts, kept under their historical names
     # so `return_paths`' 'offset' key means what it always did. The sub-pixel
@@ -2513,10 +2525,25 @@ def t_cutout_2D_radec(imagename, residualname=None, modelname=None,
                             raise ValueError('correct_shift=True requires '
                                              '`ref_cutout_image` (or '
                                              '`precomputed_shift`).')
+                        # The target goes in as an array, so its beam and
+                        # noise have to be handed over explicitly: without
+                        # the beam no beam matching happens (LOFAR at 0.81"
+                        # was being registered against VLA at 0.52"), and
+                        # without the residual the noise falls back to
+                        # mad_std of the image, biased high by the source.
+                        rms_tgt = None
+                        if residualname is not None:
+                            from astropy.stats import mad_std
+                            with fits.open(residualname) as rhdul:
+                                _, rdata, _ = find_sci_extension(rhdul)
+                                rms_tgt = float(mad_std(np.squeeze(rdata),
+                                                        ignore_nan=True))
                         result = estimate_image_shift(
                             ref_cutout_image, cut_data,
                             method=shift_correction_mode,
                             mask=local_mask, max_shift=max_shift,
+                            target_beam=_beam_of(header),
+                            rms_target=rms_tgt,
                             verbose=verbose)
                         offsets['result'] = result
                         dy, dx = result.dy, result.dx

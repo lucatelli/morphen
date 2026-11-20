@@ -359,10 +359,21 @@ def build_field_catalogue(cat, cat_parent, parent_labels, wcs,
         'edge_flag': edge_flag,
     })
 
-    # --- per-parent bookkeeping --------------------------------------------
+    return _parent_bookkeeping(df, flux_column='segment_flux')
+
+
+def _parent_bookkeeping(df, flux_column='segment_flux'):
+    """
+    Per-island columns shared by detected and catalogue-built field catalogues:
+    `n_components`, `is_parent_primary` (brightest member by `flux_column`) and
+    a 1-based `parent_id`. Modifies and returns `df`.
+    """
     df['n_components'] = df.groupby('parent_label')['label'].transform('count')
-    brightest = df.groupby('parent_label')['segment_flux'].transform('max')
-    df['is_parent_primary'] = df['segment_flux'] >= brightest
+    # NaN fluxes would never win the comparison below and leave an island with
+    # no primary at all; rank them last instead.
+    flux = df[flux_column].astype(float).fillna(-np.inf)
+    brightest = flux.groupby(df['parent_label']).transform('max')
+    df['is_parent_primary'] = flux >= brightest
     # a tie (identical fluxes) would mark two rows; keep only the first.
     dup = df['is_parent_primary'] & df.duplicated(
         subset=['parent_label', 'is_parent_primary'], keep='first')
@@ -761,6 +772,491 @@ def field_source_ext(imagename, residualname=None, residual=None,
 
 
 # ---------------------------------------------------------------------------
+# catalogue input (positions from an external list, no detection)
+# ---------------------------------------------------------------------------
+
+# Case-insensitive column aliases, tried in order. PyBDSF srl/gaul first, then
+# morphen's own field catalogue (round trip of `SE.to_csv()`), then generic.
+_CATALOGUE_COLUMN_ALIASES = {
+    'ra': ('ra', 'raj2000', 'ra_deg', 'ra_icrs'),
+    'dec': ('dec', 'dej2000', 'decj2000', 'dec_deg', 'de_icrs', 'dec_icrs'),
+    'maj': ('maj', 'major', 'maj_arcsec'),
+    'min': ('min', 'minor', 'min_arcsec'),
+    'pa': ('pa', 'pa_deg'),
+    'island': ('isl_id', 'island_id', 'parent_label'),
+    'source_id': ('source_id', 'gaus_id', 'id'),
+    'name': ('iau_name', 'name', 'source_name'),
+    'total_flux': ('total_flux', 'int_flux', 'segment_flux', 'flux'),
+    'total_flux_err': ('e_total_flux', 'e_int_flux', 'segment_fluxerr'),
+    'peak_flux': ('peak_flux',),
+    'peak_flux_err': ('e_peak_flux',),
+    'rms': ('isl_rms', 'local_rms', 'rms'),
+    's_code': ('s_code',),
+}
+
+
+def _read_external_catalogue(catalogue):
+    """
+    Load an external source list as a DataFrame.
+
+    Accepts a path to a CSV (`pd.read_csv`) or FITS table, a DataFrame, an
+    astropy Table, or a dict of columns. Returns a fresh copy plus a short
+    description of where it came from (used for the `catalogue_origin` column).
+    """
+    if isinstance(catalogue, str):
+        origin = os.path.basename(catalogue)
+        if catalogue.lower().endswith(('.fits', '.fit', '.fits.gz')):
+            from astropy.table import Table
+            table = Table.read(catalogue)
+            # multidimensional columns cannot go into pandas
+            names = [n for n in table.colnames if len(table[n].shape) <= 1]
+            return table[names].to_pandas(), origin
+        return pd.read_csv(catalogue), origin
+    if isinstance(catalogue, dict):
+        return pd.DataFrame(catalogue), 'dict'
+    if isinstance(catalogue, pd.DataFrame):
+        return catalogue.copy(), 'DataFrame'
+    if hasattr(catalogue, 'to_pandas'):
+        return catalogue.to_pandas(), type(catalogue).__name__
+    raise TypeError(f'Cannot read a catalogue from {type(catalogue)}; pass a '
+                    f'CSV/FITS path, a DataFrame, an astropy Table or a dict.')
+
+
+def _resolve_catalogue_columns(table, columns=None):
+    """
+    Map each role in `_CATALOGUE_COLUMN_ALIASES` to an actual column name of
+    `table` (or None). `columns` overrides the automatic choice, e.g.
+    ``{'ra': 'RA_deg', 'maj': 'DC_Maj'}``.
+    """
+    lower = {str(c).lower(): c for c in table.columns}
+    resolved = {}
+    for role, aliases in _CATALOGUE_COLUMN_ALIASES.items():
+        resolved[role] = next((lower[a] for a in aliases if a in lower), None)
+    for role, name in (columns or {}).items():
+        if role not in _CATALOGUE_COLUMN_ALIASES:
+            raise ValueError(f"Unknown catalogue column role '{role}'. Use one "
+                             f"of {list(_CATALOGUE_COLUMN_ALIASES)}.")
+        if name is not None and name not in table.columns:
+            raise ValueError(f"catalogue_columns['{role}'] = '{name}' is not a "
+                             f"column of the catalogue.")
+        resolved[role] = name
+    return resolved
+
+
+def field_source_from_catalogue(imagename, catalogue, residualname=None,
+                                residual=None, columns=None,
+                                size_scale=2.0, size_units='auto',
+                                bkg_box_size=None, bkg_filter_size=(3, 3),
+                                bkg_estimator='median', rms_map=None,
+                                edge_margin=0, reject_edge_sources=False,
+                                snr_min=None, sort_by='flux',
+                                cutout_size_factor=4.0, name_prefix='J',
+                                return_masks=False,
+                                show_detection=False, show_bkg_map=False,
+                                max_labels_to_plot=500, save_plot=True,
+                                save_products=False, products_path=None,
+                                products=('data_sub', 'bkg', 'rms'),
+                                verbose=1):
+    """
+    Build a field catalogue from an external source list instead of detecting.
+
+    Drop-in alternative to `field_source_ext`: it returns the same 11-tuple and
+    a catalogue with the same columns, so everything downstream
+    (`cutouts_from_catalogue`, `multiband_cutouts_from_catalogue`,
+    `filter_field_catalogue`, `catalogue_to_regions`, ...) works unchanged.
+
+    What comes from where
+    ---------------------
+    *Positions and sizes* come from the catalogue. *Everything that depends on
+    the image* is measured on `imagename` at those positions, because the
+    catalogue is typically made on a different image (another band, another
+    weighting): `peak_flux` (max of the background-subtracted data within a
+    beam-sized box), `local_rms` (2D RMS map at the position), `snr_peak`, and
+    `segment_flux` (plain pixel sum inside an elliptical aperture of semi-axes
+    `size_scale` x Maj/2, Min/2 - same units as the photutils segment flux of
+    detection mode, so `sort_by='flux'` means the same thing). The
+    catalogue's own values are kept alongside as `cat_*` columns
+    (`cat_total_flux`, `cat_peak_flux`, `cat_rms`, `cat_source_id`, ...), for
+    cross-matching back to the original table.
+
+    There is no segmentation: `seg_maps`, `seg_maps_parent`, `cat` and
+    `cat_parent` are None, and no masks are built.
+
+    Parameters
+    ----------
+    imagename : str
+        Field image the cutouts / measurements refer to.
+    catalogue : str, DataFrame, Table or dict
+        The source list. PyBDSF srl/gaul tables (CSV or FITS), a morphen
+        `SE.to_csv()` file, or anything with RA/Dec in degrees (or `ra_str` /
+        `dec_str` in sexagesimal) are recognised automatically.
+    columns : dict, optional
+        Override the automatic column choice, by role: 'ra', 'dec', 'maj',
+        'min', 'pa', 'island', 'source_id', 'name', 'total_flux',
+        'total_flux_err', 'peak_flux', 'peak_flux_err', 'rms', 's_code'.
+        E.g. ``{'maj': 'DC_Maj', 'min': 'DC_Min', 'pa': 'DC_PA'}``.
+    size_scale : float
+        Island extent in units of the catalogue FWHM: each source covers
+        `size_scale` x Maj (floored at one beam). Sets `parent_size_px` (hence
+        `cutout_size='auto'`) and the flux aperture. 2 roughly matches the
+        extent of a 5 sigma island around a Gaussian.
+    size_units : {'auto', 'deg', 'arcsec'}
+        Units of Maj/Min. 'auto' means degrees for PyBDSF tables (detected by
+        their `Isl_id` + `S_Code` columns), arcsec otherwise. Sources with no
+        size column are taken as unresolved (one beam).
+    edge_margin, reject_edge_sources, snr_min, sort_by, cutout_size_factor,
+    name_prefix, bkg_*, rms_map, show_*, save_products, products*
+        As in `field_source_ext`. `sort_by='label'` keeps the catalogue order.
+
+    Returns
+    -------
+    tuple
+        (masks, indices, bkg_image, bkg_rms, None, None, objects_sorted,
+         None, None, catalogue, wcs) - the `field_source_ext` layout.
+    """
+    from photutils.aperture import EllipticalAperture
+
+    table, origin = _read_external_catalogue(catalogue)
+    table = table.reset_index(drop=True)
+    n_input = len(table)
+    if n_input == 0:
+        raise ValueError('The input catalogue is empty.')
+    col = _resolve_catalogue_columns(table, columns)
+
+    # --- sky positions ------------------------------------------------------
+    if col['ra'] is not None and col['dec'] is not None:
+        ra = np.asarray(table[col['ra']], dtype=float)
+        dec = np.asarray(table[col['dec']], dtype=float)
+    elif 'ra_str' in table.columns and 'dec_str' in table.columns:
+        converted = [conver_str_coords(r, d) for r, d in
+                     zip(table['ra_str'], table['dec_str'])]
+        ra = np.asarray([c[0] for c in converted], dtype=float)
+        dec = np.asarray([c[1] for c in converted], dtype=float)
+    else:
+        raise ValueError("Catalogue needs RA/Dec in degrees (e.g. 'RA'/'DEC', "
+                         "'ra'/'dec') or 'ra_str'/'dec_str' in sexagesimal; "
+                         "map them with `catalogue_columns={'ra': ..., "
+                         "'dec': ...}`.")
+
+    # --- image --------------------------------------------------------------
+    data_2D = np.squeeze(np.asarray(load_fits_data(imagename), dtype=float))
+    if data_2D.ndim != 2:
+        raise ValueError(f'Expected a 2D image after squeezing, got shape '
+                         f'{data_2D.shape} for {imagename}.')
+    ny, nx = data_2D.shape
+    wcs = WCS(fits.getheader(imagename), naxis=2)
+    cell_size = get_cell_size(imagename)
+    beam_fwhm_px, beam_area_px = field_beam_size(imagename, verbose=verbose)
+
+    if verbose >= 1:
+        print(f' ++==>> Field catalogue from {origin} ({n_input} rows) on '
+              f'{os.path.basename(imagename)}  {data_2D.shape}')
+        print(f'        beam = {beam_fwhm_px:.2f} px '
+              f'({beam_area_px:.1f} px/beam), cell = {cell_size:.4f} arcsec')
+        print('        catalogue mode: no detection; sigma, deblend_*, '
+              'minarea_factor, nproc and filter_type are ignored.')
+        used = {k: v for k, v in col.items() if v is not None}
+        print(f'        columns: {used}')
+    if return_masks:
+        print(' -->> WARNING: return_masks=True has no effect in catalogue '
+              'mode (there is no segmentation).')
+
+    # --- sizes (FWHM, arcsec) -----------------------------------------------
+    if size_units == 'auto':
+        lower = {str(c).lower() for c in table.columns}
+        size_units = 'deg' if {'isl_id', 's_code'} <= lower else 'arcsec'
+    if size_units not in ('deg', 'arcsec'):
+        raise ValueError("size_units must be 'auto', 'deg' or 'arcsec'.")
+    to_arcsec = 3600.0 if size_units == 'deg' else 1.0
+    beam_arcsec = beam_fwhm_px * cell_size
+
+    if col['maj'] is not None:
+        maj_arcsec = np.asarray(table[col['maj']], dtype=float) * to_arcsec
+        min_arcsec = (np.asarray(table[col['min']], dtype=float) * to_arcsec
+                      if col['min'] is not None else maj_arcsec.copy())
+        pa_deg = (np.asarray(table[col['pa']], dtype=float)
+                  if col['pa'] is not None else np.zeros(n_input))
+    elif {'semimajor_px', 'semiminor_px', 'cell_size'} <= set(table.columns):
+        # morphen round trip: photutils sigma axes in the detection image's px
+        cell_cat = np.asarray(table['cell_size'], dtype=float)
+        maj_arcsec = (np.asarray(table['semimajor_px'], dtype=float)
+                      * 2.3548 * cell_cat)
+        min_arcsec = (np.asarray(table['semiminor_px'], dtype=float)
+                      * 2.3548 * cell_cat)
+        pa_deg = (np.asarray(table['orientation_deg'], dtype=float) - 90.0
+                  if 'orientation_deg' in table.columns else np.zeros(n_input))
+    else:
+        if verbose >= 1:
+            print('        no size columns: every source taken as unresolved '
+                  '(one beam).')
+        maj_arcsec = np.full(n_input, beam_arcsec)
+        min_arcsec = np.full(n_input, beam_arcsec)
+        pa_deg = np.zeros(n_input)
+    # non-finite or sub-beam sizes become one beam (a fitted size below the
+    # beam is a deconvolved one, or a failed fit)
+    maj_arcsec = np.where(np.isfinite(maj_arcsec) & (maj_arcsec > 0),
+                          maj_arcsec, beam_arcsec)
+    min_arcsec = np.where(np.isfinite(min_arcsec) & (min_arcsec > 0),
+                          min_arcsec, maj_arcsec)
+    min_arcsec = np.minimum(min_arcsec, maj_arcsec)
+    pa_deg = np.nan_to_num(pa_deg, nan=0.0)
+
+    # --- the catalogue's own values, carried through ------------------------
+    df = pd.DataFrame({'ra': ra, 'dec': dec})
+    for role, out_name in (('source_id', 'cat_source_id'),
+                           ('island', 'cat_island_id'),
+                           ('total_flux', 'cat_total_flux'),
+                           ('total_flux_err', 'cat_total_flux_err'),
+                           ('peak_flux', 'cat_peak_flux'),
+                           ('peak_flux_err', 'cat_peak_flux_err'),
+                           ('rms', 'cat_rms'),
+                           ('s_code', 'cat_s_code')):
+        if col[role] is not None:
+            df[out_name] = table[col[role]].values
+    df['cat_maj_arcsec'] = maj_arcsec
+    df['cat_min_arcsec'] = min_arcsec
+    df['cat_pa_deg'] = pa_deg
+
+    if col['island'] is not None:
+        df['parent_label'] = pd.factorize(table[col['island']])[0] + 1
+    else:
+        df['parent_label'] = np.arange(1, n_input + 1)
+
+    if col['name'] is not None:
+        names = table[col['name']].astype(str).values
+    else:
+        names = _iau_names(SkyCoord(ra=ra * u.degree, dec=dec * u.degree,
+                                    frame='icrs'), prefix=name_prefix)
+    df['iau_name'] = names
+
+    # A morphen round trip carries its island size; keep it (in arcsec).
+    island_size_arcsec = None
+    if {'parent_size_px', 'cell_size'} <= set(table.columns):
+        island_size_arcsec = (np.asarray(table['parent_size_px'], dtype=float)
+                              * np.asarray(table['cell_size'], dtype=float))
+
+    # --- pixel positions, footprint -----------------------------------------
+    finite_pos = np.isfinite(ra) & np.isfinite(dec)
+    xc = np.full(n_input, np.nan)
+    yc = np.full(n_input, np.nan)
+    xc[finite_pos], yc[finite_pos] = wcs.world_to_pixel_values(
+        ra[finite_pos], dec[finite_pos])
+    inside = (finite_pos & np.isfinite(xc) & np.isfinite(yc) &
+              (xc >= 0) & (xc <= nx - 1) & (yc >= 0) & (yc <= ny - 1))
+    xi = np.clip(np.round(np.nan_to_num(xc)).astype(int), 0, nx - 1)
+    yi = np.clip(np.round(np.nan_to_num(yc)).astype(int), 0, ny - 1)
+    on_data = inside & np.isfinite(data_2D[yi, xi])
+
+    if not np.all(on_data):
+        dropped = df.loc[~on_data, 'iau_name'].tolist()
+        n_out = int(np.sum(~inside))
+        print(f' -->> {len(dropped)} catalogue source(s) dropped: {n_out} '
+              f'outside the image, {len(dropped) - n_out} on blank '
+              f'(non-finite) pixels.')
+        if verbose >= 1:
+            print(f'        {dropped[:20]}' +
+                  (' ...' if len(dropped) > 20 else ''))
+    keep = np.where(on_data)[0]
+    if len(keep) == 0:
+        raise ValueError(f'None of the {n_input} catalogue positions fall on '
+                         f'valid pixels of {os.path.basename(imagename)}.')
+    df = df.iloc[keep].reset_index(drop=True)
+    xc, yc, xi, yi = xc[keep], yc[keep], xi[keep], yi[keep]
+    maj_px = maj_arcsec[keep] / cell_size
+    min_px = min_arcsec[keep] / cell_size
+    pa_deg = pa_deg[keep]
+    if island_size_arcsec is not None:
+        island_size_arcsec = island_size_arcsec[keep]
+    n_src = len(df)
+
+    # --- background / noise -------------------------------------------------
+    coverage_mask = ~np.isfinite(data_2D)
+    bkg_image, bkg_rms = field_background(data_2D,
+                                          coverage_mask=coverage_mask,
+                                          box_size=bkg_box_size,
+                                          filter_size=bkg_filter_size,
+                                          beam_fwhm_px=beam_fwhm_px,
+                                          bkg_estimator=bkg_estimator,
+                                          rms_map=rms_map,
+                                          verbose=verbose)
+    data_sub = data_2D - bkg_image
+    if show_bkg_map:
+        plot_field_background(data_2D, bkg_image, bkg_rms)
+
+    if residual is None and residualname is not None:
+        try:
+            residual = np.squeeze(load_fits_data(residualname))
+        except Exception:
+            residual = None
+    if residual is not None and verbose >= 1:
+        print(f'        RMS: residual = '
+              f'{mad_std(residual, ignore_nan=True):.3e}, '
+              f'median(bkg_rms) = {np.nanmedian(bkg_rms):.3e}')
+
+    # --- measurements on this image -----------------------------------------
+    # orientation: sky PA (east of north) -> counter-clockwise from +x, for a
+    # north-up / east-left image. Approximate, like the region export.
+    orientation = ((pa_deg + 90.0 + 90.0) % 180.0) - 90.0
+    a_ap = np.maximum(size_scale * maj_px / 2.0, beam_fwhm_px / 2.0)
+    b_ap = np.maximum(size_scale * min_px / 2.0, beam_fwhm_px / 2.0)
+    b_ap = np.minimum(b_ap, a_ap)
+
+    error_map = np.nan_to_num(bkg_rms, nan=0.0)
+    bad = ~np.isfinite(data_sub)
+    local_rms = np.asarray(bkg_rms[yi, xi], dtype=float)
+    peak_flux = np.full(n_src, np.nan)
+    ap_flux = np.full(n_src, np.nan)
+    ap_flux_err = np.full(n_src, np.nan)
+    ap_area = np.full(n_src, np.nan)
+    for k in tqdm(range(n_src), disable=(verbose < 1 or n_src < 200)):
+        h = int(np.ceil(max(beam_fwhm_px, 0.5 * maj_px[k])))
+        box = data_sub[max(0, yi[k] - h):yi[k] + h + 1,
+                       max(0, xi[k] - h):xi[k] + h + 1]
+        if np.any(np.isfinite(box)):
+            peak_flux[k] = np.nanmax(box)
+        aperture = EllipticalAperture((xc[k], yc[k]), a=a_ap[k], b=b_ap[k],
+                                      theta=np.deg2rad(orientation[k]))
+        try:
+            sums, errs = aperture.do_photometry(data_sub, error=error_map,
+                                                mask=bad, method='exact')
+            ap_flux[k] = float(np.atleast_1d(sums)[0])
+            ap_flux_err[k] = float(np.atleast_1d(errs)[0])
+        except Exception as error:
+            if verbose >= 1:
+                print(f' -->> aperture photometry failed for '
+                      f'{df["iau_name"].iloc[k]}: {error}')
+        ap_area[k] = float(aperture.area)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        snr_peak = peak_flux / local_rms
+
+    df['xc'] = xc
+    df['yc'] = yc
+    df['peak_flux'] = peak_flux
+    df['segment_flux'] = ap_flux
+    df['segment_fluxerr'] = ap_flux_err
+    df['kron_flux'] = np.nan
+    df['kron_fluxerr'] = np.nan
+    df['local_rms'] = local_rms
+    df['snr_peak'] = snr_peak
+    df['area_px'] = ap_area
+    df['area_beams'] = ap_area / beam_area_px
+    df['equivalent_radius_px'] = np.sqrt(a_ap * b_ap)
+    df['equivalent_radius_arcsec'] = df['equivalent_radius_px'] * cell_size
+    df['semimajor_px'] = maj_px / 2.3548
+    df['semiminor_px'] = min_px / 2.3548
+    with np.errstate(divide='ignore', invalid='ignore'):
+        df['ellipticity'] = 1.0 - min_px / maj_px
+    df['orientation_deg'] = orientation
+    df['fwhm_px'] = np.sqrt(maj_px * min_px)
+
+    # --- islands ------------------------------------------------------------
+    if island_size_arcsec is not None:
+        half = 0.5 * island_size_arcsec / cell_size
+        half = np.where(np.isfinite(half) & (half > 0), half, a_ap)
+    else:
+        half = a_ap
+    df['_xlo'], df['_xhi'] = xc - half, xc + half
+    df['_ylo'], df['_yhi'] = yc - half, yc + half
+    weight_column = 'cat_total_flux' if 'cat_total_flux' in df.columns \
+        else 'segment_flux'
+    w = pd.to_numeric(df[weight_column], errors='coerce')
+    df['_w'] = np.where(np.isfinite(w) & (w > 0), w, 0.0)
+
+    groups = df.groupby('parent_label')
+    sum_w = groups['_w'].transform('sum')
+    count = groups['_w'].transform('count')
+    # flux-weighted centre; equal weights for an island with no usable flux
+    wx = np.where(sum_w > 0, df['_w'] * df['xc'] / sum_w, df['xc'] / count)
+    wy = np.where(sum_w > 0, df['_w'] * df['yc'] / sum_w, df['yc'] / count)
+    df['xc_parent'] = pd.Series(wx).groupby(df['parent_label']).transform('sum')
+    df['yc_parent'] = pd.Series(wy).groupby(df['parent_label']).transform('sum')
+    p_ra, p_dec = wcs.pixel_to_world_values(df['xc_parent'].values,
+                                            df['yc_parent'].values)
+    single = (count == 1).values
+    df['ra_parent'] = np.where(single, df['ra'], p_ra)
+    df['dec_parent'] = np.where(single, df['dec'], p_dec)
+
+    bbox_xmin = np.floor(groups['_xlo'].transform('min').values)
+    bbox_xmax = np.ceil(groups['_xhi'].transform('max').values)
+    bbox_ymin = np.floor(groups['_ylo'].transform('min').values)
+    bbox_ymax = np.ceil(groups['_yhi'].transform('max').values)
+    parent_size_px = np.maximum.reduce([bbox_xmax - bbox_xmin + 1.0,
+                                        bbox_ymax - bbox_ymin + 1.0,
+                                        np.full(n_src, beam_fwhm_px)])
+    df['parent_flux'] = groups['segment_flux'].transform('sum')
+    df['parent_area_px'] = (bbox_xmax - bbox_xmin + 1.0) * \
+        (bbox_ymax - bbox_ymin + 1.0)
+    df['bbox_xmin'] = bbox_xmin.astype(int)
+    df['bbox_xmax'] = bbox_xmax.astype(int)
+    df['bbox_ymin'] = bbox_ymin.astype(int)
+    df['bbox_ymax'] = bbox_ymax.astype(int)
+    df['parent_size_px'] = parent_size_px
+    df['suggested_cutout_size'] = (np.ceil(cutout_size_factor *
+                                           parent_size_px / 2.0)
+                                   * 2.0).astype(int)
+    df['edge_flag'] = ((df['bbox_xmin'] <= edge_margin) |
+                       (df['bbox_ymin'] <= edge_margin) |
+                       (df['bbox_xmax'] >= nx - 1 - edge_margin) |
+                       (df['bbox_ymax'] >= ny - 1 - edge_margin))
+    df = df.drop(columns=['_xlo', '_xhi', '_ylo', '_yhi', '_w'])
+
+    if reject_edge_sources and edge_margin > 0:
+        n_before = len(df)
+        df = df[~df['edge_flag']].reset_index(drop=True)
+        if verbose >= 1:
+            print(f'        {n_before - len(df)} edge source(s) rejected '
+                  f'(edge_margin={edge_margin}).')
+        if len(df) == 0:
+            raise ValueError('All catalogue sources removed by `edge_margin`.')
+
+    # --- bookkeeping, same as detection mode --------------------------------
+    df.insert(0, 'label', np.arange(1, len(df) + 1))   # catalogue order
+    df = _parent_bookkeeping(df, flux_column=weight_column)
+    df['ra_str'], df['dec_str'] = _sexagesimal_strings(
+        SkyCoord(ra=df['ra'].values * u.degree,
+                 dec=df['dec'].values * u.degree, frame='icrs'))
+    df['#imagename'] = os.path.basename(imagename)
+    df['cell_size'] = cell_size
+    df['catalogue_origin'] = origin
+
+    catalogue_df, order = sort_field_catalogue(df, sort_by=sort_by,
+                                               image_shape=data_2D.shape,
+                                               verbose=verbose)
+    indices = np.asarray(order, dtype=int)
+    if snr_min is not None:
+        catalogue_df = filter_field_catalogue(catalogue_df, snr_min=snr_min,
+                                              verbose=verbose)
+
+    objects_sorted = {'xc': catalogue_df['xc'].values,
+                      'yc': catalogue_df['yc'].values,
+                      'ra': catalogue_df['ra'].values,
+                      'dec': catalogue_df['dec'].values}
+
+    if verbose >= 1:
+        print(f' ++==>> Field catalogue: {len(catalogue_df)} source(s) in '
+              f'{catalogue_df["parent_label"].nunique()} island(s), '
+              f'from {origin}.')
+
+    if save_products:
+        save_field_products(imagename, bkg_image=bkg_image, bkg_rms=bkg_rms,
+                            data_sub=data_sub,
+                            products=[p for p in products
+                                      if p not in ('segm', 'segm_parent')],
+                            save_path=products_path, verbose=verbose)
+
+    if show_detection:
+        plot_field_detections(imagename, catalogue_df, data_sub=data_sub,
+                              bkg_rms=bkg_rms, panels='data',
+                              max_labels_to_plot=max_labels_to_plot,
+                              ell_size_factor=size_scale * 2.3548 / 2.0,
+                              save_name=(imagename + '_field_catalogue.jpg'
+                                         if save_plot else None))
+
+    return ([], indices, bkg_image, bkg_rms, None, None, objects_sorted,
+            None, None, catalogue_df, wcs)
+
+
+# ---------------------------------------------------------------------------
 # plotting / export
 # ---------------------------------------------------------------------------
 
@@ -798,6 +1294,7 @@ def plot_field_detections(imagename, catalogue, segm=None, cat=None,
                           cutout_size=None, vmin_factor=3.0, vmax_factor=0.2,
                           stretch='asinh', asinh_a=0.02,
                           show_kron_apertures=True, cmap_seed=123,
+                          ell_size_factor=3.0,
                           save_name=None, dpi=200):
     """
     Field overview in the standard photutils segmentation style.
@@ -840,6 +1337,11 @@ def plot_field_detections(imagename, catalogue, segm=None, cat=None,
     stretch : str
         Defaults to morphen's usual 'asinh' rather than the 'sqrt' of the
         photutils docs, which leaves faint radio sources close to invisible.
+    ell_size_factor : float
+        Only used when there is no photutils catalogue (`cat=None`, i.e. a
+        catalogue built by `field_source_from_catalogue`): each source is drawn
+        as an ellipse with semi-axes `ell_size_factor` x
+        `semimajor_px`/`semiminor_px` in place of the Kron apertures.
     """
     if panels not in ('segm', 'data', 'both'):
         raise ValueError("panels must be one of 'segm', 'data', 'both'.")
@@ -909,6 +1411,17 @@ def plot_field_detections(imagename, catalogue, segm=None, cat=None,
             cat_show.plot_kron_apertures(ax=ax_kron, color='white', lw=0.7)
         except Exception as error:
             print(f' -->> Kron apertures could not be drawn: {error}')
+    elif (show_kron_apertures and cat_show is None and ax_kron is not None and
+          {'xc', 'yc', 'semimajor_px', 'semiminor_px',
+           'orientation_deg'} <= set(catalogue.columns)):
+        from matplotlib.patches import Ellipse as _Ellipse
+        for _, row in catalogue.iterrows():
+            ax_kron.add_patch(_Ellipse(
+                (row['xc'], row['yc']),
+                width=2.0 * ell_size_factor * row['semimajor_px'],
+                height=2.0 * ell_size_factor * row['semiminor_px'],
+                angle=row['orientation_deg'], fill=False,
+                edgecolor='cyan', linewidth=0.7))
 
     # Optional annotations, on the first panel. Both are off by default: the
     # figure is meant to read as segments plus Kron apertures.
