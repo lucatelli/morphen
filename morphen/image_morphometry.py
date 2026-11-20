@@ -5106,6 +5106,7 @@ def compute_image_properties(img, residual,
                                  flux_units='Jy/beam',
                                  flux_conversion_factor=None,
                                  psf_fwhm_px=None,
+                                 n_boot_shape=100,
                                  ext='.jpg', logger=None, verbose=0):
     """
     Compute morpho-photometric properties of a radio (or optical) image.
@@ -5195,6 +5196,13 @@ def compute_image_properties(img, residual,
 
         Without it, an unrecognised `flux_units` leaves the fluxes as raw pixel
         sums and warns.
+    n_boot_shape : int, optional
+        The default is 100. Noise realisations for the `convex_morpho`
+        bootstrap that gives the 1-sigma errors on PA_convex, q_convex, the
+        convex diameters and q_diam, and sigma_q_eff (see Notes). For radio
+        images the injected noise is correlated like the restoring beam; for
+        images without a beam it is white. 0 skips it (errors NaN,
+        sigma_q_eff from the legacy 0.02/SNR rule).
     logger : logging.Logger, optional
         The default is None. A logger object to be used to log messages.
 
@@ -5236,6 +5244,26 @@ def compute_image_properties(img, residual,
         peak_max_bias_sigma     sqrt(2 ln N_beams), the expected noise maximum
         peak_rms_local / peak_rms_local_clipped / peak_local_nbeams /
         peak_annulus_flag       annulus diagnostics
+
+    Fractional sizes, for xx in {20, 50, 80, 90, 95, 99} (all in pixels):
+
+        Cxx_radii         equivalent circular radius sqrt(A_xx/pi) of the
+                          isophotal area enclosing xx% of the growth-curve flux.
+                          For an ellipse this is sqrt(a*b): the GEOMETRIC MEAN
+                          of the semi-axes, neither the semi-major nor the
+                          semi-minor axis.
+        Cxx_radii_major   semi-major axis, Cxx_radii / sqrt(q_eff)
+        Cxx_radii_minor   semi-minor axis, Cxx_radii * sqrt(q_eff)
+        (each with an `_err` key, propagating Cxx_radii_err and sigma_q_eff)
+
+        q_eff is q_convex (or q_mom if the convex fit failed), clipped to
+        [0.05, 1]; one value is used for every fraction.
+        sigma_q_eff is the 1-sigma bootstrap error q_convex_err (clipped to
+        [0.005, 0.5]); `sigma_q_method` records where it came from:
+        'bootstrap_beam' (beam-correlated noise, radio), 'bootstrap_white'
+        (no beam), or 'rule' (legacy clip(0.02/SNR, 0.005, 0.5) fallback, when
+        the bootstrap is off/failed or q_eff came from q_mom). PA_convex_err,
+        q_convex_err, convex_*_diameter_err and q_diam_err are 1-sigma.
     """
     # --------------------------------------------------------------------------
     # Setup: units, data loading, RMS, masking
@@ -5557,7 +5585,28 @@ def compute_image_properties(img, residual,
         results['convex_error_flag'] = False
         # do_plot=False here: the overlay is drawn later, onto ax2, only if
         # show_figure -- see the `if show_figure:` block below.
-        cp = convex_morpho(g, mask, do_plot=False, n_boot=0, noise_std=6*std)
+        # Bootstrap noise: per-pixel rms `std`, spatially correlated like the
+        # restoring beam for radio images (white otherwise), 1-sigma errors.
+        _noise_beam  = None
+        _cdelt1_sign = -1.0
+        if not flag_freq:
+            try:
+                _noise_beam = (float(omaj) / cell_size, float(omin) / cell_size,
+                               float(BPA))
+            except Exception:
+                _noise_beam = None
+            if isinstance(img, str):
+                try:
+                    _cdelt1_sign = float(np.sign(pf.getheader(img)['CDELT1'])) or -1.0
+                except Exception:
+                    _cdelt1_sign = -1.0
+        cp = convex_morpho(g, mask, do_plot=False, n_boot=n_boot_shape,
+                           noise_std=std, n_sigmas_error=1,
+                           noise_beam=_noise_beam, cdelt1_sign=_cdelt1_sign,
+                           noise_floor_sigma=3.0, seed=0)
+        results['convex_noise_model']         = cp['noise_model']
+        results['convex_weight_floor_sigma']  = (cp['weight_floor'] / std
+                                                 if std > 0 else float('nan'))
         results['PA_convex']                  = cp['PA_convex']
         results['PA_convex_err']              = cp['PA_convex_err']
         results['q_convex']                   = cp['q_convex']
@@ -5572,6 +5621,8 @@ def compute_image_properties(img, residual,
         results['convex_axes_swapped']        = cp['axes_swapped']
     except Exception:
         results['convex_error_flag']          = True
+        results['convex_noise_model']         = 'none'
+        results['convex_weight_floor_sigma']  = float('nan')
         results['PA_convex']                  = 0.0
         results['PA_convex_err']              = float('nan')
         results['q_convex']                   = 0.0
@@ -5950,13 +6001,17 @@ def compute_image_properties(img, residual,
     A99 = npix99 / beam_area_;  A99_err = npix99_err / beam_area_
 
     # --------------------------------------------------------------------------
-    # Ellipticity-corrected semi-major-axis radii  (new in v2)
+    # Ellipticity-corrected semi-major / semi-minor radii
     #
     # The levels-based Cxx radii are equivalent circular radii of isophotal
-    # areas, which for an elliptical source approximate the geometric mean of
-    # the semi-axes:  Cxx ≈ a_xx * sqrt(q).
-    # Dividing by sqrt(q) recovers the semi-major-axis effective radius.
-    # See experiments_radial_quantities.py – Experiments 1 & 3.
+    # areas, R = sqrt(A/pi). For an elliptical source that is the GEOMETRIC
+    # MEAN of the semi-axes, R = sqrt(a*b) = a*sqrt(q), i.e. b <= Cxx <= a:
+    # Cxx is neither the semi-major nor the semi-minor axis.
+    #   semi-major:  Cxx_radii_major = R / sqrt(q_eff)
+    #   semi-minor:  Cxx_radii_minor = R * sqrt(q_eff)
+    # so that major*minor == R**2 and minor/major == q_eff exactly.
+    # A single q_eff is used for every fraction (see the sizes notes in
+    # to_dos_and_improvements/sizes_and_convex_quantities.md).
     # --------------------------------------------------------------------------
     _q_convex_ok = (not results.get('convex_error_flag', True)
                     and results.get('q_convex', 0.0) > 0.05)
@@ -5965,11 +6020,21 @@ def compute_image_properties(img, residual,
     sqrt_q   = np.sqrt(q_eff)
     results['q_eff'] = q_eff
 
-    # Empirical sigma(q_eff) from Exp D noise-perturbation MC (see experiments_uncertainty.py).
-    # sigma(q) ≈ 0.02 / SNR_eff, calibrated at q=0.5; conservative floor of 0.005.
-    snr_eff       = peak_g / max(std, 1e-30)
-    sigma_q_eff   = float(np.clip(0.02 / max(snr_eff, 1.0), 0.005, 0.5))
-    results['sigma_q_eff'] = sigma_q_eff
+    # sigma(q_eff): the per-source 1-sigma bootstrap error on q_convex from
+    # convex_morpho (beam-correlated noise for radio images). Falls back to the
+    # legacy empirical rule 0.02/SNR only when there is no bootstrap value --
+    # that rule underestimates the real scatter of q by 2-17x (see
+    # to_dos_and_improvements/sizes_and_convex_quantities.md).
+    _q_boot_err = results.get('q_convex_err', float('nan'))
+    if _q_convex_ok and np.isfinite(_q_boot_err) and _q_boot_err > 0:
+        sigma_q_eff    = float(np.clip(_q_boot_err, 0.005, 0.5))
+        sigma_q_method = 'bootstrap_' + results.get('convex_noise_model', 'white')
+    else:
+        snr_eff        = peak_g / max(std, 1e-30)
+        sigma_q_eff    = float(np.clip(0.02 / max(snr_eff, 1.0), 0.005, 0.5))
+        sigma_q_method = 'rule'
+    results['sigma_q_eff']    = sigma_q_eff
+    results['sigma_q_method'] = sigma_q_method
 
     for _tag, _r, _r_err in [
         (20, C20radii, C20radii_err),
@@ -5986,6 +6051,14 @@ def compute_image_properties(img, residual,
         _r_major_err   = float(np.sqrt(_term_r**2 + _term_q**2))
         results[f'C{_tag}radii_major']     = _r_major
         results[f'C{_tag}radii_major_err'] = _r_major_err
+
+        _r_minor       = _r * sqrt_q
+        # sigma^2(R_minor) = (sqrt q x sigma_R)^2 + (R_minor/(2 x q)  x  sigma_q)^2
+        _term_r_min    = _r_err * sqrt_q
+        _term_q_min    = _r_minor / (2.0 * q_eff) * sigma_q_eff
+        _r_minor_err   = float(np.sqrt(_term_r_min**2 + _term_q_min**2))
+        results[f'C{_tag}radii_minor']     = _r_minor
+        results[f'C{_tag}radii_minor_err'] = _r_minor_err
 
     # -- Convex-hull shapes at each level -------------------------------------
     try:
@@ -6128,12 +6201,18 @@ def compute_image_properties(img, residual,
              f"{cell_size*results['C50radii_major']:.4f}"
              f" +/- {cell_size*results['C50radii_major_err']:.4f} [{scale_units}]"
              f"  (q_eff={q_eff:.2f})")
+        _log(f" ==>  R50_minor         = "
+             f"{cell_size*results['C50radii_minor']:.4f}"
+             f" +/- {cell_size*results['C50radii_minor_err']:.4f} [{scale_units}]")
         _log(f" ==>  R95               = "
              f"{cell_size*C95radii:.4f} +/- {cell_size*C95radii_err:.4f} [{scale_units}]")
         _log(f" ==>  R95_major         = "
              f"{cell_size*results['C95radii_major']:.4f}"
              f" +/- {cell_size*results['C95radii_major_err']:.4f} [{scale_units}]"
              f"  (q_eff={q_eff:.2f})")
+        _log(f" ==>  R95_minor         = "
+             f"{cell_size*results['C95radii_minor']:.4f}"
+             f" +/- {cell_size*results['C95radii_minor_err']:.4f} [{scale_units}]")
         if redshift is not None:
             _log(f" ==>  R50 (phys)        = "
                  f"{scale_size*C50radii:.4f}"
@@ -6141,12 +6220,18 @@ def compute_image_properties(img, residual,
             _log(f" ==>  R50_major (phys)  = "
                  f"{scale_size*results['C50radii_major']:.4f}"
                  f" +/- {scale_size*results['C50radii_major_err']:.4f} [{scale_size_units}]")
+            _log(f" ==>  R50_minor (phys)  = "
+                 f"{scale_size*results['C50radii_minor']:.4f}"
+                 f" +/- {scale_size*results['C50radii_minor_err']:.4f} [{scale_size_units}]")
             _log(f" ==>  R95 (phys)        = "
                  f"{scale_size*C95radii:.4f}"
                  f" +/- {scale_size*C95radii_err:.4f} [{scale_size_units}]")
             _log(f" ==>  R95_major (phys)  = "
                  f"{scale_size*results['C95radii_major']:.4f}"
                  f" +/- {scale_size*results['C95radii_major_err']:.4f} [{scale_size_units}]")
+            _log(f" ==>  R95_minor (phys)  = "
+                 f"{scale_size*results['C95radii_minor']:.4f}"
+                 f" +/- {scale_size*results['C95radii_minor_err']:.4f} [{scale_size_units}]")
 
     # --------------------------------------------------------------------------
     # Petrosian properties (unchanged from v1)
@@ -6347,8 +6432,11 @@ def compute_image_properties(img, residual,
         # cell_size makes it plot in the same offset coordinates as ax2 above.
         if not results.get('convex_error_flag', True):
             try:
+                # Same noise_std/noise_floor_sigma as the measurement call,
+                # so the drawn axes are the reported PA_convex/q_convex.
                 convex_morpho(g, mask_for_plot, do_plot=True, ax=ax2,
-                              n_boot=0, noise_std=6 * std, cell_size=cell_size)
+                              n_boot=0, noise_std=std, noise_floor_sigma=3.0,
+                              cell_size=cell_size)
             except Exception:
                 pass
 
@@ -8324,11 +8412,84 @@ def _weighted_percentile(values, weights, pcts):
     return np.interp(np.asarray(pcts, dtype=float) / 100.0, cum, v)
 
 
+def _correlated_noise_sampler(shape, rng, noise_beam=None, noise_fwhm_px=None,
+                              cdelt1_sign=-1.0):
+    """
+    Build a sampler of unit-variance noise fields of a given `shape`, with the
+    spatial correlation of a restored radio map.
+
+    The noise autocorrelation function (ACF) of a restored interferometric
+    image is (to first order) the synthesised beam B. White noise convolved
+    with a kernel k has ACF = k (*) k, so for a Gaussian beam k must have
+    FWHM = B/sqrt(2) along each axis -- convolving with B itself would give an
+    ACF sqrt(2) too wide per axis, ~2x fewer independent noise elements, and
+    errors ~sqrt(2) too large. k is normalised by sqrt(sum(k**2)), so unit
+    white noise gives exactly unit per-pixel variance (also when the beam is
+    under-sampled and k tends to a delta). The kernel is
+    `gaussian_beam_kernel` (radio_sed.py; BPA east of north, validated
+    against `wsclean -restore`).
+
+    Each call draws white noise on `shape` + 2*half-kernel and convolves with
+    mode='valid', so the returned field is exactly `shape`, without edge
+    effects.
+
+    Parameters
+    ----------
+    shape : tuple (ny, nx)
+        Shape of the field to return (e.g. the bounding box of a mask).
+    rng : np.random.Generator
+    noise_beam : tuple (bmaj_px, bmin_px, bpa_deg), optional
+        Restoring-beam FWHMs in pixels and position angle in degrees.
+    noise_fwhm_px : float, optional
+        Isotropic correlation FWHM in pixels, used only if `noise_beam` is None
+        (e.g. resampled/drizzled optical data).
+    cdelt1_sign : float
+        Sign of CDELT1 of the image (-1 for the usual RA axis).
+
+    Returns
+    -------
+    sample : callable
+        `sample()` -> ndarray of `shape`, zero mean, unit per-pixel variance.
+    model : str
+        'beam', 'fwhm' or 'white'.
+    """
+    from scipy.signal import fftconvolve
+
+    ny, nx = int(shape[0]), int(shape[1])
+    if noise_beam is not None:
+        bmaj_px, bmin_px, bpa_deg = (float(v) for v in noise_beam)
+        model = 'beam'
+    elif noise_fwhm_px is not None:
+        bmaj_px = bmin_px = float(noise_fwhm_px)
+        bpa_deg = 0.0
+        model = 'fwhm'
+    else:
+        return (lambda: rng.standard_normal((ny, nx))), 'white'
+
+    if not (np.isfinite(bmaj_px) and np.isfinite(bmin_px)
+            and bmaj_px > 0 and bmin_px > 0):
+        return (lambda: rng.standard_normal((ny, nx))), 'white'
+
+    k = gaussian_beam_kernel(bmaj_px / np.sqrt(2.0), bmin_px / np.sqrt(2.0),
+                             bpa_deg, cdelt1_sign=cdelt1_sign, nsigma=5.0)
+    k = k / np.sqrt(np.sum(k ** 2))
+    hy, hx = (k.shape[0] - 1) // 2, (k.shape[1] - 1) // 2
+
+    def sample():
+        white = rng.standard_normal((ny + 2 * hy, nx + 2 * hx))
+        return fftconvolve(white, k, mode='valid')
+
+    return sample, model
+
+
 def convex_morpho(image, mask, scale=1.0, do_plot=True, weight_power=0.8,
                   diameter_percentile=99.0, n_boot=500, noise_std=None, 
                   n_sigmas_error = 3,
                   ax=None,
-                  cell_size=None):
+                  cell_size=None,
+                  noise_beam=None, noise_fwhm_px=None, cdelt1_sign=-1.0,
+                  seed=None, progress=False, noise_floor_sigma=0.0,
+                  edge_floor_percentile=90.0):
     """
     Morphological analysis of a masked structure via intensity-weighted moments.
 
@@ -8370,8 +8531,61 @@ def convex_morpho(image, mask, scale=1.0, do_plot=True, weight_power=0.8,
         without hard masking. Because the percentiles are flux-weighted, this
         is a light-weighted extent, not the extent of the mask itself.
     n_boot : int, optional
-        Number of noise realisations for uncertainty estimation (default 50).
-        Set to 0 to skip bootstrap (uncertainties returned as NaN).
+        Number of noise realisations for uncertainty estimation (default 500).
+        Set to 0 to skip bootstrap (uncertainties returned as NaN). Also
+        skipped (NaN) when the structure has fewer than 10 pixels.
+    noise_std : float, optional
+        Per-pixel rms of the noise injected by the bootstrap. Pass the real
+        background rms (e.g. `mad_std` of the residual). If None, the MAD of
+        the unmasked pixels is used.
+    n_sigmas_error : float, optional
+        The returned errors are `n_sigmas_error` x the bootstrap 1-sigma
+        (default 3, kept for backward compatibility; `compute_image_properties`
+        passes 1). The 1-sigma is the robust half-width 0.5*(p84 - p16) of the
+        bootstrap samples; PA uses the circular std.
+    noise_beam : tuple (bmaj_px, bmin_px, bpa_deg), optional
+        Restoring beam (FWHMs in pixels, PA in degrees east of north). When
+        given, the bootstrap noise is correlated like a restored radio map
+        (ACF = beam; see `_correlated_noise_sampler`). Without it the noise is
+        white, which underestimates the errors on radio maps by ~10-25x,
+        because white noise averages out over the many pixels of a mask.
+    noise_fwhm_px : float, optional
+        Isotropic noise-correlation FWHM in pixels, used if `noise_beam` is
+        None (e.g. resampled/drizzled optical data). Do NOT pass the optical
+        PSF here: the PSF does not correlate the noise.
+    cdelt1_sign : float, optional
+        Sign of the image CDELT1 (default -1, the usual RA axis); sets the
+        orientation of `noise_beam` on the pixel grid.
+    seed : int, optional
+        Seed for the bootstrap noise (reproducible errors).
+    progress : bool, optional
+        Show a tqdm progress bar for the bootstrap (default False).
+    noise_floor_sigma : float, optional
+        Soft noise floor k for the weights of the centroid/covariance (PA, q):
+        w = clip(I - k*noise_std, 0)**weight_power. Default 0 (legacy
+        w = clip(I, 0)**weight_power). With k = 0, pure-noise pixels in a
+        dilated mask rim contribute their positive half as a ring of "fake
+        light" with a large lever arm, so q depends on the mask and is biased
+        towards round; in simulations q scattered 1.5-4.7x more when the mask
+        was rebuilt from each noisy image than at a fixed mask. With k = 3
+        that ratio is 0.9-1.2, the total scatter is equal or lower, and the
+        low-SNR bias is reduced -- which is also what makes the (fixed-mask)
+        bootstrap errors complete. The weight is continuous (zero at the
+        floor), so there is no hard isophote edge. Diameters always use the
+        legacy weights. Falls back to the legacy weights if fewer than 3
+        pixels are above the floor.
+    edge_floor_percentile : float or None, optional
+        Only used when `noise_floor_sigma` > 0. The floor is raised to
+        max(noise_floor_sigma*noise_std, P(edge)), where P(edge) is this
+        percentile (default 90) of the intensities on the boundary pixels of
+        the mask. A generous mask has only noise on its edge (P90 ~ 1.3 sigma),
+        so nothing changes; a tight mask (e.g. mask_dilation's default 6 sigma
+        + ~1 beam) cuts real emission above 3 sigma, and that cut moves with
+        the noise -- without this the bootstrap underestimated sigma(q) by up
+        to 2.3x for extended low-SNR sources, with it 0.81-1.28x (P75 was
+        worse, 0.67-1.12x). Caveat: a component mask whose boundary crosses a
+        bright saddle on >10% of its length gets a high floor, i.e. q of the
+        component's bright part only. None disables it.
 
     Returns
     -------
@@ -8390,6 +8604,10 @@ def convex_morpho(image, mask, scale=1.0, do_plot=True, weight_power=0.8,
                                Tracks "q_convex" closely for elliptical sources;
                                a large discrepancy flags a non-elliptical shape.
         "q_diam_err"         : n_sigmas_error uncertainty on q_diam
+        "weight_floor"       : intensity floor used for the PA/q weights (0 if
+                               `noise_floor_sigma` = 0).
+        "noise_model"        : bootstrap noise used: 'beam', 'fwhm', 'white',
+                               or 'none' (bootstrap skipped).
         "axes_swapped"       : True when the largest measured extent lies along
                                the *second* eigenvector, so the axis labels were
                                taken from the extents rather than the eigenvalue
@@ -8433,23 +8651,34 @@ def convex_morpho(image, mask, scale=1.0, do_plot=True, weight_power=0.8,
 
         Returns (PA, q, D_maj, D_min, centroid, major_vec, minor_vec, q_diam,
         axes_swapped).  Diameters are intensity-weighted percentile extents
-        measured with the *same* weights that build the covariance, and the
-        axis labels are assigned from those measured extents, so
-        `D_maj >= D_min` always holds.
+        measured with the legacy weights clip(I, 0)**wp (identical to the
+        covariance weights unless `noise_floor_sigma` > 0), and the axis
+        labels are assigned from those measured extents, so `D_maj >= D_min`
+        always holds.
         """
         raw = np.clip(ints, 0.0, None) ** wp
         s = raw.sum()
         w = raw / s if s > 0 else np.full(len(pts), 1.0 / len(pts))
-        cen = np.average(pts, weights=w, axis=0)
+        # Covariance (centroid, PA, q) weights: soft noise floor, see the
+        # `noise_floor_sigma` docstring. The diameter percentiles below keep
+        # the legacy `w`.
+        w_cov = w
+        _fl = _floor_for(ints)
+        if _fl > 0:
+            raw_c = np.clip(ints - _fl, 0.0, None)
+            if np.count_nonzero(raw_c) >= 3:
+                raw_c = raw_c ** wp
+                w_cov = raw_c / raw_c.sum()
+        cen = np.average(pts, weights=w_cov, axis=0)
         ctr = pts - cen
-        cov = (ctr * w[:, None]).T @ ctr
+        cov = (ctr * w_cov[:, None]).T @ ctr
         evals, evecs = np.linalg.eigh(cov)
         order = np.argsort(evals)[::-1]
         evals, evecs = evals[order], evecs[:, order]
         mv = evecs[:, 0];  nv = evecs[:, 1]
 
         # Diameters: intensity-weighted percentile extents along each principal
-        # axis.  These MUST be weighted with the same `w` as the covariance --
+        # axis.  These MUST be intensity-weighted (`w`) --
         # unweighted percentiles measure the (dilated, near-round) mask geometry
         # rather than the light distribution, which made D_min exceed D_maj and
         # left D_min/D_maj inconsistent with q.
@@ -8492,16 +8721,11 @@ def convex_morpho(image, mask, scale=1.0, do_plot=True, weight_power=0.8,
     p_lo = 100.0 - diameter_percentile
     p_hi = diameter_percentile
 
-    # -- Central estimate ------------------------------------------------------
-    position_angle_degrees, axis_ratio, major_diameter, minor_diameter, \
-        centroid, major_vec, minor_vec, q_diam, axes_swapped = _moments(
-            intensities, points, weight_power, p_lo, p_hi
-        )
-
-    # -- Noise bootstrap for uncertainties ------------------------------------
-    # Use caller-supplied noise_std when available (preferred: the caller has
-    # the real background noise before masking).  Fall back to MAD of unmasked
-    # pixels; if those are all zero (masked image), use 10% of global std.
+    # -- Noise level ----------------------------------------------------------
+    # Used by the soft noise floor and by the bootstrap. Use caller-supplied
+    # noise_std when available (preferred: the caller has the real background
+    # noise before masking). Fall back to MAD of unmasked pixels; if those are
+    # all zero (masked image), use 10% of global std.
     if noise_std is not None and noise_std > 0:
         std_bg = float(noise_std)
     else:
@@ -8510,27 +8734,67 @@ def convex_morpho(image, mask, scale=1.0, do_plot=True, weight_power=0.8,
             std_bg = float(np.median(np.abs(bg - np.median(bg))) * 1.4826)
         else:
             std_bg = float(np.std(image) * 0.1)
+    # Soft floor for the PA/q weights, recomputed for every intensity vector
+    # (central estimate and each bootstrap realisation), so the bootstrap
+    # also carries the noise in the edge-level estimate.
+    _edge_sel = (clean_mask & ~_ndi.binary_erosion(clean_mask))[y, x]
 
-    if n_boot > 0 and std_bg > 0:
-        _rng = np.random.default_rng(None)
+    def _floor_for(ints):
+        if not noise_floor_sigma or std_bg <= 0:
+            return 0.0
+        f = float(noise_floor_sigma) * std_bg
+        if edge_floor_percentile is not None and _edge_sel.any():
+            f = max(f, float(np.percentile(ints[_edge_sel],
+                                           edge_floor_percentile)))
+        return f
+
+    # -- Central estimate ------------------------------------------------------
+    position_angle_degrees, axis_ratio, major_diameter, minor_diameter, \
+        centroid, major_vec, minor_vec, q_diam, axes_swapped = _moments(
+            intensities, points, weight_power, p_lo, p_hi
+        )
+
+    # -- Noise bootstrap for uncertainties ------------------------------------
+
+    noise_model = 'none'
+    if n_boot > 0 and std_bg > 0 and len(points) >= 10:
+        _rng = np.random.default_rng(seed)
+        # Noise is drawn only on the bounding box of clean_mask: only those
+        # pixels enter _moments, and drawing on the full image would make each
+        # realisation cost a full-image FFT in the correlated case.
+        _y0, _x0 = y.min(), x.min()
+        _bbox_shape = (y.max() - _y0 + 1, x.max() - _x0 + 1)
+        _yy, _xx = y - _y0, x - _x0
+        _sample, noise_model = _correlated_noise_sampler(
+            _bbox_shape, _rng, noise_beam=noise_beam,
+            noise_fwhm_px=noise_fwhm_px, cdelt1_sign=cdelt1_sign)
         _pas, _qs, _dms, _dns, _qds = [], [], [], [], []
-        for _ in tqdm(range(n_boot)):
-            img_b    = image + _rng.normal(0.0, std_bg, image.shape)
-            int_b    = img_b[clean_mask].flatten()
+        for _ in tqdm(range(n_boot), disable=not progress):
+            int_b = intensities + std_bg * _sample()[_yy, _xx]
             pa_b, q_b, dm_b, dn_b, _cen_b, _mv_b, _nv_b, qd_b, _sw_b = _moments(
                 int_b, points, weight_power, p_lo, p_hi)
             _pas.append(pa_b);  _qs.append(q_b)
             _dms.append(dm_b);  _dns.append(dn_b)
             _qds.append(qd_b)
 
+        def _robust_sigma(v):
+            # Half-width of the central 68% (= 1 sigma for a Gaussian),
+            # insensitive to the occasional outlier realisation.
+            v = np.asarray(v, dtype=float)
+            v = v[np.isfinite(v)]
+            if v.size < 2:
+                return float('nan')
+            p16, p84 = np.percentile(v, [15.865525, 84.134475])
+            return 0.5 * float(p84 - p16)
+
         # Circular std for PA (period = 180 deg)
         _ang = np.radians(2.0 * np.array(_pas))
         _r   = np.sqrt(np.mean(np.cos(_ang)) ** 2 + np.mean(np.sin(_ang)) ** 2)
         pa_err  = float(n_sigmas_error*90.0 * np.degrees(np.sqrt(-2.0 * np.log(max(_r, 1e-9)))) / 180.0)
-        q_err   = float(n_sigmas_error*np.std(_qs))
-        dm_err  = float(n_sigmas_error*np.std(_dms))
-        dn_err  = float(n_sigmas_error*np.std(_dns))
-        qd_err  = float(n_sigmas_error*np.std(_qds))
+        q_err   = float(n_sigmas_error*_robust_sigma(_qs))
+        dm_err  = float(n_sigmas_error*_robust_sigma(_dms))
+        dn_err  = float(n_sigmas_error*_robust_sigma(_dns))
+        qd_err  = float(n_sigmas_error*_robust_sigma(_qds))
     else:
         pa_err = q_err = dm_err = dn_err = qd_err = float('nan')
 
@@ -8609,6 +8873,8 @@ def convex_morpho(image, mask, scale=1.0, do_plot=True, weight_power=0.8,
         "q_diam":             q_diam,
         "q_diam_err":         qd_err,
         "axes_swapped":       axes_swapped,
+        "weight_floor":       _floor_for(intensities),
+        "noise_model":        noise_model,
     }
 
 
