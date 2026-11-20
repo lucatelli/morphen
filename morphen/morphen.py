@@ -1382,6 +1382,9 @@ class source_extraction():
                 adaptive_background=True,
                 preserve_extended=True,
                 min_separation=None,
+                # algorithm='robust': True reproduces the pre-rewrite
+                # robust_source_ext (see its `legacy` argument).
+                robust_legacy=False,
                 # New field/mosaic-specific parameters (algorithm='field')
                 bkg_box_size=None,
                 bkg_filter_size=(3, 3),
@@ -1399,6 +1402,11 @@ class source_extraction():
                 return_masks=False,
                 max_masks=200,
                 max_labels_to_plot=500,
+                # algorithm='field' from an external catalogue (no detection)
+                catalogue=None,
+                catalogue_columns=None,
+                catalogue_size_scale=2.0,
+                catalogue_size_units='auto',
                 verbose=1):
         """
         Parameters
@@ -1512,6 +1520,9 @@ class source_extraction():
             out = SE.make_cutouts(cutout_size='auto')
             # then analyse out['imagelist'] with the usual per-source tools.
 
+        Pass ``catalogue='cat.csv'`` to skip detection and take the sources
+        from an external list (e.g. PyBDSF); everything after works the same.
+
         bkg_box_size : int
             Background2D mesh size in pixels. Default ~10 beams.
         bkg_filter_size : tuple
@@ -1547,6 +1558,25 @@ class source_extraction():
             Cap on the number of masks built when `return_masks=True`.
         max_labels_to_plot : int
             Cap on labelled sources in the field detection plot.
+        catalogue : str, DataFrame, Table or dict, optional
+            ``algorithm='field'`` only. Build ``SE.catalogue`` from this source
+            list (PyBDSF srl/gaul CSV or FITS, a previous ``SE.to_csv()``, or
+            anything with RA/Dec in degrees) instead of detecting. Positions
+            and sizes come from the catalogue; peak flux, local RMS, SNR and an
+            elliptical-aperture flux are measured on *this* image (the
+            catalogue's own values are kept as ``cat_*`` columns). The
+            detection parameters (``sigma``, ``deblend_*``, ``minarea_factor``,
+            ``nproc``, ``filter_type``) are then ignored, and there is no
+            segmentation map. See `mlibs.field_source_from_catalogue`.
+        catalogue_columns : dict, optional
+            Override the automatic column choice by role, e.g.
+            ``{'ra': 'RA', 'dec': 'DEC', 'maj': 'DC_Maj', 'min': 'DC_Min'}``.
+        catalogue_size_scale : float
+            Island extent in units of the catalogue FWHM (Maj): sets
+            ``parent_size_px`` (hence ``cutout_size='auto'``) and the flux
+            aperture. Default 2.
+        catalogue_size_units : {'auto', 'deg', 'arcsec'}
+            Units of the catalogue Maj/Min; 'auto' = degrees for PyBDSF.
         """
 
         self.input_data = input_data
@@ -1619,6 +1649,7 @@ class source_extraction():
         self.adaptive_background = adaptive_background
         self.preserve_extended = preserve_extended
         self.min_separation = min_separation
+        self.robust_legacy = robust_legacy
         # field/mosaic mode
         self.bkg_box_size = bkg_box_size
         self.bkg_filter_size = bkg_filter_size
@@ -1637,8 +1668,15 @@ class source_extraction():
         self.max_masks = max_masks
         self.max_labels_to_plot = max_labels_to_plot
         self.verbose = verbose
+        self.input_catalogue = catalogue
+        self.catalogue_columns = catalogue_columns
+        self.catalogue_size_scale = catalogue_size_scale
+        self.catalogue_size_units = catalogue_size_units
         self.catalogue = None
         self.cutouts = None
+        if catalogue is not None and self.algorithm != 'field':
+            raise ValueError("`catalogue` is only supported with "
+                             "algorithm='field'.")
 
         if self.algorithm == 'field':
             """
@@ -1781,7 +1819,9 @@ class source_extraction():
                                     merge_threshold=self.merge_threshold,
                                     adaptive_background=self.adaptive_background,
                                     preserve_extended=self.preserve_extended,
-                                    min_separation=self.min_separation)
+                                    min_separation=self.min_separation,
+                                    SE_ref=self.SE_ref,
+                                    legacy=self.robust_legacy)
         if self.algorithm == 'robust_opt':
             (self.masks, self.indices, self.bkg,
             self.seg_maps, self.objects) = \
@@ -1823,6 +1863,37 @@ class source_extraction():
             a wide image, producing a source catalogue rather than per-component
             photometry. See morphen/field_extraction.py.
             """
+            if self.input_catalogue is not None:
+                (self.masks, self.indices, self.bkg, self.bkg_rms,
+                 self.seg_maps, self.seg_maps_parent, self.objects,
+                 self.cat, self.cat_parent, self.catalogue, self.wcs) = \
+                    mlibs.field_source_from_catalogue(
+                        self.input_data.filename, self.input_catalogue,
+                        residualname=self.input_data.residualname,
+                        residual=self.input_data.residual_data_2D,
+                        columns=self.catalogue_columns,
+                        size_scale=self.catalogue_size_scale,
+                        size_units=self.catalogue_size_units,
+                        bkg_box_size=self.bkg_box_size,
+                        bkg_filter_size=self.bkg_filter_size,
+                        bkg_estimator=self.bkg_estimator,
+                        rms_map=self.rms_map,
+                        edge_margin=self.edge_margin,
+                        reject_edge_sources=self.reject_edge_sources,
+                        snr_min=self.snr_min,
+                        sort_by=self.sort_by,
+                        cutout_size_factor=self.cutout_size_factor,
+                        name_prefix=self.name_prefix,
+                        return_masks=self.return_masks,
+                        show_detection=self.show_detection,
+                        show_bkg_map=self.show_bkg_map,
+                        max_labels_to_plot=self.max_labels_to_plot,
+                        save_plot=self.SAVE,
+                        save_products=self.save_products_flag,
+                        products_path=self.products_path,
+                        products=self.products,
+                        verbose=self.verbose)
+                return
             (self.masks, self.indices, self.bkg, self.bkg_rms,
              self.seg_maps, self.seg_maps_parent, self.objects,
              self.cat, self.cat_parent, self.catalogue, self.wcs) = \
@@ -1939,6 +2010,11 @@ class source_extraction():
         """
         self._check_field_mode('show_field')
         kwargs.setdefault('max_labels_to_plot', self.max_labels_to_plot)
+        if self.input_catalogue is not None:
+            # no segmentation: show the data with the catalogue apertures
+            kwargs.setdefault('panels', 'data')
+            kwargs.setdefault('ell_size_factor',
+                              self.catalogue_size_scale * 2.3548 / 2.0)
         return mlibs.plot_field_detections(self.input_data.filename,
                                            self.catalogue,
                                            segm=self.seg_maps,
@@ -2084,6 +2160,7 @@ class source_extraction():
                               adaptive_background=self.adaptive_background, 
                               preserve_extended=self.preserve_extended, 
                               min_separation=self.min_separation,
+                              robust_legacy=self.robust_legacy,
                               force_circular = self.force_circular,
                               force_circular_all = self.force_circular_all,
                               show_petro_plots=self.show_petro_plots)
