@@ -275,179 +275,82 @@ def plot_azimuthal_profile(image, rms_image, center=None,
     - error_rms: numpy array, the weighted RMS errors
     - error_std: numpy array, the weighted standard deviation
     - points_per_bin: numpy array, number of valid points in each bin
-    """
-    
-    if center is None:
-        # use peak position as center
-        center = nd.maximum_position(image)[::-1]  # (x, y) format
 
-    y, x = np.indices(image.shape)
+    Note: thin wrapper around `radial_profiles.compute_azimuthal_profile`
+    (outputs unchanged). `error_rms` is the mean per-pixel rms (not the error
+    of the bin mean) and `error_std` assumes independent pixels; for errors
+    that account for the beam, robust centring and derived radii use
+    `azimuthal_profile_morphometry`. `rms_image` may also be a scalar or None,
+    and `center=None` no longer fails on NaN pixels.
+    """
+    if rms_image is not None and np.ndim(rms_image) == 0:
+        rms_image = np.full(np.shape(image), float(rms_image))
+    if center is None:
+        # use peak position as center (NaN-safe; same pixel as nd.maximum_position)
+        center = np.unravel_index(np.nanargmax(image), np.shape(image))[::-1]
+
+    y, x = np.indices(np.shape(image))
     r = np.sqrt((x - center[0])**2 + (y - center[1])**2)
     if r_max is None:
         r_max = np.nanmax(r)
-    else:
-        r_max = r_max
-    
-
-    
     bin_edges = np.arange(0, r_max + bin_size, bin_size)
-    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
 
-    profile = np.zeros_like(bin_centers)
-    error_rms = np.zeros_like(bin_centers)
-    error_std = np.zeros_like(bin_centers)
-    points_per_bin = np.zeros_like(bin_centers)
-    
-    if which_statistics == 'mean':
-            for i in range(len(bin_centers)):
-                mask = (r >= bin_edges[i]) & (r < bin_edges[i + 1])
-                valid_pixels = ~np.isnan(image[mask])
-                
-                if np.nansum(valid_pixels) >= min_points_per_bin:
-                    points_per_bin[i] = np.nansum(valid_pixels)
-                    values = image[mask][valid_pixels]
-                    rms_values = rms_image[mask][valid_pixels]
-                    n_points = len(values)
-                    
-                    profile[i] = np.nanmean(values)
-                
-                    error_rms[i] = np.nanmean(rms_values)
-                    
-                    if weight_by_points:
-                        error_std[i] = np.nanstd(values, ddof=1) / np.sqrt(n_points)
-                    else:
-                        error_std[i] = np.nanstd(values, ddof=1)
-                        
-                else:
-                    profile[i] = np.nan
-                    error_rms[i] = np.nan
-                    error_std[i] = np.nan
-                
-    elif which_statistics == 'median':
-        for i in range(len(bin_centers)):
-            mask = (r >= bin_edges[i]) & (r < bin_edges[i + 1])
-            valid_pixels = ~np.isnan(image[mask])
-            
-            if np.nansum(valid_pixels) >= min_points_per_bin:
-                points_per_bin[i] = np.nansum(valid_pixels)
-                values = image[mask][valid_pixels]
-                rms_values = rms_image[mask][valid_pixels]
-                n_points = len(values)
-                
-                profile[i] = np.nanmedian(values)
-                
-                measurement_error_mean = np.sqrt(np.nansum(rms_values**2)/n_points)
-                error_rms[i] = measurement_error_mean * np.sqrt(np.pi/2)
-                
-                if weight_by_points:
-                    error_std[i] = 1.253 * np.nanstd(values, ddof=1) / np.sqrt(n_points)
-                else:
-                    error_std[i] = 1.253 * np.nanstd(values, ddof=1)
-                    
-            else:
-                profile[i] = np.nan
-                error_rms[i] = np.nan
-                error_std[i] = np.nan
-                
-    elif which_statistics == 'sum':
-        for i in range(len(bin_centers)):
-            mask = (r >= bin_edges[i]) & (r < bin_edges[i + 1])
-            valid_pixels = ~np.isnan(image[mask])
-            
-            if np.nansum(valid_pixels) >= min_points_per_bin:
-                points_per_bin[i] = np.nansum(valid_pixels)
-                values = image[mask][valid_pixels]
-                rms_values = rms_image[mask][valid_pixels]
-                n_points = len(values)
-                
-                # True sum (not divided by number of points)
-                profile[i] = np.nansum(values)
-                
-                # Measurement error: Root sum of squares for sum (no division by N)
-                error_rms[i] = np.sqrt(np.nansum(rms_values**2))
-                
-                # Statistical error: For sum, std scales with sqrt(N)
-                if weight_by_points:
-                    error_std[i] = np.nanstd(values, ddof=1) * np.sqrt(n_points)
-                else:
-                    error_std[i] = np.nanstd(values, ddof=1) * np.sqrt(n_points)
-                    
-            else:
-                profile[i] = np.nan
-                error_rms[i] = np.nan
-                error_std[i] = np.nan
-                
-    else:
-        raise ValueError('Invalid value for which_statistics. Must be "mean", "median", or "sum".')
+    res = compute_azimuthal_profile(image, center, rms=rms_image,
+                                    bin_edges=bin_edges,
+                                    statistic=which_statistics,
+                                    min_points_per_bin=min_points_per_bin,
+                                    compute_cov=False, compute_errors=False)
+
     # Remove bins with insufficient points
-    valid_bins = ~np.isnan(profile)
-    bin_centers = bin_centers[valid_bins]
-    profile = profile[valid_bins]
-    error_rms = error_rms[valid_bins]
-    error_std = error_std[valid_bins]
-    points_per_bin = points_per_bin[valid_bins]
+    valid_bins = res.valid
+    bin_centers = res.r_centres[valid_bins]
+    profile = res.profile[valid_bins]
+    points_per_bin = res.n_pix[valid_bins]
+    # legacy per-bin errors: same expressions, evaluated in the same dtypes as
+    # the original per-bin scalars (e.g. float32 FITS data), so the outputs
+    # are bit-identical
+    idt = np.asarray(image).dtype if np.asarray(image).dtype.kind == 'f' else np.float64
+    rdt = (np.asarray(rms_image).dtype if rms_image is not None
+           and np.asarray(rms_image).dtype.kind == 'f' else np.float64)
+    std = res.scatter[valid_bins].astype(idt)
+    n_points = points_per_bin
+    sumsq = res.rms_sumsq[valid_bins].astype(rdt)
+    if which_statistics == 'mean':
+        error_rms = res.rms_mean[valid_bins]
+        if weight_by_points:
+            error_std = std / np.sqrt(n_points)
+        else:
+            error_std = std
+    elif which_statistics == 'median':
+        error_rms = np.sqrt(sumsq / n_points.astype(rdt)) * np.sqrt(np.pi / 2)
+        if weight_by_points:
+            error_std = 1.253 * std / np.sqrt(n_points)
+        else:
+            error_std = 1.253 * std
+    else:
+        error_rms = np.sqrt(sumsq)
+        error_std = std * np.sqrt(n_points)
+    error_rms = np.asarray(error_rms, dtype=np.float64)
+    error_std = np.asarray(error_std, dtype=np.float64)
 
-    # Plotting
+    _plot_azimuthal_profile_legacy(bin_centers * cell_size, profile, error_rms,
+                                   error_std, sigma=sigma, sigma_std=sigma_std,
+                                   which_error=which_error,
+                                   which_statistics=which_statistics,
+                                   log_scale=log_scale, figsize=figsize,
+                                   xlabel=xlabel, ylabel=ylabel, title=title)
+
+    return bin_centers, profile, error_rms, error_std, points_per_bin
+
+
+def _plot_azimuthal_profile_legacy(radius_physical, profile, error_rms, error_std,
+                                   sigma=1.0, sigma_std=3.0, which_error='both',
+                                   which_statistics='mean', log_scale=False,
+                                   figsize=(5, 5), xlabel='', ylabel='',
+                                   title=None):
+    """Plotting part of `plot_azimuthal_profile` (moved verbatim)."""
     plt.figure(figsize=figsize)
-    
-    # Convert to physical units
-    radius_physical = bin_centers * cell_size
-    
-    # sigma should just be the number of standard deviations (e.g., 1, 2, 3)
-    # No scaling needed - errors already account for weighting and number of points
-    
-    # # Plot shaded error regions
-    # if which_error == 'std':
-    #     # STD represents morphological dispersion/asymmetry
-    #     plt.fill_between(radius_physical, 
-    #                     profile - sigma * error_std, 
-    #                     profile + sigma * error_std,
-    #                     color='orange', alpha=0.3, 
-    #                     label=fr'Morphological scatter ({sigma}$\sigma$)')
-                        
-    # elif which_error == 'rms':
-    #     # RMS represents measurement uncertainty
-    #     plt.fill_between(radius_physical, 
-    #                     profile - sigma * error_rms, 
-    #                     profile + sigma * error_rms,
-    #                     color='gray', alpha=0.3,
-    #                     label=fr'Measurement uncertainty ({sigma}$\sigma$)')
-                        
-    # elif which_error == 'both':
-    #     # Show both types of errors with different colors and transparency
-    #     # RMS (measurement uncertainty) - smaller, more opaque
-    #     plt.fill_between(radius_physical, 
-    #                     profile - sigma * error_rms, 
-    #                     profile + sigma * error_rms,
-    #                     label=fr'Measurement uncertainty ({sigma}$\sigma$)',
-    #                     color='gray', alpha=0.6)
-                        
-    #     # STD (morphological scatter) - larger, more transparent
-    #     plt.fill_between(radius_physical,
-    #                     profile - sigma * error_std, 
-    #                     profile + sigma * error_std,
-    #                     label=fr'Morphological scatter ({sigma}$\sigma$)',
-    #                     color='orange', alpha=0.3)
-    #     plt.legend()
-        
-    # elif which_error == 'combined':
-    #     # Combined error in quadrature (if you want total uncertainty)
-    #     error_combined = np.sqrt(error_rms**2 + error_std**2)
-    #     plt.fill_between(radius_physical,
-    #                     profile - sigma * error_combined,
-    #                     profile + sigma * error_combined,
-    #                     label=fr'Combined uncertainty ({sigma}$\sigma$)',
-    #                     color='purple', alpha=0.4)
 
-    # # Plot the profile
-    # plt.plot(radius_physical, profile, color='black', 
-    #          marker='.',linestyle='-.',
-    #          linewidth=1, label=f'{which_statistics.capitalize()} profile')
-
-    
-    # sigma should just be the number of standard deviations (e.g., 1, 2, 3)
-    # No scaling needed - errors already account for weighting and number of points
-    
     # Plot error regions and profile
     if which_error == 'std':
         plt.fill_between(radius_physical, 
@@ -495,18 +398,10 @@ def plot_azimuthal_profile(image, rms_image, center=None,
         plt.yscale('log')
         
 
-    # plt.errorbar(radius_physical, profile, yerr=sigma*error_rms, 
-    #              color='black', marker='.',linestyle='-.',linewidth=1,
-    #              label='Mean profile', capsize=3)
-    # plt.fill_between(radius_physical, profile - sigma*error_std, profile + sigma*error_std, 
-    #                 alpha=0.3, label='Morphological scatter')
-    
     plt.xlabel(fr'{xlabel}')
     plt.ylabel(fr'{ylabel}')
     plt.title(title)
     plt.tight_layout()
-
-    return bin_centers, profile, error_rms, error_std, points_per_bin
 
 
 def fast_plot2(imagename, crop=False, box_size=128, center=None, with_wcs=True,vmax_factor=0.5,
@@ -5622,7 +5517,7 @@ def mark_sn_coords(ax, imagename, sn_ra_dec, center=None,
 def plot_alpha_map(alphaimage,radio_map,frequencies,
                    alphaimage_error=None,
                    mask_good_alpha = None,
-                   levels_g = None,
+                   levels_g = None,sigma_levels = 6,
                    vmin_factor = 3,neg_levels=np.asarray([-3]),
                    vmin=None,vmax=None,rms=None,figsize=(6, 6),
                    extent = None,crop=False,centre=None,
@@ -5743,7 +5638,7 @@ def plot_alpha_map(alphaimage,radio_map,frequencies,
 
     
     if levels_g is None:
-        levels_g = np.geomspace(0.9 * np.nanmax(_g), 12 * std, n_contours)
+        levels_g = np.geomspace(0.9 * np.nanmax(_g), sigma_levels * std, n_contours)
     else:
         levels_g = levels_g
     
