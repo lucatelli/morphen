@@ -828,7 +828,11 @@ def compute_petro_source(data_2D, mask_component=None, global_mask=None,
             # Rlast_new = 2 * source_props['Rp'] + 3
             # print(' ++==>> Re-computing petrosian parameters...')
 
-            Rlast_new = 2 * source_props['c' + ii + '_Rp'] + 3
+            # Grow the previous attempt's radius. This used to be
+            # `2 * Rp + 3`, but this branch only runs when Rp is NaN, so the
+            # retry radius was always NaN and petro_params crashed at
+            # int(rlast) (tiny components, e.g. SEP without a mask).
+            Rlast_new = 2 * max(int(Rlast_new), 1) + 3
             # print('Rlast', source_props['c' + ii + '_rlast'])
             # print('2Rp', 2 * source_props['c' + ii + '_Rp'])
             # print('Rlast_new',Rlast_new)
