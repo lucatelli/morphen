@@ -199,6 +199,53 @@ def create_wsclean_mask(imagename,rms_mask,sigma_mask,mask_grow_iterations,PLOT=
     return(mask_name,dilated_mask)
 
 
+def run_wsclean_predict(g_name, model_prefix, nc=4, channel_division='default',
+                        outdir=None, quiet=True):
+    """
+    Predict visibilities from existing WSClean model images into MODEL_DATA
+    (wsclean -predict, through imaging_with_wsclean.py --predict).
+
+    Parameters
+    ----------
+    g_name : str or list
+        Measurement set(s) to predict into.
+    model_prefix : str
+        Name prefix of the model images, without directory. The images
+        ``<model_prefix>-NNNN-model.fits`` (``<model_prefix>-model.fits`` for
+        ``nc`` = 1) must be in ``outdir``.
+    nc : int
+        Number of output channels of the run that made the model images.
+    channel_division : str
+        Same value as in the run that made the model images.
+    outdir : str
+        Directory that holds the model images. Default: the directory of the
+        (first) MS.
+    quiet : bool
+        Run WSClean with -quiet.
+
+    Returns
+    -------
+    int
+        Exit status of the command (0 on success).
+    """
+    if isinstance(g_name, (list, tuple)):
+        ms_arg = ','.join(g_name)
+        first_ms = g_name[0]
+    else:
+        ms_arg = g_name
+        first_ms = g_name
+    if outdir is None:
+        outdir = os.path.dirname(os.path.abspath(first_ms))
+    imaging_script_path = os.path.dirname(os.path.abspath(__file__))
+    return os.system("export OPENBLAS_NUM_THREADS=1 && python "
+                     + imaging_script_path + "/imaging_with_wsclean.py --f "
+                     + ms_arg + " --outdir " + outdir
+                     + " --predict " + model_prefix
+                     + " --nc " + str(nc)
+                     + " --channel_division " + str(channel_division)
+                     + " --quiet " + str(quiet))
+
+
 def run_wsclean(g_name, imsize='2048', imsizey='2048',cell='0.06asec',
                 opt_args = "''",
                 robust=0.5,base_name=None,
@@ -210,10 +257,26 @@ def run_wsclean(g_name, imsize='2048', imsizey='2048',cell='0.06asec',
                 uvtaper=[],nc = 4,
                 image_list={},image_statistics={},
                 calculate_subband_fluxes=True,
-                channel_division='default'):
+                channel_division='default',
+                outdir=None, name=None):
+    # g_name may be a list of MS paths: they are imaged together (passed to
+    # imaging_with_wsclean.py as a comma-separated --f). Images go to `outdir`,
+    # default the directory of the (first) MS; `name` replaces the MS name in
+    # the image names.
+    if isinstance(g_name, (list, tuple)):
+        ms_arg = ','.join(g_name)
+        first_ms = g_name[0]
+    else:
+        ms_arg = g_name
+        first_ms = g_name
+    out_path = (outdir if outdir is not None else os.path.dirname(first_ms)) + '/'
+    extra_args = ''
+    if outdir is not None:
+        extra_args += ' --outdir ' + outdir
+    if name is not None:
+        extra_args += ' --name ' + name
 
-
-    g_vis = g_name + '.ms'
+    g_vis = first_ms + '.ms'
     if imsizey is None:
         imsizey = imsize
     if base_name is None:
@@ -227,7 +290,7 @@ def run_wsclean(g_name, imsize='2048', imsizey='2048',cell='0.06asec',
     # os.system("export OPENBLAS_NUM_THREADS=1 && python /mnt/ext10TB/GitHub/morphen/selfcal/imaging_with_wsclean.py --f " +
     # os.system("export OPENBLAS_NUM_THREADS=1 && python "+imaging_script_path+"/imaging_with_wsclean37.py --f " +
     os.system("export OPENBLAS_NUM_THREADS=1 && python "+imaging_script_path+"/imaging_with_wsclean.py --f " +
-              g_name + " --sx "
+              ms_arg + extra_args + " --sx "
               + str(imsize) + " --sy " + str(imsizey) + " --niter "
               + str(niter) + " --data " + datacolumn + " --cellsize " + cell
               + ' --nsigma_automask ' + nsigma_automask + ' --mask '+str(mask)
@@ -241,7 +304,7 @@ def run_wsclean(g_name, imsize='2048', imsizey='2048',cell='0.06asec',
               + " --update_model " + str(savemodel) + " --save_basename " + base_name)
 
 
-    image_statistics,image_list = compute_image_stats_wsclean(path=os.path.dirname(g_name) + '/',
+    image_statistics,image_list = compute_image_stats_wsclean(path=out_path,
                                                     image_list=image_list,
                                                     image_statistics=image_statistics,
                                                     prefix=base_name,
