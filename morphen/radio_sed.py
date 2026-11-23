@@ -6144,13 +6144,17 @@ def emission_measure_from_turnover(nu_t_GHz, T_e=1e4):
     return np.asarray(nu_t_GHz, dtype=float) ** 2.1 * (T_e / 1e4) ** 1.35 / FF_TAU_COEFF
 
 
-def brightness_temperature_beam(S_mJy_beam, nu_GHz, bmaj_arcsec, bmin_arcsec):
+def brightness_temperature_beam(S_mJy_beam, nu_GHz, bmaj_arcsec, bmin_arcsec, z=0.0):
     """
     Rayleigh-Jeans brightness temperature [K] of a surface brightness in
     mJy/beam, for a Gaussian beam with FWHM axes in arcsec:
-        T_b = 1222 K (S/mJy) (nu/GHz)**-2 (bmaj*bmin/arcsec**2)**-1.
+        T_b = (2 ln2 / (pi k_B)) c^2 (1+z) S / (nu^2 bmaj bmin)
+            = 1222.12 K (1+z) (S/mJy) (nu/GHz)**-2 (bmaj*bmin/arcsec**2)**-1
+    (same constant as `Tb_source` / `brightness_temperature_props`; Lucatelli
+    et al. 2024). z = 0 (default) gives the observed-frame value.
     """
-    return 1222.0 * np.asarray(S_mJy_beam, dtype=float) / (nu_GHz ** 2 * bmaj_arcsec * bmin_arcsec)
+    return (1222.12 * (1.0 + z) * np.asarray(S_mJy_beam, dtype=float)
+            / (nu_GHz ** 2 * bmaj_arcsec * bmin_arcsec))
 
 
 def emission_measure_from_thin_ff(S_ff_mJy_beam, nu_GHz, bmaj_arcsec,

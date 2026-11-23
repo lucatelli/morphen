@@ -1110,6 +1110,14 @@ r"""
 #Physics
 """
 def T_B(theta_maj, theta_min, freq, I):
+    """
+    DEPRECATED - kept only for `compute_image_properties_old`.
+
+    Returns 1222 I / (nu^2 bmaj bmin) / 1e5, i.e. in units of 1e5 K. With I a
+    peak in mJy/beam this is the beam-averaged T_b; with I a TOTAL flux (how
+    the old code used it) it is not a brightness temperature for a resolved
+    source. Use `brightness_temperature_props` (or `Tb_source` for model sizes).
+    """
     # https://science.nrao.edu/facilities/vla/proposing/TBconv
     # https://www.cv.nrao.edu/~sransom/web/Ch2.html
     # theta_maj/min are gaussian beam maj and min axes in units of arcsecs
@@ -1121,32 +1129,48 @@ def T_B(theta_maj, theta_min, freq, I):
     return brightness_temp/1e5
 
 
+# Rayleigh-Jeans brightness temperature of an elliptical Gaussian:
+#     T_b = (2 ln2 / (pi k_B)) c^2 (1+z) S_nu / (nu^2 phi_maj phi_min)
+# (Lucatelli et al. 2024, MNRAS 529, 4468, eq. Tb), with phi the FWHM axes.
+# In units of mJy, GHz and arcsec the prefactor is 1222.12 K. (The often-quoted
+# 1.8e9 K for mJy/GHz/mas is the UNIFORM-DISK constant 2 c^2/(pi k_B), larger by
+# 1/ln2 - not appropriate for Gaussian FWHM sizes.)
+_TB_GAUSS_MJY_GHZ_ARCSEC = 1222.12
+
+
 def Tb_source(Snu,freq,theta1,theta2,z,
               Snu_err=None,theta1_err=None,theta2_err=None):
     """
-    Compute the brightness temperature, provided the deconvolved model parameters
-    having semi-major and semi-minor FWHM's theta1 and theta2.
-    
+    Rest-frame brightness temperature of a source with deconvolved Gaussian
+    FWHM axes theta1, theta2:
+
+        T_b = (2 ln2 / (pi k_B)) c^2 (1+z) S_nu / (nu^2 theta1 theta2)
+            = 1222.12 K (1+z) S[mJy] / (nu[GHz]^2 theta1["] theta2["])
+
     Parameters
     ----------
     Snu : float
-        The flux density at the frequency nu.
+        Flux density [Jy] (as stored in morphen tables, `total_flux_mask`).
     freq : float
-        The frequency at which the flux density is measured.
-    theta1 : float
-        The deconvolved FWHM axis of the source.
-    theta2 : float
-        The deconvolved FWHM axis of the source.
+        Observed frequency [GHz].
+    theta1, theta2 : float
+        Deconvolved FWHM axes [arcsec].
     z : float
-        The redshift of the source.
-    
+        Redshift; (1+z) converts the observed-frame value to the rest frame.
+    Snu_err, theta1_err, theta2_err : float, optional
+        1-sigma errors, propagated in quadrature.
+
     Returns
     -------
     Tb : float
-        The brightness temperature of the source divided by 1e5.
+        Brightness temperature [K]. (Before Nov 2026 this returned T_b/1e5 and
+        used the uniform-disk constant 1.8e9, i.e. values 1.47x too high for
+        Gaussian sizes.)
+    Tb_err : float
+        Only if Snu_err is given.
     """
-    const = 1.8e9 * (1+z)*1000
-    Tb = ((const * Snu)/(freq*freq*(theta1*1000)*(theta2*1000)))/1e5
+    Tb = (_TB_GAUSS_MJY_GHZ_ARCSEC * (1 + z) * (Snu * 1000.0)
+          / (freq * freq * theta1 * theta2))
     if (Snu_err is not None) and (theta1_err is not None) and (theta2_err is not None):
         Tb_err = Tb * np.sqrt((Snu_err/Snu)**2.0 
                               + (theta1_err/theta1)**2.0 
@@ -1157,6 +1181,148 @@ def Tb_source(Snu,freq,theta1,theta2,z,
         return(Tb,Tb_err)
     else:
         return(Tb)
+
+def _gaussian_fwhm2_matrix(maj, mn, pa_deg):
+    """
+    FWHM^2 'covariance' matrix of an elliptical Gaussian, in sky axes
+    (x = East, y = North, PA measured east of north). Convolving two Gaussians
+    adds these matrices, so deconvolution is a subtraction.
+    """
+    t = np.radians(pa_deg)
+    u = np.array([np.sin(t), np.cos(t)])          # major-axis direction
+    v = np.array([np.cos(t), -np.sin(t)])         # minor-axis direction
+    return maj**2 * np.outer(u, u) + mn**2 * np.outer(v, v)
+
+
+def deconvolve_gaussian_2d(maj, mn, pa, bmaj, bmin, bpa):
+    """
+    Remove an elliptical Gaussian beam from an elliptical Gaussian source.
+
+    Exact for Gaussians and valid for any relative orientation (same result as
+    the Wild 1970 / AIPS / CASA formulae, written via FWHM^2 matrices).
+
+    Parameters
+    ----------
+    maj, mn : float
+        Observed (convolved) FWHM along the major/minor axis.
+    pa : float
+        Observed position angle [deg, east of north].
+    bmaj, bmin : float
+        Beam FWHM (same units as maj, mn).
+    bpa : float
+        Beam position angle [deg, east of north].
+
+    Returns
+    -------
+    maj_d, min_d, pa_d : float
+        Deconvolved FWHMs (same units as the input) and PA [deg, east of north].
+        An axis that does not survive the deconvolution (narrower than the
+        beam along that direction) is returned as 0. NaN inputs give NaNs.
+    """
+    if not np.all(np.isfinite([maj, mn, pa, bmaj, bmin, bpa])):
+        return np.nan, np.nan, np.nan
+    w, vec = np.linalg.eigh(_gaussian_fwhm2_matrix(maj, mn, pa)
+                            - _gaussian_fwhm2_matrix(bmaj, bmin, bpa))
+    w = np.clip(w, 0, None)
+    u = vec[:, 1]                                 # eigenvector of the largest eigenvalue
+    pa_d = float(np.degrees(np.arctan2(u[0], u[1])) % 180)
+    return float(np.sqrt(w[1])), float(np.sqrt(w[0])), pa_d
+
+
+def brightness_temperature_props(S_peak_mJy, S_peak_err_mJy, S_tot_mJy, S_tot_err_mJy,
+                                 freq_GHz, bmaj, bmin, bpa,
+                                 fwhm_major, fwhm_major_err,
+                                 fwhm_minor, fwhm_minor_err, pa_eon,
+                                 resolved_nsigma=2.0, redshift=0.0):
+    """
+    Beam-deconvolved size and brightness temperatures (Rayleigh-Jeans) of one
+    source or component.
+
+        T_b = (2 ln2 / (pi k_B)) c^2 (1+z) S / (nu^2 theta_maj theta_min)
+            = 1222.12 K (1+z) S[mJy] / (nu[GHz]^2 theta_maj["] theta_min["])
+
+    is the exact relation for a Gaussian of FWHM axes theta containing a total
+    flux density S (and, with the beam axes, for a surface brightness S in
+    mJy/beam); Lucatelli et al. 2024 (MNRAS 529, 4468). With `redshift` > 0 the
+    values are rest-frame; with redshift = 0 they are observed-frame.
+
+    Two values are reported:
+
+    Tb_peak : peak surface brightness over the beam. A beam-averaged
+              temperature, i.e. a LOWER LIMIT to the intrinsic one. Defined for
+              every source.
+    Tb_size : total flux over the beam-deconvolved size. Intrinsic if the
+              source is resolved on both axes (flag 'ok'). If an axis is not
+              resolved, its upper-limit size is used and Tb_size is a lower
+              limit ('lower_limit'). If the source is point-like even at the
+              upper end of its size errors, Tb_size is NaN ('unresolved').
+
+    An axis counts as resolved when it still deconvolves after shrinking the
+    observed FWHM by `resolved_nsigma` x its error. The upper-limit size of an
+    unresolved axis comes from deconvolving FWHM + `resolved_nsigma` x error.
+    Errors on the deconvolved axes follow from theta_d^2 = theta^2 - theta_b^2,
+    i.e. sigma_d = theta * sigma / theta_d (no error for an upper limit).
+
+    Parameters
+    ----------
+    S_peak_mJy, S_peak_err_mJy : peak [mJy/beam] and its error
+    S_tot_mJy, S_tot_err_mJy   : total flux density [mJy] and its error
+    freq_GHz                   : frequency [GHz]
+    bmaj, bmin, bpa            : beam FWHMs [arcsec] and PA [deg, east of north]
+    fwhm_major, fwhm_minor     : observed (convolved) source FWHMs [arcsec]
+    fwhm_major_err, fwhm_minor_err : their errors [arcsec]
+    pa_eon                     : observed source PA [deg, east of north]
+    resolved_nsigma            : significance used for the resolved test
+    redshift                   : z for the (1+z) rest-frame factor (0 or None
+                                 -> observed frame)
+
+    Returns
+    -------
+    dict with Tb_peak, Tb_peak_err, Tb_size, Tb_size_err, Tb_size_flag [K],
+    Tb_z (the z used), fwhm_deconv_major(_err), fwhm_deconv_minor(_err)
+    [arcsec], resolved_major, resolved_minor (bool), PA_deconv_EoN [deg].
+    """
+    def _ratio_err(th, e, d):
+        return th * e / d if (np.isfinite(d) and d > 0) else np.nan
+
+    z = 0.0 if (redshift is None or not np.isfinite(redshift)) else float(redshift)
+    k = _TB_GAUSS_MJY_GHZ_ARCSEC * (1.0 + z)
+    good_beam = np.all(np.isfinite([freq_GHz, bmaj, bmin])) and freq_GHz > 0 and bmaj > 0 and bmin > 0
+    Tb_peak = k * S_peak_mJy / (freq_GHz**2 * bmaj * bmin) if good_beam else np.nan
+    Tb_peak_err = (Tb_peak * abs(S_peak_err_mJy / S_peak_mJy)
+                   if (good_beam and S_peak_mJy != 0) else np.nan)
+
+    maj_d, min_d, pa_d = deconvolve_gaussian_2d(fwhm_major, fwhm_minor, pa_eon, bmaj, bmin, bpa)
+    lo = deconvolve_gaussian_2d(max(fwhm_major - resolved_nsigma * fwhm_major_err, 0.0),
+                                max(fwhm_minor - resolved_nsigma * fwhm_minor_err, 0.0),
+                                pa_eon, bmaj, bmin, bpa)
+    hi = deconvolve_gaussian_2d(fwhm_major + resolved_nsigma * fwhm_major_err,
+                                fwhm_minor + resolved_nsigma * fwhm_minor_err,
+                                pa_eon, bmaj, bmin, bpa)
+    res_maj = bool(np.isfinite(lo[0]) and lo[0] > 0)
+    res_min = bool(np.isfinite(lo[1]) and lo[1] > 0)
+    s_maj = maj_d if res_maj else hi[0]           # measured size, or upper limit
+    s_min = min_d if res_min else hi[1]
+    e_maj = _ratio_err(fwhm_major, fwhm_major_err, maj_d) if res_maj else np.nan
+    e_min = _ratio_err(fwhm_minor, fwhm_minor_err, min_d) if res_min else np.nan
+
+    if good_beam and np.isfinite(s_maj) and np.isfinite(s_min) and s_maj > 0 and s_min > 0:
+        Tb_size = k * S_tot_mJy / (freq_GHz**2 * s_maj * s_min)
+        flag = 'ok' if (res_maj and res_min) else 'lower_limit'
+        Tb_size_err = (abs(Tb_size) * np.sqrt((S_tot_err_mJy / S_tot_mJy)**2
+                                              + (e_maj / s_maj)**2 + (e_min / s_min)**2)
+                       if (flag == 'ok' and S_tot_mJy != 0) else np.nan)
+    else:
+        Tb_size, Tb_size_err, flag = np.nan, np.nan, 'unresolved'
+
+    return {'Tb_peak': Tb_peak, 'Tb_peak_err': Tb_peak_err,
+            'Tb_size': Tb_size, 'Tb_size_err': Tb_size_err, 'Tb_size_flag': flag,
+            'Tb_z': z,
+            'fwhm_deconv_major': s_maj, 'fwhm_deconv_major_err': e_maj,
+            'fwhm_deconv_minor': s_min, 'fwhm_deconv_minor_err': e_min,
+            'resolved_major': res_maj, 'resolved_minor': res_min,
+            'PA_deconv_EoN': pa_d}
+
 
 def extrapolate_flux(Snu_1, nu_1, nu_2, alpha, dSnu_1=None, sigma=1):
     """

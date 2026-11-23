@@ -3407,10 +3407,11 @@ class decompose_emission():
                               f" +/- {dec_summary[f'f{component_id}_theta_Rn_pc_err']:.2f} pc")
         _logging_.logger.info(f"Theta_R50 = {dec_summary[f'f{component_id}_theta_R50_pc']:.2f}"
                                 f" +/- {dec_summary[f'f{component_id}_theta_R50_pc_err']:.2f} pc")
-        _logging_.logger.info(f"Tb_Rn = ({dec_summary[f'f{component_id}_Tb_Rn']:.2f}" 
-                              f" +/- {dec_summary[f'f{component_id}_Tb_Rn_err']:.2f}) x 10^5 K")
-        _logging_.logger.info(f"Tb_R50 = ({dec_summary[f'f{component_id}_Tb_R50']:.2f}"
-                                f" +/- {dec_summary[f'f{component_id}_Tb_R50_err']:.2f}) x 10^5 K")
+        # Tb_source returns K (rest frame, Gaussian constant) since Nov 2026.
+        _logging_.logger.info(f"Tb_Rn = {dec_summary[f'f{component_id}_Tb_Rn']:.4g}"
+                              f" +/- {dec_summary[f'f{component_id}_Tb_Rn_err']:.2g} K")
+        _logging_.logger.info(f"Tb_R50 = {dec_summary[f'f{component_id}_Tb_R50']:.4g}"
+                                f" +/- {dec_summary[f'f{component_id}_Tb_R50_err']:.2g} K")
 
 
         _logging_.logger.info(f"A_Rn = ({1e3*dec_summary[f'f{component_id}_A_Rn']:.3f}" 
@@ -3827,8 +3828,17 @@ class radio_star_formation():
 
     def brightness_temperature(self):
         """
-        To Do: Loop over all model components, and compute TB individually.
+        Rest-frame brightness temperature [K] of the first (compact) model
+        component, via `Tb_source` (Gaussian relation, Lucatelli et al. 2024).
 
+        TB_Rnfit  : sizes from the Sersic fit, theta_maj = 2 Rn, theta_min =
+                    theta_maj (1 - ell). 2 Rn is the half-light diameter, a
+                    Gaussian-equivalent FWHM (exact only for n = 0.5).
+        TB_R50fit : sizes from the deconvolved compact model image,
+                    theta_maj/min = 2 * C50radii_major/minor (their product is
+                    4 R50^2, since C50radii is already the circularised sqrt(ab)).
+
+        To Do: Loop over all model components, and compute TB individually.
         """
         self.theta1_Rnfit = 2 * self.cell_size * self.SMFR.results_fit['f1_Rn']
         self.theta2_Rnfit = (2 * (1 - self.SMFR.results_fit['f1_ell']) * self.cell_size *
@@ -3840,19 +3850,20 @@ class radio_star_formation():
                                    theta1=self.theta1_Rnfit, theta2=self.theta2_Rnfit,
                                    z=self.z)
 
+        # Was 2*C50radii and 2*qm*C50radii: C50radii is already sqrt(ab), so that
+        # counted the axis ratio twice, and `qm` exists only with do_fit_ellipse.
         self.theta1_R50fit = 2 * self.cell_size * self.SMFR.results_compact_deconv_morpho[
-            'C50radii']
-        self.theta2_R50fit = (2 * (self.SMFR.results_compact_deconv_morpho['qm']) *
-                              self.cell_size *
-                             self.SMFR.results_compact_deconv_morpho['C50radii'])
+            'C50radii_major']
+        self.theta2_R50fit = 2 * self.cell_size * self.SMFR.results_compact_deconv_morpho[
+            'C50radii_minor']
         self.TB_R50fit  = mlibs.Tb_source(Snu=self.SMFR.results_compact_deconv_morpho['total_flux_mask'],
                                    freq=self.frequency,
                                    theta1=self.theta1_R50fit, theta2=self.theta2_R50fit,
                                    z=self.z)
         mlibs.print_logger_header(title="Brightness Temperature",
                             logger=_logging_.logger)
-        _logging_.logger.info(f" ==> TB Rn Fit = {self.TB_Rnfit[0]:.2f} e5 K")
-        _logging_.logger.info(f" ==> TB R50 Fit = {self.TB_R50fit[0]:.2f} e5 K")
+        _logging_.logger.info(f" ==> TB Rn Fit = {self.TB_Rnfit[0]:.4g} K")
+        _logging_.logger.info(f" ==> TB R50 Fit = {self.TB_R50fit[0]:.4g} K")
 
 
 

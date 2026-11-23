@@ -500,6 +500,12 @@ def build_morpho_specs(print_info='full'):
       PA_convex is CCW from the image +x axis, NOT east of north (for the usual
       CDELT1 < 0 orientation, PA_EoN = (PA_convex - 90) mod 180).
       sigma_q_method  'bootstrap_beam' / 'bootstrap_white' / 'rule'
+      PA_EoN = PA_convex converted to east of north (CDELT1-aware).
+    Deconvolved size / brightness temperature (radio; see
+    brightness_temperature_props): fwhm_deconv_major/minor [arcsec] are upper
+    limits where resolved_major/minor is False; Tb_peak is beam-averaged (a
+    lower limit); Tb_size uses the deconvolved size, flagged
+    'ok' / 'lower_limit' / 'unresolved'.
     Noise:
       local_rms   noise inside the measured region (see compute_local_rms)
       local_snr   peak_of_flux / local_rms, derived by _with_derived_columns
@@ -534,6 +540,22 @@ def build_morpho_specs(print_info='full'):
          'units': [('arcsec', 'cell_size')],                'fmt': '.4f'},
         {'col': 'convex_minor_diameter',  'err': 'convex_minor_diameter_err',
          'units': [('arcsec', 'cell_size')],                'fmt': '.4f'},
+        {'col': 'PA_EoN',                 'err': 'PA_EoN_err',
+         'units': [('deg', 1)],                             'fmt': '.2f'},
+        {'col': 'fwhm_deconv_major',      'err': 'fwhm_deconv_major_err',
+         'units': [('arcsec', 1)],                          'fmt': '.4f'},
+        {'col': 'fwhm_deconv_minor',      'err': 'fwhm_deconv_minor_err',
+         'units': [('arcsec', 1)],                          'fmt': '.4f'},
+        {'col': 'resolved_major',
+         'units': [('', None)]},
+        {'col': 'resolved_minor',
+         'units': [('', None)]},
+        {'col': 'Tb_peak',                'err': 'Tb_peak_err',
+         'units': [('K', 1)],                               'fmt': '.4g'},
+        {'col': 'Tb_size',                'err': 'Tb_size_err',
+         'units': [('K', 1)],                               'fmt': '.4g'},
+        {'col': 'Tb_size_flag',
+         'units': [('', None)]},
         {'col': 'C1',                     'err': 'C1_err',
          'units': [('', 1)],                                'fmt': '.3f'},
         {'col': 'C2',                     'err': 'C2_err',
@@ -690,6 +712,7 @@ def build_latex_specs():
 
     factor: constant, or column name resolved on the source row.
     R50/R95 are circularised radii sqrt(a*b); a/b are the semi-major/minor axes.
+    PA is the major-axis position angle east of north (`PA_EoN`).
     """
     return [
         {'kind': 'perfreq', 'col': 'total_flux_mask', 'err': 'total_flux_error',
@@ -709,7 +732,9 @@ def build_latex_specs():
          'factor': 'cell_size', 'fmt': '.3f', 'header': r'$b_{95}$'},
         {'kind': 'single', 'col': 'q_eff', 'err': 'sigma_q_eff',
          'factor': 1, 'fmt': '.2f', 'header': r'$q_{\mathrm{eff}}$'},
-        {'kind': 'single', 'col': 'PA_convex', 'err': 'PA_convex_err',
+        # PA east of north. (Was PA_convex, which is CCW from the image +x
+        # axis -- 90 deg off for the usual CDELT1 < 0 orientation.)
+        {'kind': 'single', 'col': 'PA_EoN', 'err': 'PA_EoN_err',
          'factor': 1, 'fmt': '.1f', 'header': r'PA'},
         {'kind': 'single', 'col': 'convex_minor_diameter',
          'err': 'convex_minor_diameter_err',
@@ -745,9 +770,18 @@ def to_latex_table(df, latex_specs=None, id_col='comp_ID', freq_col='freq',
                    matched numerically (0, 1, 2, ...).
     table_title  : optional \\multicolumn banner row.
     path         : if given, write the .tex; otherwise just return the string.
+
+    PA is printed east of north (`PA_EoN`). Tables made before `PA_EoN` existed
+    only have `PA_convex` (CCW from +x); for those it is converted here assuming
+    the usual CDELT1 < 0 orientation, PA_EoN = (PA_convex - 90) mod 180.
     """
     if latex_specs is None:
         latex_specs = build_latex_specs()
+    if 'PA_EoN' not in df.columns and 'PA_convex' in df.columns:
+        df = df.copy()
+        df['PA_EoN'] = (pd.to_numeric(df['PA_convex'], errors='coerce') - 90.0) % 180.0
+        if 'PA_convex_err' in df.columns:
+            df['PA_EoN_err'] = df['PA_convex_err']
     latex_specs = [s for s in latex_specs if s['col'] in df.columns]
 
     ids = pd.to_numeric(df[id_col], errors='coerce')

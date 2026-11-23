@@ -5264,6 +5264,32 @@ def compute_image_properties(img, residual,
         (no beam), or 'rule' (legacy clip(0.02/SNR, 0.005, 0.5) fallback, when
         the bootstrap is off/failed or q_eff came from q_mom). PA_convex_err,
         q_convex_err, convex_*_diameter_err and q_diam_err are 1-sigma.
+
+    Deconvolved size and brightness temperature (radio images only, i.e. with a
+    restoring beam and a frequency, and fluxes in Jy or mJy; otherwise NaN).
+    See `brightness_temperature_props` for definitions. Angles in arcsec, T in K
+    (Rayleigh-Jeans, Gaussian: T_b = (2 ln2/(pi k_B)) c^2 (1+z) S/(nu^2 phi_maj phi_min);
+    rest frame when `redshift` is given -- `Tb_z` records the z used -- observed
+    frame otherwise):
+
+        PA_EoN               PA_convex converted to east of north (uses the
+                             sign of CDELT1); PA_EoN_err = PA_convex_err
+        beam_pa              restoring-beam PA [deg, east of north]
+        fwhm_conv_major/minor (+_err)   observed FWHM = 2*C50radii_major/minor
+                             (exact for a 2D Gaussian, whose R50 = FWHM/2)
+        fwhm_deconv_major/minor (+_err) beam-deconvolved FWHM; for an axis with
+                             resolved_major/minor = False this is an UPPER LIMIT
+        PA_deconv_EoN        PA of the deconvolved ellipse
+        Tb_peak (+_err)      peak / beam: beam-averaged, a lower limit
+        Tb_size (+_err)      total flux / deconvolved size; Tb_size_flag is
+                             'ok', 'lower_limit' or 'unresolved' (NaN)
+        C50theta (+_err)     circularised size 2*C50radii [px]
+        C50theta_dec (+_err) sqrt(fwhm_deconv_major*fwhm_deconv_minor) [px]; an
+                             upper limit (no error) unless both axes are resolved
+
+    The older TB, TB20, TB50, TB80 and TB90 keys were removed: they divided the total
+    flux (or the flux inside an isophote) by the BEAM solid angle, in units of 1e5 K,
+    which is not a brightness temperature for a resolved source.
     """
     # --------------------------------------------------------------------------
     # Setup: units, data loading, RMS, masking
@@ -5883,18 +5909,8 @@ def compute_image_properties(img, residual,
 
 
 
-    # -- Brightness temperature ------------------------------------------------
-    if not flag_freq:
-        try:
-            TB20 = T_B(omaj, omin, freq, L20)
-        except Exception:
-            TB20 = 0.0
-        TB50 = T_B(omaj, omin, freq, L50)
-        TB80 = T_B(omaj, omin, freq, L80)
-        TB90 = T_B(omaj, omin, freq, L90)
-        TB   = T_B(omaj, omin, freq, total_flux)
-    else:
-        TB20 = TB50 = TB80 = TB90 = TB = 0.0
+    # Brightness temperatures are computed further down, once the semi-axes
+    # (C50radii_major/minor) are known -- see "Deconvolved size and T_b".
 
     levels_20  = np.asarray([sigma_20])
     levels_50  = np.asarray([sigma_50])
@@ -6132,7 +6148,6 @@ def compute_image_properties(img, residual,
         'inner_perimeter': inner_perimeter,
         'outer_perimeter': outer_perimeter,
         'outer_perimeter90': outer_perimeter90,
-        'TB20': TB20, 'TB50': TB50, 'TB80': TB80, 'TB': TB,
         'C1': C1, 'C2': C2, 'C1_err': C1_err, 'C2_err': C2_err,
         'AC1': AC1, 'AC2': AC2, 'CAC1': CAC1, 'CAC2': CAC2,
         'L20': L20, 'A20': A20, 'C20': sigma_20 / std,
@@ -6141,16 +6156,10 @@ def compute_image_properties(img, residual,
         'L50': L50, 'A50': A50, 'C50': sigma_50 / std,
         'C50radii': C50radii, 'C50radii_err': C50radii_err,
         'npix50': npix50, 'npix50_err': npix50_err,
-        'C50theta':     C50radii * np.sqrt(6 * np.log(2)),
-        'C50theta_err': C50radii_err * np.sqrt(6 * np.log(2)),
-        'C50theta_dec': np.sqrt(
-            (C50radii * np.sqrt(6 * np.log(2)))**2
-            - (results['bmajor'] / cell_size)**2
-        ),
-        'C50theta_dec_err': (
-            C50radii * np.sqrt(6 * np.log(2))
-            * C50radii_err * np.sqrt(6 * np.log(2))
-        ),
+        # circularised FWHM-equivalent size, theta = 2 R50 (R50_to_fwhm convention);
+        # its beam-deconvolved version C50theta_dec is set with the T_b block below
+        'C50theta':     2.0 * C50radii,
+        'C50theta_err': 2.0 * C50radii_err,
         'L80': L80, 'A80': A80, 'C80': sigma_80 / std,
         'C80radii': C80radii, 'npix80': npix80,
         'C80radii_err': C80radii_err, 'npix80_err': npix80_err,
@@ -6175,6 +6184,63 @@ def compute_image_properties(img, residual,
         'area_ratio': area_ratio, 'area_ratio_full': area_ratio_full,
         'beam_area': beam_area_,
     })
+
+    # -- Deconvolved size and T_b ----------------------------------------------
+    # PA_convex is CCW from the image +x axis. With RA increasing to the left
+    # (CDELT1 < 0, the usual case) +x is West, so PA_EoN = PA_convex - 90; with
+    # CDELT1 > 0, +x is East and PA_EoN = 90 - PA_convex.
+    _cdelt1 = -1.0
+    if isinstance(img, str):
+        try:
+            _hdr = pf.getheader(img)
+            _cdelt1 = float(_hdr.get('CDELT1', _hdr.get('CD1_1', -1.0)))
+        except Exception:
+            pass
+    _pa_convex = results.get('PA_convex', np.nan)
+    results['PA_EoN'] = float(((_pa_convex - 90.0) if _cdelt1 < 0 else (90.0 - _pa_convex)) % 180.0)
+    results['PA_EoN_err'] = results.get('PA_convex_err', np.nan)
+
+    _fwhm_maj = 2.0 * results['C50radii_major'] * cell_size
+    _fwhm_min = 2.0 * results['C50radii_minor'] * cell_size
+    _fwhm_maj_err = 2.0 * results['C50radii_major_err'] * cell_size
+    _fwhm_min_err = 2.0 * results['C50radii_minor_err'] * cell_size
+    results.update({'fwhm_conv_major': _fwhm_maj, 'fwhm_conv_major_err': _fwhm_maj_err,
+                    'fwhm_conv_minor': _fwhm_min, 'fwhm_conv_minor_err': _fwhm_min_err})
+
+    _radio_units = flux_units in ('Jy/beam', 'Jy', 'mJy', 'mJy/beam')
+    if (not flag_freq) and _radio_units and scale_units != 'px':
+        results['beam_pa'] = float(BPA)
+        results.update(brightness_temperature_props(
+            S_peak_mJy=results['peak_of_flux'] * flux_conversion,
+            S_peak_err_mJy=results.get('peak_error', np.nan) * flux_conversion,
+            S_tot_mJy=results['total_flux_mask'] * flux_conversion,
+            S_tot_err_mJy=results.get('total_flux_error', np.nan) * flux_conversion,
+            freq_GHz=freq, bmaj=omaj, bmin=omin, bpa=float(BPA),
+            fwhm_major=_fwhm_maj, fwhm_major_err=_fwhm_maj_err,
+            fwhm_minor=_fwhm_min, fwhm_minor_err=_fwhm_min_err,
+            pa_eon=results['PA_EoN'],
+            redshift=redshift if redshift is not None else 0.0))
+        # Circularised deconvolved size sqrt(maj_d * min_d) [px], from the
+        # elliptical deconvolution above (the old version subtracted bmajor
+        # only and its error was a product of value and error). It is an upper
+        # limit unless both axes are resolved; then it carries an error.
+        _dmaj, _dmin = results['fwhm_deconv_major'], results['fwhm_deconv_minor']
+        results['C50theta_dec'] = float(np.sqrt(_dmaj * _dmin) / cell_size)
+        if results['resolved_major'] and results['resolved_minor'] and _dmaj > 0 and _dmin > 0:
+            results['C50theta_dec_err'] = float(0.5 * results['C50theta_dec'] * np.sqrt(
+                (results['fwhm_deconv_major_err'] / _dmaj)**2
+                + (results['fwhm_deconv_minor_err'] / _dmin)**2))
+        else:
+            results['C50theta_dec_err'] = np.nan
+    else:
+        results.update({'C50theta_dec': np.nan, 'C50theta_dec_err': np.nan, 'Tb_z': np.nan})
+        results.update({'beam_pa': np.nan,
+                        'Tb_peak': np.nan, 'Tb_peak_err': np.nan,
+                        'Tb_size': np.nan, 'Tb_size_err': np.nan, 'Tb_size_flag': 'no_beam',
+                        'fwhm_deconv_major': np.nan, 'fwhm_deconv_major_err': np.nan,
+                        'fwhm_deconv_minor': np.nan, 'fwhm_deconv_minor_err': np.nan,
+                        'resolved_major': False, 'resolved_minor': False,
+                        'PA_deconv_EoN': np.nan})
 
     if redshift is not None:
         pix_to_pc    = pixsize_to_pc(z=redshift, cell_size=cell_size)
@@ -6213,6 +6279,16 @@ def compute_image_properties(img, residual,
         _log(f" ==>  R95_minor         = "
              f"{cell_size*results['C95radii_minor']:.4f}"
              f" +/- {cell_size*results['C95radii_minor_err']:.4f} [{scale_units}]")
+        if np.isfinite(results.get('Tb_peak', np.nan)):
+            _ul = lambda ok: '' if ok else ' (upper limit)'
+            _log(f" ==>  FWHM deconv major = {results['fwhm_deconv_major']:.4f}"
+                 f"{_ul(results['resolved_major'])} [arcsec]")
+            _log(f" ==>  FWHM deconv minor = {results['fwhm_deconv_minor']:.4f}"
+                 f"{_ul(results['resolved_minor'])} [arcsec]")
+            _log(f" ==>  Tb_peak           = {results['Tb_peak']:.4g}"
+                 f" +/- {results['Tb_peak_err']:.2g} [K] (beam-averaged, lower limit)")
+            _log(f" ==>  Tb_size           = {results['Tb_size']:.4g}"
+                 f" +/- {results['Tb_size_err']:.2g} [K] ({results['Tb_size_flag']})")
         if redshift is not None:
             _log(f" ==>  R50 (phys)        = "
                  f"{scale_size*C50radii:.4f}"
